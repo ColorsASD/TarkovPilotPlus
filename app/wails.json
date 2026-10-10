@@ -1,7 +1,7 @@
 {
     "$schema": "https://wails.io/schemas/config.v2.json",
-    "name": "TarkovPilot",
-    "outputfilename": "TarkovPilot",
+    "name": "TarkovPilotPlus",
+    "outputfilename": "TarkovPilotPlus",
     "frontend:install": "",
     "frontend:build": "",
     "frontend:dev:watcher": "",
@@ -11,9 +11,9 @@
     },
     "info": {
         "companyName": "tarkov-market.com",
-        "productName": "TarkovPilot",
-        "productVersion": "2.1.0",
+        "productName": "TarkovPilot+",
+        "productVersion": "1.0.0",
         "copyright": "© tarkov-market.com",
-        "comments": "Companion app for tarkov-market.com"
+        "comments": "TarkovPilot+ extension for TarkovPilot"
     }
 }

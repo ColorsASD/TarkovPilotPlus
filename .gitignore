@@ -1,9 +1,43 @@
-logs
+# Local tools and temporary checks (including nested app/.local)
+.local/
 
-# build output
-app/build/bin/
+# Generated builds and downloaded OCR dependencies
+/app/build/bin/
+/app/plus/ocr/runtime/
+/app/*-res.syso
 
-# deploy artifacts
-deploy/dist/
-# deploy scripts don't belong here (public repo) — guard against accidental adding
-deploy*.ps1
+# Wails regenerates these bindings; the frontend uses window.go directly
+/app/frontend/wailsjs/
+
+# Browser test output and temporary profiles
+/output/
+.playwright-cli/
+
+# Local credentials, application state and logs
+.env
+.env.*
+!.env.example
+!.env.template
+api-key.bin
+item-settings.json
+item-cache/
+settings.json
+logs/
+*.log
+
+# Temporary build and test files
+*.test
+*.test.exe
+*.partial
+*.tmp
+*.old
+coverage.out
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local deployment output and scripts
+/deploy/dist/
+/deploy*.ps1

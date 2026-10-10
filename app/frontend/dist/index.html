@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TarkovPilot</title>
+    <title>TarkovPilot+</title>
     <link rel="stylesheet" href="style.css" />
 </head>
 
@@ -12,12 +12,7 @@
     <!-- custom title bar: frameless window, the whole header is a Wails drag zone -->
     <header class="titlebar">
         <div class="brand">
-            <span class="brand-name">Tarkov<span class="accent">Pilot</span></span>
-            <span class="version" id="version"></span>
-        </div>
-        <div class="lang-switch">
-            <span class="region-lbl" data-i18n="region">Region</span>
-            <button id="lang-en" class="lang-btn">EN</button><button id="lang-ru" class="lang-btn">RU</button>
+            <span class="brand-name">Tarkov<span class="accent">Pilot+</span></span>
         </div>
         <div class="win-btns">
             <button class="win-btn" id="btn-min">&#xE921;</button>
@@ -88,6 +83,10 @@
         <!-- options -->
         <section>
             <div class="sec-title" data-i18n="options">Options</div>
+            <div class="lang-switch website-region">
+                <span class="region-lbl" data-i18n="region">Region</span>
+                <button id="lang-en" class="lang-btn">EN</button><button id="lang-ru" class="lang-btn">RU</button>
+            </div>
             <div class="opt-row">
                 <label class="opt">
                     <input type="checkbox" id="chk-autostart" />
@@ -120,8 +119,13 @@
             <div id="event-log" class="event-log"></div>
         </section>
 
+        <div class="component-versions" aria-label="Component versions">
+            <span>TarkovPilot <span id="version"></span></span>
+            <span>TarkovPilot+ <span id="plus-version"></span></span>
+        </div>
+
         <footer>
-            <span data-i18n="quitHint">The X button minimizes to tray, full quit —</span>
+            <span data-i18n="quitHint">Closing either window exits the app —</span>
             <button id="btn-quit" class="quit-btn" data-i18n="quit">Quit</button>
         </footer>
     </div>

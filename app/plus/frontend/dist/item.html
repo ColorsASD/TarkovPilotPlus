@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' https://cdn.tarkov-market.app; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>TarkovPilot+</title>
+    <link rel="stylesheet" href="item.css" />
+</head>
+
+<body>
+    <header class="titlebar">
+        <div class="brand">
+            <span class="brand-name">Tarkov<span class="accent">Pilot+</span></span>
+        </div>
+        <div class="window-actions">
+            <button id="btn-min" class="window-button" type="button" aria-label="Minimize window"
+                title="Minimize"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg></button>
+            <button id="btn-close" class="window-button window-close" type="button"
+                aria-label="Close both app windows" title="Close app"><svg viewBox="0 0 16 16"
+                    aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg></button>
+        </div>
+    </header>
+
+    <main class="wrap">
+        <div id="preview-label" class="preview-label hidden">Preview · Sample data</div>
+
+        <section class="item-panel" aria-labelledby="item-name">
+            <div id="item-image-wrap" class="item-image-wrap">
+                <img id="item-image" class="hidden" alt="" referrerpolicy="no-referrer" />
+                <svg id="item-image-placeholder" class="item-image-placeholder" viewBox="0 0 48 48" aria-hidden="true">
+                    <path d="m24 5 17 10v18L24 43 7 33V15Z M7 15l17 10 17-10M24 25v18M16 10l17 10" />
+                </svg>
+            </div>
+            <div class="item-heading">
+                <h1 id="item-name">Waiting for item</h1>
+                <div id="item-meta" class="item-meta">Open the item's Inspect window in the game.</div>
+            </div>
+        </section>
+
+        <button id="btn-item-page" class="market-button" type="button" disabled>
+            <span class="market-wordmark">TARKOV <span>MARKET</span></span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 3h4v4M13 3l-7 7M7 4H3v9h9V9" /></svg>
+            <span class="sr-only"> – Open item on Tarkov Market</span>
+        </button>
+
+        <section class="price-panel" aria-label="Item prices">
+            <div class="price-group" aria-labelledby="flea-heading">
+                <div class="price-group-heading"><h2 id="flea-heading">Flea Market</h2></div>
+                <dl class="price-list">
+                    <div class="price-row"><dt>Best price</dt><dd><span id="current-price">—</span><span class="slot-price-note hidden"> (<span id="current-slot-price">—</span>/slot)</span></dd></div>
+                    <div class="price-row"><dt>24-hour average price</dt><dd><span id="avg-price">—</span><span class="slot-price-note hidden"> (<span id="slot-price">—</span>/slot)</span></dd></div>
+                </dl>
+            </div>
+            <div class="price-group trader-group" aria-labelledby="trader-heading">
+                <div class="price-group-heading"><h2 id="trader-heading">Trader</h2><span id="trader-name" class="trader-name">—</span></div>
+                <dl class="price-list">
+                    <div class="price-row"><dt>Best price</dt><dd><span id="trader-price">—</span><span class="slot-price-note hidden"> (<span id="trader-slot-price">—</span>/slot)</span></dd></div>
+                </dl>
+            </div>
+            <p id="market-note" class="market-note hidden"></p>
+        </section>
+
+        <section id="tracked-panel" class="tracked-panel hidden" aria-label="Tracked Items">
+            <div id="tracked-content" class="hidden">
+                <div class="tracked-heading"><h2>Items Tracker</h2></div>
+                <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd id="tracked-ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
+                <dl id="tracked-requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
+                <dl id="tracked-completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
+                <button id="btn-add-tracked" class="tracked-add-button" type="button" disabled
+                    title="Add 1 item to shared Tracked Items stock for the selected character">Add</button>
+            </div>
+            <p id="tracked-status" class="tracked-status hidden" role="status" aria-live="polite"></p>
+            <p id="tracked-error" class="tracked-error hidden" role="alert"></p>
+        </section>
+
+        <section class="scan-status" aria-label="Scan status">
+            <div class="status-line"><span id="status-dot" class="status-dot" aria-hidden="true"></span>
+                <p id="status-text" role="status" aria-live="polite">Starting app…</p>
+                <span id="mode-badge" class="mode-badge">PVP</span>
+            </div>
+            <p id="data-note" class="data-note hidden"><span id="data-age"></span></p>
+            <p id="error-text" class="error-text hidden" role="alert"></p>
+            <p id="feedback" class="feedback hidden" role="status" aria-live="polite"></p>
+        </section>
+
+        <details id="scan-details" class="scan-details-panel hidden">
+            <summary>Scan details</summary>
+            <div class="scan-details-content">
+                <p class="scan-details-count">Inspect windows found: <span id="inspect-count">0</span></p>
+                <p class="scan-details-label">Recognized titles</p>
+                <ul id="scan-titles" class="scan-titles"></ul>
+                <p id="scan-titles-empty" class="scan-titles-empty">No item name could be read.</p>
+                <p class="scan-details-label">Result</p>
+                <p id="scan-outcome" class="scan-outcome"></p>
+            </div>
+        </details>
+
+        <section class="search-panel" aria-label="Manual item search">
+            <form id="search-form" class="search-form">
+                <label for="search-name" class="sr-only">Item name</label>
+                <input id="search-name" name="itemName" type="search" placeholder="Item name…"
+                    autocomplete="off" spellcheck="false" maxlength="200" />
+                <button id="btn-search" type="submit" disabled>Search</button>
+            </form>
+            <button id="btn-scan" class="scan-button" type="button" disabled
+                title="Read the open Inspect window title in 3 seconds">
+                <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6 3H3v3M12 3h3v3M3 12v3h3M15 12v3h-3M6 9h6" /></svg>
+                <span>Scan now</span>
+            </button>
+        </section>
+
+        <details id="settings" class="settings-panel">
+            <summary>Settings<span id="key-indicator" class="key-indicator">API key required</span></summary>
+            <div class="settings-content">
+                <label class="check-row" title="Check the open Inspect window after a left-click"><input id="scan-automatic" type="checkbox" />
+                    <span>Automatic scanning</span></label>
+                <div class="select-row mode-row">
+                    <label for="game-mode">Game mode</label>
+                    <select id="game-mode">
+                        <option value="PVP">PVP</option>
+                        <option value="PVE">PVE</option>
+                        <option value="SEASON">SEASON</option>
+                    </select>
+                </div>
+                <div class="select-row">
+                    <label for="tracked-character">Tracked Items character</label>
+                    <select id="tracked-character" aria-describedby="characters-note">
+                        <option value="">Select a character…</option>
+                    </select>
+                </div>
+                <p id="characters-note" class="hint hidden"></p>
+                <div class="api-key-section">
+                    <label for="api-key">Tarkov Market API key</label>
+                    <div class="api-key-field">
+                        <input id="api-key" type="password" autocomplete="new-password" spellcheck="false"
+                            autocapitalize="none" placeholder="Enter API key" aria-describedby="api-key-hint" />
+                        <button id="btn-toggle-key" class="key-visibility-button" type="button" disabled
+                            aria-label="Show API key" title="Show API key" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /><path id="key-eye-slash" class="hidden" d="m4 4 16 16" /></svg>
+                        </button>
+                    </div>
+                    <div class="key-actions">
+                        <button id="btn-save-key" type="button" disabled>Save</button>
+                        <button id="btn-clear-key" type="button" class="subtle-button" disabled>Clear</button>
+                    </div>
+                    <p id="api-key-hint" class="hint">The API key is hidden by default. Use the eye icon to show it.</p>
+                </div>
+            </div>
+        </details>
+
+        <details class="help-panel">
+            <summary>How it works</summary>
+            <div class="help-content">
+                <p>In Settings, enter your Tarkov Market API key and click Save.
+                    The key is hidden by default; use the eye icon to show or hide it.</p>
+                <p>Choose a game mode: PVP, PVE or SEASON. If you have multiple characters, select one.
+                    Item prices use the game mode of the selected character.</p>
+                <p>Name scanning always uses English. Use English item names in the game and open the item's Inspect window.
+                    With Automatic scanning enabled, the app checks the title after a left-click while the game is in the foreground.
+                    It does not scan item names without an Inspect window.</p>
+                <p>After clicking Scan now, switch back to the game within 3 seconds and keep the item's Inspect window open.
+                    Manual scanning also works when Automatic scanning is off.</p>
+                <p>To search by name, enter the item's English name and click Search.
+                    This does not require an open Inspect window or Automatic scanning.</p>
+                <p>Flea Market shows Best price and 24-hour average price. Trader shows the best trader price.
+                    The price per slot appears in parentheses. Trader prices use the trader's own currency.</p>
+                <p>Items Tracker appears when the selected character still has an active mandatory requirement for the item.
+                    The whole panel is hidden when no such item requirement remains.</p>
+                <p>Stock shows the shared stock and the required quantity, for example 2/5.
+                    Found In Raid and Regular requirements appear on separate rows, but share the same stock.</p>
+                <p>Click Add to increase the selected character's shared Tracked Items stock in the API by one item.
+                    Items are added only when you click the button.</p>
+                <p>Completed quest and hideout requirements appear on separate rows, for example 4 items completed.
+                    These quantities indicate completion and do not increase stock.</p>
+                <p>Text recognition runs locally on screenshots. The app does not read or modify the game's memory
+                    and does not send screenshots to external services. Item prices and data come from the Tarkov Market API.</p>
+                <p>Closing either app window closes both windows.</p>
+            </div>
+        </details>
+    </main>
+    <script src="item.js"></script>
+</body>
+
+</html>

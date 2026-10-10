@@ -53,7 +53,7 @@ const i18n = {
         autocleanHint: 'Delete screenshots taken this session when the map changes',
         region: 'Region',
         events: 'Events',
-        quitHint: 'The X button minimizes to tray, full quit —',
+        quitHint: 'Closing either window exits the app —',
         quit: 'Quit',
         stWatching: 'watching',
         stNotFound: 'not found',
@@ -94,88 +94,12 @@ const i18n = {
         questErrorServer: 'The website could not complete the import. Try again later.',
         modePVP: 'PVP',
         modePVE: 'PVE',
-        modeSEASON: 'Seasonal PVP',
-    },
-    ru: {
-        updateAvailable: 'Доступна новая версия',
-        update: 'Обновить',
-        connectionKey: 'Ключ подключения',
-        save: 'Сохранить',
-        test: 'Тест',
-        clear: 'Удалить',
-        testing: 'Проверяю...',
-        clearing: 'Удаляю...',
-        checking: 'Проверяю...',
-        keyAccepted: 'Ключ принят — подключено',
-        testSent: 'Данные отправлены — активность обновлена на странице Pilot',
-        keyRemoved: 'Ключ подключения удалён',
-        keyRejected: 'Ключ не принят — возьмите новый на странице Pilot',
-        keyOffline: 'Нет связи с сервером — проверьте интернет / брандмауэр',
-        keyHint: 'Ключ — на странице Pilot:',
-        connNoKey: 'Не подключено — введите ключ подключения',
-        connChecking: 'Подключение...',
-        connOk: 'Подключено к',
-        connBadKey: 'Ключ не принят — возьмите новый на странице Pilot',
-        connOffline: 'Нет связи с сервером — проверьте интернет / брандмауэр',
-        statuses: 'Статусы',
-        gameFolder: 'Папка игры',
-        gameLogs: 'Логи игры',
-        screenshots: 'Скриншоты',
-        browse: 'Выбрать',
-        default: 'По умолчанию',
-        options: 'Опции',
-        autostart: 'Автозапуск с Windows',
-        autoclean: 'Удалять скриншоты сессии',
-        autocleanHint: 'Скриншоты, сделанные за сессию, удаляются при смене карты',
-        region: 'Регион',
-        events: 'События',
-        quitHint: 'Крестик сворачивает в трей, полный выход —',
-        quit: 'Выход',
-        stWatching: 'наблюдается',
-        stNotFound: 'не найдена',
-        stGameBad: 'внутри нет Logs — это точно папка игры?',
-        stLogsOff: 'не читаются — проверьте папку игры',
-        questSyncTitle: 'Прогресс квестов',
-        questSyncHint: 'Импорт завершённых квестов из логов EFT',
-        questSync: 'Синхронизировать',
-        questSyncHeading: 'Синхронизация квестов',
-        questSyncSince: 'Логи EFT начиная с 2026 года',
-        questSyncPrivacy: 'Pilot читает логи на этом ПК. На сайт отправляются только ID завершённых квестов и анонимный ключ персонажа.',
-        openPilotPage: 'Открыть страницу Pilot',
-        scanAgain: 'Сканировать заново',
-        questScanning: 'Сканирую логи EFT…',
-        questProfilesFound: 'Найдено персонажей: {profiles}, завершённых квестов: {quests}.',
-        questNoProfiles: 'В логах с 2026 года не найдено персонажей с завершёнными квестами.',
-        questProfileTitle: '{mode} PMC №{index}',
-        questCompleted: 'Завершено квестов: {count}',
-        questPeriod: 'События в логах: {first} — {last}',
-        questMatched: 'Распознано сайтом: {matched}; пропущено: {ignored}',
-        questImportExisting: 'Загрузить в существующего PMC',
-        questNoMatchingCharacters: 'На сайте ещё нет PMC для этого режима.',
-        questCharacter: '{name} · {fraction} · уровень {level}',
-        questLinked: 'привязан',
-        questImport: 'Загрузить',
-        questCreateNew: 'Или создать нового PMC',
-        questCreateImport: 'Создать и загрузить',
-        questWorking: 'Сохраняю прогресс квестов…',
-        questSuccess: 'Готово: новых — {imported}, уже завершено — {already}, пропущено — {ignored}.',
-        questErrorConnection: 'Сначала подключите Pilot к аккаунту на сайте.',
-        questErrorPro: 'Прогресс квестов доступен по подписке PRO.',
-        questErrorLogs: 'Логи EFT не найдены. Проверьте папку игры в Pilot.',
-        questErrorNetwork: 'Не удалось связаться с сайтом. Проверьте соединение и повторите.',
-        questErrorProfile: 'Этот локальный персонаж больше не найден. Просканируйте логи заново.',
-        questErrorCharacter: 'Выбранный PMC на сайте не найден.',
-        questErrorMode: 'Локальный персонаж и PMC на сайте относятся к разным режимам.',
-        questErrorTarget: 'Выберите PMC на сайте или создайте нового.',
-        questErrorServer: 'Сайт не смог завершить импорт. Попробуйте позже.',
-        modePVP: 'PVP',
-        modePVE: 'PVE',
-        modeSEASON: 'Сезонный PVP',
+        modeSEASON: 'SEASON',
     },
 };
 
-let lang = 'en';
-const t = (key) => (i18n[lang] && i18n[lang][key]) || i18n.en[key] || key;
+let websiteRegion = 'en';
+const t = (key) => i18n.en[key] || key;
 const tf = (key, values = {}) => Object.entries(values).reduce(
     (text, [name, value]) => text.replaceAll('{' + name + '}', String(value)),
     t(key),
@@ -189,8 +113,8 @@ const applyLang = () => {
     document.querySelectorAll('[data-i18n-title]').forEach((el) => {
         el.title = t(el.dataset.i18nTitle);
     });
-    document.getElementById('lang-en').classList.toggle('active', lang === 'en');
-    document.getElementById('lang-ru').classList.toggle('active', lang === 'ru');
+    document.getElementById('lang-en').classList.toggle('active', websiteRegion === 'en');
+    document.getElementById('lang-ru').classList.toggle('active', websiteRegion === 'ru');
     updateHookAction();
     if (questSyncState) renderQuestProfiles();
 };
@@ -224,12 +148,13 @@ const updateHookAction = () => {
 const render = (st) => {
     lastState = st;
 
-    if (st.lang && st.lang !== lang) {
-        lang = st.lang;
+    if (st.lang && st.lang !== websiteRegion) {
+        websiteRegion = st.lang;
         applyLang();
     }
 
     $('version').textContent = 'v' + st.version;
+    $('plus-version').textContent = st.plusVersion ? 'v' + st.plusVersion : '—';
 
     // update
     $('update-banner').classList.toggle('hidden', !st.updateReady);
@@ -293,7 +218,7 @@ const questModeName = (mode) => t('mode' + mode);
 const questDate = (value) => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '—';
-    return date.toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', {
+    return date.toLocaleDateString('en-US', {
         day: '2-digit', month: 'short', year: 'numeric',
     });
 };
@@ -564,9 +489,9 @@ const bind = () => {
 
     $('btn-quit').addEventListener('click', () => App().Quit());
 
-    // custom title bar buttons (frameless window): the X, like the native one, hides to tray
+    // Both windows share the application's lifetime.
     $('btn-min').addEventListener('click', () => window.runtime.WindowMinimise());
-    $('btn-close').addEventListener('click', () => window.runtime.WindowHide());
+    $('btn-close').addEventListener('click', () => App().Quit());
 
     $('btn-browse-game').addEventListener('click', async () => render(await App().BrowseGameFolder()));
     $('btn-clear-game').addEventListener('click', async () => render(await App().ClearGameFolder()));
@@ -587,10 +512,10 @@ const bind = () => {
         if (e.key === 'Escape') closeQuestSync();
     });
 
-    // "Region" = UI language + website (en → .com, ru → .ru).
+    // Region selects the website (en → .com, ru → .ru); the interface stays in English.
     // Update lastState too: otherwise render(lastState) would instantly roll the choice back
     const switchRegion = async (l) => {
-        lang = l;
+        websiteRegion = l;
         if (lastState) {
             lastState.lang = l;
             lastState.host = l === 'ru' ? 'tarkov-market.ru' : 'tarkov-market.com';

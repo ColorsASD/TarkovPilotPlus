@@ -21,6 +21,7 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/internal/detect"
 	"github.com/ggdiam/TarkovPilot/app/internal/updater"
 	"github.com/ggdiam/TarkovPilot/app/internal/watcher"
+	"github.com/ggdiam/TarkovPilot/app/plus"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -35,6 +36,7 @@ const (
 // State — a state snapshot for the frontend
 type State struct {
 	Version       string `json:"version"`
+	PlusVersion   string `json:"plusVersion"`
 	LatestVersion string `json:"latestVersion"`
 	UpdateReady   bool   `json:"updateReady"`
 
@@ -79,6 +81,8 @@ type App struct {
 	statusCh chan struct{}
 
 	questSyncMu sync.Mutex
+
+	companion *plus.Companion
 }
 
 func NewApp() *App {
@@ -98,6 +102,7 @@ func NewApp() *App {
 	a.logs.OnMap = a.onMapChange
 	a.logs.OnQuest = a.onQuest
 	a.logs.OnLog = a.logEvent
+	a.companion = plus.NewCompanion(a.Quit)
 
 	return a
 }
@@ -113,7 +118,7 @@ func (a *App) startup(ctx context.Context) {
 	if fi, err := os.Stat(eventsLogPath()); err == nil && fi.Size() > 1<<20 {
 		_ = os.Remove(eventsLogPath())
 	}
-	a.logEvent("App started, version " + Version)
+	a.logEvent("App started: TarkovPilot " + Version + "; TarkovPilot+ " + plus.Version)
 
 	a.restartWatchers()
 
@@ -148,6 +153,7 @@ func (a *App) startup(ctx context.Context) {
 // shutdown is called by Wails on exit: if auto-clean is enabled,
 // delete the current session's screenshots (same as on map change)
 func (a *App) shutdown(ctx context.Context) {
+	a.companion.Stop()
 	if config.Get().AutoClean {
 		if n := a.screens.CleanSessionScreenshots(); n > 0 {
 			a.logEvent(fmt.Sprintf("Screenshots deleted on exit: %d", n))
@@ -282,6 +288,9 @@ func (a *App) sendStatus() {
 
 // checkLatestVersion — poll the website version (the keyless channel)
 func (a *App) checkLatestVersion() {
+	if !plus.AutomaticUpdatesEnabled {
+		return
+	}
 	v, err := a.client.FetchLatestVersion()
 	if err != nil {
 		return
@@ -312,6 +321,9 @@ func versionNewer(a, b string) bool {
 // setLatestVersion remembers the latest version; a new version is notified
 // once (Windows notification), after that the Update banner in the window shows it
 func (a *App) setLatestVersion(v string) {
+	if !plus.AutomaticUpdatesEnabled {
+		return
+	}
 	if v == "" {
 		return
 	}
@@ -326,9 +338,6 @@ func (a *App) setLatestVersion(v string) {
 
 	if needNotify {
 		msg := "New version " + v + " is available — click Update in the TarkovPilot window"
-		if config.Get().Lang == "ru" {
-			msg = "Доступна новая версия " + v + " — нажмите «Обновить» в окне TarkovPilot"
-		}
 		if err := beeep.Notify("TarkovPilot", msg, ""); err != nil {
 			a.logEvent("Notify error: " + err.Error())
 		}
@@ -378,12 +387,12 @@ func appendEventsFile(msg string) {
 		return
 	}
 	defer f.Close()
-	_, _ = f.WriteString(time.Now().Format("2006-01-02 15:04:05") + "  " + msg + "\n")
+	_, _ = f.WriteString(time.Now().Format("2006.01.02. 15:04:05") + "  " + msg + "\n")
 }
 
 func (a *App) logEvent(msg string) {
 	a.mu.Lock()
-	stamp := time.Now().Format("15:04:05")
+	stamp := time.Now().Format("2006.01.02. 15:04:05")
 	a.eventLog = append([]string{stamp + "  " + msg}, a.eventLog...)
 	if len(a.eventLog) > maxEventLog {
 		a.eventLog = a.eventLog[:maxEventLog]
@@ -406,8 +415,9 @@ func (a *App) buildState() State {
 
 	return State{
 		Version:       Version,
+		PlusVersion:   plus.Version,
 		LatestVersion: latest,
-		UpdateReady:   versionNewer(latest, Version),
+		UpdateReady:   plus.AutomaticUpdatesEnabled && versionNewer(latest, Version),
 
 		HookId: cfg.HookId,
 		Host:   cfg.Host,
@@ -461,7 +471,7 @@ func (a *App) TestConnection() State {
 	return a.buildState()
 }
 
-// SetRegion — the "Region" switch: UI language and website change together
+// SetRegion changes the website; the interface stays in English.
 // (en → tarkov-market.com, ru → tarkov-market.ru)
 func (a *App) SetRegion(region string) State {
 	if region != "ru" {
@@ -631,11 +641,11 @@ func (a *App) OpenPilotPage() {
 	wailsRuntime.BrowserOpenURL(a.ctx, "https://"+config.Get().Host+"/pilot?way=app")
 }
 
-// DoUpdate starts self-update; on success the process will restart
+// DoUpdate a fork saját kiadási oldalát nyitja meg a kézi frissítéshez.
 func (a *App) DoUpdate() State {
-	a.logEvent("Updating...")
-	if err := updater.Update(config.Get().Host); err != nil {
-		a.logEvent("Update failed: " + err.Error())
+	a.logEvent("TarkovPilot+ can be updated manually from its own GitHub releases.")
+	if a.ctx != nil {
+		wailsRuntime.BrowserOpenURL(a.ctx, plus.ReleasesURL)
 	}
 	return a.buildState()
 }

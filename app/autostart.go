@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 
+	"github.com/ggdiam/TarkovPilot/app/plus"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -19,7 +20,7 @@ func autoStartCommand(exe string) string {
 
 func autoStartValueMatches(value, exe string) bool {
 	// Accept the old value so an existing opt-in can be migrated on startup.
-	return value == autoStartCommand(exe) || value == `"`+exe+`"`
+	return value == autoStartCommand(exe) || value == `"`+exe+`"` || plus.MatchesPreviousAutoStart(value, exe)
 }
 
 func isAutoStartEnabled() bool {
