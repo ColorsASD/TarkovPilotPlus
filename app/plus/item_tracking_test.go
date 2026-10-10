@@ -372,6 +372,14 @@ func TestConfirmedWriteSurvivesReadbackOrNotificationFailure(t *testing.T) {
 	if len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error != "" || state.Tracking.Adding || !strings.Contains(state.Tracking.Status, "Added 1 item") || !strings.Contains(state.Tracking.Status, "notification") {
 		t.Fatalf("confirmed PATCH remains successful without web notification/readback: %+v", state.Tracking)
 	}
+	if !a.trackedAt.IsZero() {
+		t.Fatal("failed readback must not mark the complete snapshot as freshly fetched")
+	}
+	fake.loadHook = nil
+	a.refreshTracking()
+	if fake.loads != 3 || a.trackedAt.IsZero() || a.GetState().Tracking.AvailableQuantity != 1 {
+		t.Fatal("the next scan must read fresh API data without losing confirmed stock")
+	}
 }
 
 func TestConcurrentAddIsSuppressed(t *testing.T) {
@@ -565,10 +573,107 @@ func TestOldCatalogResolvesBSGIDOnceAndPreservesItOnSameItem(t *testing.T) {
 	}
 }
 
+func TestTrackingCacheKeepsOriginalFetchTimeAndExpiresDuringRepeatedScans(t *testing.T) {
+	a, fake := newTrackingTestApp(t)
+	a.refreshTracking()
+	if fake.loads != 1 || a.trackedAt.IsZero() {
+		t.Fatal("initial tracking refresh must record a successful API fetch")
+	}
+	// Backdate the fetch instead of waiting for real time to pass. Repeated
+	// scans within the TTL must keep this exact timestamp, not restart it.
+	fetchedAt := time.Now().Add(-time.Second)
+	a.trackedAt = fetchedAt
+	fake.snapshot.Items[0].AvailableQuantity = 3
+	fake.snapshot.Items[0].RemainingQuantity = 4
+	for i := 0; i < 10; i++ {
+		a.refreshTracking()
+		if fake.loads != 1 || !a.trackedAt.Equal(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 0 {
+			t.Fatalf("cached scan %d renewed the original fetch or refetched prematurely: loads=%d fetchedAt=%v", i, fake.loads, a.trackedAt)
+		}
+	}
+	a.trackedAt = time.Now().Add(-6 * time.Second)
+	before := time.Now()
+	a.refreshTracking()
+	after := time.Now()
+	if fake.loads != 2 || a.GetState().Tracking.AvailableQuantity != 3 || a.trackedAt.Before(before) || a.trackedAt.After(after) {
+		t.Fatalf("expired snapshot must fetch changed stock and record the actual fetch time: loads=%d view=%+v fetchedAt=%v", fake.loads, a.GetState().Tracking, a.trackedAt)
+	}
+	fetchedAt = a.trackedAt
+	a.refreshTracking()
+	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) {
+		t.Fatal("newly fetched snapshot should be reusable without extending its lifetime")
+	}
+}
+
+func TestTrackingFailedRefreshDoesNotRenewExpiredSnapshot(t *testing.T) {
+	a, fake := newTrackingTestApp(t)
+	a.refreshTracking()
+	fetchedAt := time.Now().Add(-6 * time.Second)
+	a.trackedAt = fetchedAt
+	fake.snapshot.Items[0].AvailableQuantity = 2
+	fake.snapshot.Items[0].RemainingQuantity = 5
+	fake.loadHook = func(count int) (market.TrackedSnapshot, error) {
+		if count == 2 {
+			return market.TrackedSnapshot{}, errors.New("temporary API failure")
+		}
+		return cloneTrackedSnapshot(fake.snapshot), nil
+	}
+	a.refreshTracking()
+	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.trackedSnapshot.Items[0].AvailableQuantity != 0 || a.GetState().Tracking.Error == "" {
+		t.Fatal("failed fetch must preserve the expired snapshot and report the failure")
+	}
+	a.refreshTracking()
+	if fake.loads != 3 || !a.trackedAt.After(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 2 || a.GetState().Tracking.Error != "" {
+		t.Fatal("next scan must retry the expired snapshot and display fresh API stock")
+	}
+}
+
+func TestTrackingWrongProfileResponseDoesNotRenewSnapshot(t *testing.T) {
+	for _, profile := range []string{"character", "mode"} {
+		t.Run(profile, func(t *testing.T) {
+			a, fake := newTrackingTestApp(t)
+			a.refreshTracking()
+			fetchedAt := time.Now().Add(-6 * time.Second)
+			a.trackedAt = fetchedAt
+			if profile == "character" {
+				fake.snapshot.CharUID = "another-character"
+			} else {
+				fake.snapshot.GameMode = "PVE"
+			}
+			a.refreshTracking()
+			if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.trackedSnapshot.CharUID != "character-a" || a.trackedSnapshot.GameMode != "PVP" || a.GetState().Tracking.Error == "" {
+				t.Fatal("an incompatible API snapshot must not renew cached data")
+			}
+		})
+	}
+}
+
+func TestAddedStockIsReusedUntilItsReadbackExpires(t *testing.T) {
+	a, fake := newTrackingTestApp(t)
+	fake.snapshot.Items[0].AvailableQuantity = 3
+	fake.snapshot.Items[0].RemainingQuantity = 4
+	state := a.AddTrackedItem(trackingItemUID)
+	if fake.loads != 2 || len(fake.writes) != 1 || fake.writes[0].Quantity != 4 || state.Tracking.AvailableQuantity != 4 || a.trackedAt.IsZero() {
+		t.Fatal("Add must use fresh stock and record the successful readback")
+	}
+	fetchedAt := a.trackedAt
+	a.refreshTracking()
+	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 4 {
+		t.Fatal("rescanning after Add must retain the confirmed stock without renewing the fetch time")
+	}
+	a.trackedAt = time.Now().Add(-6 * time.Second)
+	fake.snapshot.Items[0].AvailableQuantity = 5
+	fake.snapshot.Items[0].RemainingQuantity = 2
+	a.refreshTracking()
+	if fake.loads != 3 || a.GetState().Tracking.AvailableQuantity != 5 {
+		t.Fatal("rescanning after expiry must fetch externally changed stock")
+	}
+}
+
 func TestTrackingResponseAndStateCopiesDoNotAlias(t *testing.T) {
 	a, _ := newTrackingTestApp(t)
 	snapshot := trackingFixture()
-	a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, snapshot, "")
+	a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, snapshot, time.Now(), "")
 	snapshot.Items[0].AvailableQuantity = 99
 	snapshot.Items[0].Sources[0].FIR = false
 	state := a.GetState()

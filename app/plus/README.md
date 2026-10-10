@@ -30,7 +30,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.0`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.0.0`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.0.1`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -41,7 +41,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.0.0`.
+version is `1.0.1`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `c1d4d219b8d951a5ba75dd913e8d6d2bbeebc847`, version

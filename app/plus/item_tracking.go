@@ -254,7 +254,8 @@ func (a *ItemWindowApp) refreshTracking() {
 	}
 	a.mu.Lock()
 	snapshot := cloneTrackedSnapshot(a.trackedSnapshot)
-	fresh := a.trackedRevision == opts.revision && snapshot.CharUID == opts.CharacterUID && !a.trackedAt.IsZero() && time.Since(a.trackedAt) < 5*time.Second
+	fetchedAt := a.trackedAt
+	fresh := a.trackedRevision == opts.revision && snapshot.CharUID == opts.CharacterUID && !fetchedAt.IsZero() && time.Since(fetchedAt) < 5*time.Second
 	a.mu.Unlock()
 	if !fresh {
 		var err error
@@ -263,8 +264,9 @@ func (a *ItemWindowApp) refreshTracking() {
 			a.trackingFailure(key, opts, item.UID, err)
 			return
 		}
+		fetchedAt = time.Now()
 	}
-	a.applyTracking(key, opts, item, snapshot, "")
+	a.applyTracking(key, opts, item, snapshot, fetchedAt, "")
 }
 
 func trackedView(item market.Item, snapshot market.TrackedSnapshot) *ItemTrackingState {
@@ -352,7 +354,7 @@ func cloneTrackedSnapshot(snapshot market.TrackedSnapshot) market.TrackedSnapsho
 	return snapshot
 }
 
-func (a *ItemWindowApp) applyTracking(key string, opts ItemOptions, item market.Item, snapshot market.TrackedSnapshot, status string) bool {
+func (a *ItemWindowApp) applyTracking(key string, opts ItemOptions, item market.Item, snapshot market.TrackedSnapshot, fetchedAt time.Time, status string) bool {
 	if snapshot.CharUID != opts.CharacterUID || !strings.EqualFold(snapshot.GameMode, opts.Mode) {
 		a.trackingFailure(key, opts, item.UID, market.ErrProgressNotFound)
 		return false
@@ -362,7 +364,8 @@ func (a *ItemWindowApp) applyTracking(key string, opts ItemOptions, item market.
 		a.mu.Unlock()
 		return false
 	}
-	a.trackedSnapshot, a.trackedRevision, a.trackedAt = cloneTrackedSnapshot(snapshot), opts.revision, time.Now()
+	// Reusing a snapshot must not extend its lifetime beyond the API fetch.
+	a.trackedSnapshot, a.trackedRevision, a.trackedAt = cloneTrackedSnapshot(snapshot), opts.revision, fetchedAt
 	if a.state.Item == nil || a.state.Item.UID != item.UID {
 		a.mu.Unlock()
 		return false
@@ -464,7 +467,7 @@ func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
 			return a.GetState()
 		}
 		if view.Error != "" {
-			a.applyTracking(key, opts, item, snapshot, "")
+			a.applyTracking(key, opts, item, snapshot, time.Now(), "")
 			return a.GetState()
 		}
 		if !view.Tracked {
@@ -486,10 +489,11 @@ func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
 		if errors.Is(err, market.ErrProgressWriteUncertain) {
 			current, readErr := a.tracker.LoadTracked(ctx, key, opts.CharacterUID, opts.Language)
 			if readErr == nil {
+				fetchedAt := time.Now()
 				observed := trackedView(item, current)
-				a.applyTracking(key, opts, item, current, "")
+				a.applyTracking(key, opts, item, current, fetchedAt, "")
 				if observed.Tracked && observed.Error == "" && observed.AvailableQuantity == target {
-					a.applyTracking(key, opts, item, current, "API stock verified: it contains the increased quantity.")
+					a.applyTracking(key, opts, item, current, fetchedAt, "API stock verified: it contains the increased quantity.")
 					return a.GetState()
 				}
 			}
@@ -518,10 +522,14 @@ func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
 		}
 		snapshot.Revision = result.Revision
 		current, readErr := a.tracker.LoadTracked(ctx, key, opts.CharacterUID, opts.Language)
+		var fetchedAt time.Time
 		if readErr == nil {
 			snapshot = current
+			fetchedAt = time.Now()
 		}
-		a.applyTracking(key, opts, item, snapshot, status)
+		// A failed readback keeps confirmed stock visible, but forces a fresh GET
+		// before the complete snapshot can be reused for another scan.
+		a.applyTracking(key, opts, item, snapshot, fetchedAt, status)
 		return a.GetState()
 	}
 	return a.GetState()
