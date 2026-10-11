@@ -18,6 +18,7 @@
     let initialRender = true;
     let state = {
         enabled: true, automatic: true, language: 'en', mode: 'PVP', hasAPIKey: false,
+        addHotkey: 'F1', addHotkeyReady: false, addHotkeyError: '',
         busy: false, status: 'no_key', error: '', ocrLanguages: [], cachedAt: '', stale: false, item: null, scanDetails: null,
         characterUid: '', characters: [], charactersLoading: false, charactersError: '', tracking: null,
     };
@@ -30,6 +31,8 @@
 
     const isBusy = () => localBusy || !!state.busy;
     const safeText = (value) => typeof value === 'string' ? value.slice(0, 500) : '';
+    const normalizedAddHotkey = (value) => value === 'off' ? 'off' :
+        typeof value === 'string' && /^F([1-9]|1[0-2])$/i.test(value.trim()) ? value.trim().toUpperCase() : 'F1';
     const positiveNumber = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
     const numberText = (value) => Math.round(value).toLocaleString('en-US');
     const localDateText = (value) => {
@@ -79,8 +82,11 @@
     };
     const canAddTracking = (tracking) => {
         const current = currentTracking();
-        return (!!nativeApp() || preview) && !isBusy() && state.hasAPIKey && !!state.characterUid &&
-            !!tracking && sameTrackingTarget(tracking) && tracking.tracked === true && tracking.requiredQuantity !== 0 &&
+        return (!!nativeApp() || preview) && !isBusy() && !safeText(state.error) && state.hasAPIKey && !!state.characterUid &&
+            !!safeText(state.item && state.item.uid) &&
+            !!safeText(state.item && state.item.bsgId) &&
+            !!tracking && sameTrackingTarget(tracking) && tracking.itemId === state.item.bsgId && tracking.tracked === true &&
+            Number.isSafeInteger(tracking.requiredQuantity) && tracking.requiredQuantity > 0 && tracking.firInventorySeparate !== true &&
             !tracking.loading && !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
             pendingOptions.size === 0 && !(current && Array.isArray(current.variants) && current.variants.length > 1);
     };
@@ -256,12 +262,23 @@
         updateKeyVisibility();
         $('btn-item-page').disabled = !available || busy || !state.item || !state.item.uid;
         $('scan-automatic').disabled = !available;
+        $('add-hotkey').disabled = !available;
+        const hotkey = normalizedAddHotkey(state.addHotkey);
+        const hotkeyError = safeText(state.addHotkeyError);
+        const hotkeyPending = pendingOptions.has('add-hotkey');
+        const hotkeyReady = hotkey !== 'off' && state.addHotkeyReady === true && !hotkeyError && !hotkeyPending;
+        $('add-hotkey-status').textContent = hotkeyPending ? 'Applying shortcut…' : hotkey === 'off' ?
+            'Shortcut disabled.' : hotkeyError || (hotkeyReady ? hotkey + ' is active globally.' : 'Shortcut is not active.');
+        $('add-hotkey-status').classList.toggle('error', !hotkeyPending && hotkey !== 'off' && !!hotkeyError);
         $('game-mode').disabled = !available;
         $('tracked-character').disabled = !available || localBusy || !state.hasAPIKey || !!state.charactersLoading ||
             !availableCharacters().length;
         const entries = trackingEntries();
         [...$('tracked-panels').children].forEach((panel, index) => {
             panel.querySelector('[data-tracked="add"]').disabled = !canAddTracking(entries[index]);
+            const badge = panel.querySelector('[data-tracked="add-hotkey"]');
+            badge.textContent = hotkey;
+            badge.classList.toggle('hidden', !hotkeyReady);
         });
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
@@ -314,6 +331,7 @@
             if (!pendingOptions.has(id) && active !== $(id)) $(id)[property] = value;
         };
         updateOption('scan-automatic', 'checked', !!state.enabled && !!state.automatic);
+        updateOption('add-hotkey', 'value', normalizedAddHotkey(state.addHotkey));
         updateOption('game-mode', 'value', String(state.mode || 'PVP').toUpperCase());
         renderCharacters();
         updateOption('tracked-character', 'value', safeText(state.characterUid));
@@ -368,16 +386,16 @@
 
     const previewVariants = preview && new URLSearchParams(window.location.search).get('variants') === '1';
     const sampleItem = previewVariants ? {
-        uid: 'preview-fuel-tank', name: 'Metal fuel tank', shortName: 'Fuel',
+        uid: 'preview-fuel-tank', bsgId: 'preview-tracked-item', name: 'Metal fuel tank', shortName: 'Fuel',
         price: 118000, avg24hPrice: 121600, traderName: 'Therapist', traderPrice: 28920, traderPriceCur: '₽', slots: 6,
         haveMarketData: true, bannedOnFlea: false,
     } : {
-        uid: 'preview-item', name: 'Galvion Caiman Hybrid helmet (MultiCam Alpine)', shortName: 'Caiman',
+        uid: 'preview-item', bsgId: 'preview-tracked-item', name: 'Galvion Caiman Hybrid helmet (MultiCam Alpine)', shortName: 'Caiman',
         price: 162000, avg24hPrice: 154800, traderName: 'Ragman', traderPrice: 25660, traderPriceCur: '₽', slots: 4,
         haveMarketData: true, bannedOnFlea: false,
     };
     let previewState = {
-        ...state, hasAPIKey: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
+        ...state, hasAPIKey: true, addHotkey: 'F1', addHotkeyReady: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
         characterUid: 'preview-character', characters: [{ charUid: 'preview-character', name: 'Sample character', gameMode: 'PVP' }],
         tracking: { itemUid: sampleItem.uid, itemId: 'preview-tracked-item', charUid: 'preview-character',
             tracked: true, loading: false, adding: false, availableQuantity: 0, requiredQuantity: 7,
@@ -397,7 +415,10 @@
         if (app && typeof app[method] === 'function') return app[method](...args);
         if (!preview) throw new Error('The app connection is unavailable.');
         if (method === 'RevealAPIKey') return previewState.hasAPIKey ? previewAPIKey : '';
-        if (method === 'SetOptions') previewState = { ...previewState, ...args[0] };
+        if (method === 'SetOptions') {
+            const addHotkey = normalizedAddHotkey(args[0].addHotkey);
+            previewState = { ...previewState, ...args[0], addHotkey, addHotkeyReady: addHotkey !== 'off', addHotkeyError: '' };
+        }
         if (method === 'SaveAPIKey') {
             previewAPIKey = args[0];
             previewState = { ...previewState, hasAPIKey: true, status: 'ready' };
@@ -438,6 +459,7 @@
 
     const readOptions = () => ({
         enabled: true, automatic: $('scan-automatic').checked,
+        addHotkey: normalizedAddHotkey($('add-hotkey').value),
         language: 'en', mode: $('game-mode').value, characterUid: $('tracked-character').value,
     });
     const saveOptions = (event) => {
@@ -574,7 +596,7 @@
             await action('ClearAPIKey', [], 'API key cleared.');
             updateControls();
         });
-        ['scan-automatic', 'game-mode', 'tracked-character'].forEach((id) => $(id).addEventListener('change', saveOptions));
+        ['scan-automatic', 'add-hotkey', 'game-mode', 'tracked-character'].forEach((id) => $(id).addEventListener('change', saveOptions));
         $('preview-label').classList.toggle('hidden', !preview);
         try {
             if (!preview && window.runtime && typeof window.runtime.EventsOn === 'function') window.runtime.EventsOn('item-state', render);

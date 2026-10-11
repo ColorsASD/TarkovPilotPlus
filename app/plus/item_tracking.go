@@ -453,16 +453,22 @@ func (a *ItemWindowApp) trackingFailure(key string, opts ItemOptions, uid string
 	a.emit()
 }
 
-// One explicit button click adds one to freshly read stock. A rejected revision
+// One explicit button click or shortcut press adds one to freshly read stock. A rejected revision
 // may be reconciled once. An uncertain write is only read back, never replayed.
 func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
+	return a.addTrackedItem(uid, nil)
+}
+
+func (a *ItemWindowApp) addTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget) ItemState {
 	if !a.trackingMu.TryLock() {
 		return a.GetState()
 	}
 	defer a.trackingMu.Unlock()
 	a.mu.Lock()
 	key, opts := a.apiKey, a.state.ItemOptions
-	if a.tracker == nil || key == "" || a.state.Item == nil || a.state.Item.UID != uid || a.state.Tracking == nil || a.state.Tracking.ItemUID != uid || a.state.Tracking.ItemID != a.state.Item.BSGID || !a.state.Tracking.Tracked || a.state.Tracking.Loading || a.state.Tracking.Adding || a.state.Tracking.Error != "" || a.state.Tracking.CharUID != opts.CharacterUID {
+	if !a.canAddTrackedItemLocked() || a.state.Item.UID != uid || (hotkeyTarget != nil &&
+		(a.addHotkeyTarget.Load() != hotkeyTarget || !a.state.AddHotkeyReady || normalizeTrackedAddHotkey(opts.AddHotkey) == "off" ||
+			hotkeyTarget.UID != uid || hotkeyTarget.ItemID != a.state.Item.BSGID || hotkeyTarget.CharUID != opts.CharacterUID || hotkeyTarget.Revision != opts.revision)) {
 		a.mu.Unlock()
 		return a.GetState()
 	}
@@ -500,6 +506,10 @@ func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
 		}
 		if !view.Tracked {
 			a.trackingFailure(key, opts, uid, market.ErrProgressNotFound)
+			return a.GetState()
+		}
+		if view.RequiredQuantity <= 0 {
+			a.applyTracking(key, opts, item, snapshot, time.Now(), "")
 			return a.GetState()
 		}
 		if view.AvailableQuantity >= 1_000_000_000 {

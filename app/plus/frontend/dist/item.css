@@ -126,7 +126,8 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .tracked-requirement-row, .tracked-completed-row { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
 .tracked-requirement-row dt, .tracked-completed-row dt { min-width: 0; overflow-wrap: anywhere; }
 .tracked-requirement-row dd, .tracked-completed-row dd { min-width: 0; margin: 0; color: var(--accent-light); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; user-select: text; }
-.tracked-add-button { width: 100%; margin-top: 8px; padding: 5px 9px; font-size: 12px; }
+.tracked-add-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 8px; padding: 5px 9px; font-size: 12px; }
+.add-hotkey-badge { border: 1px solid #665d4b; border-radius: 3px; padding: 0 4px; color: var(--muted); font: 10px/1.5 "Segoe UI", Tahoma, sans-serif; }
 .tracked-status, .tracked-error { margin: 6px 0 0; font-size: 11px; overflow-wrap: anywhere; user-select: text; }
 .tracked-status { color: var(--muted); }
 .tracked-error { color: var(--error); }

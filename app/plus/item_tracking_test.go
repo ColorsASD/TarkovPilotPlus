@@ -226,8 +226,19 @@ func TestCompletedSourcesKeepOriginalQuantitySeparateFromStock(t *testing.T) {
 		t.Fatal("returned completion data aliases private application state")
 	}
 	state := a.AddTrackedItem(trackingItemUID)
+	if len(fake.writes) != 0 || fake.loads != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.CompletedSources[0].Quantity != 4 {
+		t.Fatalf("a hidden tracker with no active demand must not add stock or change completion: writes=%+v view=%+v", fake.writes, state.Tracking)
+	}
+	// A separate active source makes Add available again; historical completion
+	// must remain independent of both the new demand and the shared stock.
+	fake.snapshot.Items[0].RequiredQuantity = 1
+	fake.snapshot.Items[0].RemainingQuantity = 1
+	fake.snapshot.Items[0].Sources = append(fake.snapshot.Items[0].Sources,
+		market.TrackedSource{Type: "hideout", Amount: 1, RemainingRequiredQuantity: 1})
+	a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
+	state = a.AddTrackedItem(trackingItemUID)
 	if len(fake.writes) != 1 || fake.writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 ||
-		state.Tracking.RequiredQuantity != 0 || len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 4 {
+		state.Tracking.RequiredQuantity != 1 || len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 4 {
 		t.Fatalf("adding actual stock changed historical completion: writes=%+v view=%+v", fake.writes, state.Tracking)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -36,6 +37,7 @@ type ItemOptions struct {
 	Language     string `json:"language"`
 	Mode         string `json:"mode"`
 	CharacterUID string `json:"characterUid"`
+	AddHotkey    string `json:"addHotkey"`
 	revision     uint64
 }
 
@@ -54,6 +56,8 @@ type ItemState struct {
 	CharactersLoading bool               `json:"charactersLoading"`
 	CharactersError   string             `json:"charactersError"`
 	Tracking          *ItemTrackingState `json:"tracking"`
+	AddHotkeyReady    bool               `json:"addHotkeyReady"`
+	AddHotkeyError    string             `json:"addHotkeyError"`
 }
 
 type ItemScanDetails struct {
@@ -74,6 +78,11 @@ type ItemWindowApp struct {
 	mu                  sync.Mutex
 	scanMu              sync.Mutex
 	trackingMu          sync.Mutex
+	hotkeyConfigMu      sync.Mutex
+	addHotkey           *trackedAddHotkey
+	addHotkeyRequests   chan *trackedAddHotkeyTarget
+	addHotkeyTarget     atomic.Pointer[trackedAddHotkeyTarget]
+	addHotkeyPending    atomic.Bool
 	trackingWriteCancel context.CancelFunc
 	tracker             trackingAPI
 	trackingRequests    chan struct{}
@@ -102,7 +111,7 @@ func NewItemWindowApp() (*ItemWindowApp, error) {
 		return nil, err
 	}
 	a := &ItemWindowApp{dir: dir, ocr: scanner.New(nameScanScript)}
-	a.state.ItemOptions = ItemOptions{Enabled: true, Automatic: true, Language: itemScanLanguage, Mode: "pvp"}
+	a.state.ItemOptions = ItemOptions{Enabled: true, Automatic: true, Language: itemScanLanguage, Mode: "pvp", AddHotkey: defaultTrackedAddHotkey}
 	a.state.OCRLanguages = []string{itemScanLanguage}
 	a.state.Status = "Enter your Tarkov Market API key in settings."
 	if data, err := os.ReadFile(filepath.Join(dir, "item-settings.json")); err == nil {
@@ -135,6 +144,7 @@ func NewItemWindowApp() (*ItemWindowApp, error) {
 func normalizeItemOptions(o ItemOptions) ItemOptions {
 	// A kompatibilis language mező megmarad, de a tárgyjelző mindig angol.
 	o.Language = itemScanLanguage
+	o.AddHotkey = normalizeTrackedAddHotkey(o.AddHotkey)
 	o.Mode = strings.ToLower(o.Mode)
 	o.CharacterUID = strings.TrimSpace(o.CharacterUID)
 	if len(o.CharacterUID) > 128 || strings.ContainsAny(o.CharacterUID, "/\\\r\n\x00") {
@@ -174,6 +184,7 @@ func (a *ItemWindowApp) startup(ctx context.Context, parent windows.Handle) {
 	}()
 	go a.watchInspectClicks()
 	go a.runTracking()
+	a.startTrackedAddHotkey()
 	a.requestTracking()
 }
 
@@ -181,6 +192,7 @@ func (a *ItemWindowApp) shutdown(context.Context) {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	a.stopTrackedAddHotkey()
 	_ = a.ocr.Close()
 }
 
@@ -205,6 +217,7 @@ func (a *ItemWindowApp) GetState() ItemState {
 }
 
 func (a *ItemWindowApp) emit() {
+	a.publishTrackedAddHotkey()
 	if a.wailsCtx != nil {
 		wailsRuntime.EventsEmit(a.wailsCtx, "item-state", a.GetState())
 	}
@@ -240,7 +253,12 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 	options.revision = a.state.ItemOptions.revision + 1
 	a.cancelTrackingWriteLocked()
 	changed := a.state.Mode != options.Mode || a.state.Language != options.Language
+	hotkeyChanged := a.state.AddHotkey != options.AddHotkey
 	a.state.ItemOptions = options
+	if hotkeyChanged {
+		a.state.AddHotkeyReady = false
+		a.state.AddHotkeyError = ""
+	}
 	a.state.Tracking = nil
 	a.state.CharactersError = ""
 	a.state.Error = ""
@@ -261,6 +279,7 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 		a.state.Status = "Waiting for an item Inspect window."
 	}
 	a.mu.Unlock()
+	a.configureTrackedAddHotkey()
 	a.emit()
 	a.requestTracking()
 	return a.GetState()
@@ -396,7 +415,24 @@ func (a *ItemWindowApp) refreshCatalog() {
 }
 
 func (a *ItemWindowApp) ScanNow() ItemState {
-	go a.scan(false, 3*time.Second)
+	if !a.scanMu.TryLock() {
+		return a.GetState()
+	}
+	a.mu.Lock()
+	if a.ctx == nil || a.ctx.Err() != nil || !a.state.Enabled || !a.state.HasAPIKey {
+		a.mu.Unlock()
+		a.scanMu.Unlock()
+		return a.GetState()
+	}
+	a.state.Busy = true
+	a.state.Error = ""
+	a.state.Status = "Switch back to the game; scanning starts in 3 seconds…"
+	a.mu.Unlock()
+	a.emit()
+	go func() {
+		defer a.scanMu.Unlock()
+		a.scanLocked(false, 3*time.Second)
+	}()
 	return a.GetState()
 }
 
@@ -411,6 +447,14 @@ func (a *ItemWindowApp) scan(automatic bool, delay time.Duration) {
 func (a *ItemWindowApp) scanLocked(automatic bool, delay time.Duration) {
 	st := a.GetState()
 	if !st.Enabled || !st.HasAPIKey || (automatic && !st.Automatic) {
+		if !automatic {
+			// ScanNow publishes Busy before scheduling this operation. Options
+			// may disable scanning before the goroutine gets to this check.
+			a.mu.Lock()
+			a.state.Busy = false
+			a.mu.Unlock()
+			a.emit()
+		}
 		return
 	}
 	if !automatic {
@@ -640,7 +684,7 @@ func (a *ItemWindowApp) acceptItem(item market.Item, found bool, opts ItemOption
 	}
 }
 
-func (a *ItemWindowApp) SearchItem(name string) ItemState {
+func (a *ItemWindowApp) SearchItem(name string) (result ItemState) {
 	if strings.TrimSpace(name) == "" || len(name) > 512 {
 		return a.GetState()
 	}
@@ -648,6 +692,19 @@ func (a *ItemWindowApp) SearchItem(name string) ItemState {
 		return a.GetState()
 	}
 	defer a.scanMu.Unlock()
+	a.mu.Lock()
+	a.state.Busy = true
+	a.state.Error = ""
+	a.state.Status = "Searching for item…"
+	a.mu.Unlock()
+	a.emit()
+	defer func() {
+		a.mu.Lock()
+		a.state.Busy = false
+		a.mu.Unlock()
+		a.emit()
+		result = a.GetState()
+	}()
 	catalog, opts, err := a.catalog()
 	if err != nil && len(catalog.Items) == 0 {
 		a.errorRevision(opts.revision, marketError(err))

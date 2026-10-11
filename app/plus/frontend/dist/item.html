@@ -73,7 +73,7 @@
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <dl data-tracked="completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
                 <button data-tracked="add" class="tracked-add-button" type="button" disabled
-                    title="Add 1 item to shared Tracked Items stock for the selected character">Add</button>
+                    title="Add 1 item to shared Tracked Items stock for the selected character"><span>Add</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
             </div>
             <p data-tracked="status" class="tracked-status hidden" role="status" aria-live="polite"></p>
             <p data-tracked="error" class="tracked-error hidden" role="alert"></p>
@@ -121,6 +121,26 @@
             <div class="settings-content">
                 <label class="check-row" title="Check the open Inspect window after a left-click"><input id="scan-automatic" type="checkbox" />
                     <span>Automatic scanning</span></label>
+                <div class="select-row">
+                    <label for="add-hotkey">Add shortcut</label>
+                    <select id="add-hotkey" aria-describedby="add-hotkey-status add-hotkey-hint">
+                        <option value="off">Disabled</option>
+                        <option value="F1" selected>F1</option>
+                        <option value="F2">F2</option>
+                        <option value="F3">F3</option>
+                        <option value="F4">F4</option>
+                        <option value="F5">F5</option>
+                        <option value="F6">F6</option>
+                        <option value="F7">F7</option>
+                        <option value="F8">F8</option>
+                        <option value="F9">F9</option>
+                        <option value="F10">F10</option>
+                        <option value="F11">F11</option>
+                        <option value="F12">F12</option>
+                    </select>
+                </div>
+                <p id="add-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <p id="add-hotkey-hint" class="hint">The shortcut is reserved globally for normal Windows keyboard input while the app runs, even when Add is unavailable. Select Disabled to release it.</p>
                 <div class="select-row mode-row">
                     <label for="game-mode">Game mode</label>
                     <select id="game-mode">
@@ -175,8 +195,12 @@
                     The whole panel is hidden when no such item requirement remains.</p>
                 <p>Stock shows the shared stock and the required quantity, for example 2/5.
                     Found In Raid and Regular requirements appear on separate rows, but share the same stock.</p>
-                <p>Click Add to increase the selected character's shared Tracked Items stock in the API by one item.
-                    Items are added only when you click the button.</p>
+                <p>Click Add or press the Add shortcut (F1 by default) to increase the selected character's shared Tracked Items stock in the API by one item.
+                    The shortcut works while the game is in the foreground, but only when the loaded item's Add button is available.
+                    Each physical press adds at most one item; holding the key does not repeat.</p>
+                <p>Choose a different Add shortcut in Settings, or select Disabled to release the key.
+                    While enabled, the key is reserved globally for normal Windows keyboard input even when no item can be added.
+                    Apps that use direct keyboard input may still receive the key.</p>
                 <p>Completed quest and hideout requirements appear on separate rows, for example 4 items completed.
                     These quantities indicate completion and do not increase stock.</p>
                 <p>Text recognition runs locally on screenshots. The app does not read or modify the game's memory
