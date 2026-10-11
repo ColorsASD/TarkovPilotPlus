@@ -117,8 +117,10 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .price-row dd, .tracked-stock-row dd { margin: 0; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; user-select: text; max-width: 176px; overflow-wrap: anywhere; }
 .slot-price-note { color: var(--muted); font-size: 11px; font-weight: 500; }
 .market-note { margin: 9px 0 0; padding-top: 7px; border-top: 1px solid #363636; color: var(--muted); font-size: 11px; }
+.tracked-panels { display: flex; flex-direction: column; gap: 9px; }
 .tracked-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px; }
 .tracked-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
+.tracked-variant-name { margin: 5px 0 0; color: var(--accent-light); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .tracked-stock-list { margin: 7px 0 0; }
 .tracked-requirements, .tracked-completed-sources { display: flex; flex-direction: column; gap: 5px; margin: 5px 0 0; font-size: 11px; }
 .tracked-requirement-row, .tracked-completed-row { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
@@ -129,7 +131,7 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .tracked-status { color: var(--muted); }
 .tracked-error { color: var(--error); }
 .tracked-panel > .tracked-status:first-of-type { margin-top: 0; }
-.tracked-panel:has(#tracked-content:not(.hidden)) > .tracked-status { margin-top: 6px; }
+.tracked-panel:has([data-tracked="content"]:not(.hidden)) > .tracked-status { margin-top: 6px; }
 .scan-status { padding: 1px 1px 2px; }
 .status-line { display: flex; align-items: flex-start; gap: 7px; }
 .status-dot { width: 6px; height: 6px; margin-top: 6px; background: var(--muted); border-radius: 50%; flex: 0 0 6px; }

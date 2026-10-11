@@ -71,6 +71,19 @@
     };
     const sameTrackingTarget = (target) => !!target && !!state.item &&
         target.itemUid === state.item.uid && target.charUid === state.characterUid;
+    const trackingEntries = () => {
+        const tracking = currentTracking();
+        if (!tracking) return [];
+        return Array.isArray(tracking.variants) && tracking.variants.length ? tracking.variants.filter((variant) =>
+            variant && typeof variant === 'object' && sameTrackingTarget(variant)) : [tracking];
+    };
+    const canAddTracking = (tracking) => {
+        const current = currentTracking();
+        return (!!nativeApp() || preview) && !isBusy() && state.hasAPIKey && !!state.characterUid &&
+            !!tracking && sameTrackingTarget(tracking) && tracking.tracked === true && tracking.requiredQuantity !== 0 &&
+            !tracking.loading && !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
+            pendingOptions.size === 0 && !(current && Array.isArray(current.variants) && current.variants.length > 1);
+    };
     const quantityText = (value) => Number.isInteger(value) && value >= 0 ? numberText(value) : '—';
     const itemsText = (value) => quantityText(value) + (value === 1 ? ' item' : ' items');
     const availableCharacters = () => (Array.isArray(state.characters) ? state.characters : []).filter((character) =>
@@ -108,8 +121,9 @@
         $('characters-note').classList.toggle('error', !!error);
     };
 
-    const renderTracking = () => {
-        const tracking = currentTracking();
+    const trackingCards = new Map();
+    const renderTrackingCard = (panel, tracking, multipleVariants, variantLabel) => {
+        const element = (name) => panel.querySelector('[data-tracked="' + name + '"]');
         const tracked = !!tracking && tracking.tracked === true;
         const adding = sameTrackingTarget(addingTracking) || !!tracking && !!tracking.adding;
         const failure = sameTrackingTarget(trackingFailure) ? trackingFailure.message : '';
@@ -128,12 +142,16 @@
         const separateInventory = tracked && tracking.firInventorySeparate === true;
         const completedSources = tracked && Array.isArray(tracking.completedSources) ? tracking.completedSources.filter((source) =>
             source && typeof source === 'object' && !Array.isArray(source)) : [];
-        $('tracked-panel').classList.toggle('hidden', noRequiredQuantity || !tracked && !error && !(tracking && tracking.loading) && !adding);
-        $('tracked-content').classList.toggle('hidden', !tracked || noRequiredQuantity);
-        $('tracked-ratio').textContent = tracked ? noRequiredQuantity ? itemsText(tracking.availableQuantity) :
+        panel.classList.toggle('hidden', noRequiredQuantity || !tracked && !error && !(tracking && tracking.loading) && !adding);
+        element('content').classList.toggle('hidden', !tracked || noRequiredQuantity);
+        const variantName = multipleVariants ? variantLabel : '';
+        element('variant-name').textContent = variantName;
+        element('variant-name').classList.toggle('hidden', !variantName);
+        panel.setAttribute('aria-label', variantName ? 'Items Tracker: ' + variantName : 'Items Tracker');
+        element('ratio').textContent = tracked ? noRequiredQuantity ? itemsText(tracking.availableQuantity) :
             quantityText(tracking.availableQuantity) + '/' + quantityText(tracking.requiredQuantity) : '—/—';
-        $('tracked-ratio').setAttribute('aria-label', noRequiredQuantity ? 'Stock quantity' : 'Available / required quantity');
-        $('tracked-requirements').replaceChildren(...visibleRequirements.map((requirement) => {
+        element('ratio').setAttribute('aria-label', noRequiredQuantity ? 'Stock quantity' : 'Available / required quantity');
+        element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
             const row = document.createElement('div');
             row.className = 'tracked-requirement-row';
             row.dataset.kind = requirement.kind;
@@ -144,8 +162,8 @@
             row.append(label, quantity);
             return row;
         }));
-        $('tracked-requirements').classList.toggle('hidden', !visibleRequirements.length);
-        $('tracked-completed-sources').replaceChildren(...completedSources.map((source) => {
+        element('requirements').classList.toggle('hidden', !visibleRequirements.length);
+        element('completed-sources').replaceChildren(...completedSources.map((source) => {
             const row = document.createElement('div');
             row.className = 'tracked-completed-row';
             row.dataset.type = source.type === 'quest' || source.type === 'hideout' ? source.type : 'unknown';
@@ -160,13 +178,44 @@
             }
             return row;
         }));
-        $('tracked-completed-sources').classList.toggle('hidden', !completedSources.length);
-        $('btn-add-tracked').title = 'Add 1 item to ' + (separateInventory ? '' : 'shared ') +
-            'Tracked Items stock for the selected character';
-        $('tracked-status').textContent = status;
-        $('tracked-status').classList.toggle('hidden', !status);
-        $('tracked-error').textContent = error;
-        $('tracked-error').classList.toggle('hidden', !error);
+        element('completed-sources').classList.toggle('hidden', !completedSources.length);
+        const add = element('add');
+        add.disabled = !canAddTracking(tracking);
+        add.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
+            'Add 1 item to ' + (separateInventory ? '' : 'shared ') + 'Tracked Items stock for the selected character';
+        element('status').textContent = status;
+        element('status').classList.toggle('hidden', !status);
+        element('error').textContent = error;
+        element('error').classList.toggle('hidden', !error);
+    };
+    const renderTracking = () => {
+        const entries = trackingEntries();
+        const panels = $('tracked-panels');
+        const keys = new Set();
+        const names = entries.map((tracking) => safeText(tracking.variantName).trim());
+        entries.forEach((tracking, index) => {
+            const key = JSON.stringify([tracking.itemUid, tracking.charUid, tracking.variantName || '', index]);
+            keys.add(key);
+            let panel = trackingCards.get(key);
+            if (!panel) {
+                panel = $('tracked-panel-template').content.firstElementChild.cloneNode(true);
+                panel.querySelector('[data-tracked="add"]').addEventListener('click', () => addTrackedItem());
+                trackingCards.set(key, panel);
+            }
+            const name = names[index];
+            const duplicateName = name && names.filter((candidate) => candidate.toLowerCase() === name.toLowerCase()).length > 1;
+            const variantLabel = !name ? 'Variant ' + (index + 1) :
+                duplicateName ? name + ' · Variant ' + (index + 1) : name;
+            renderTrackingCard(panel, tracking, entries.length > 1, variantLabel);
+            if (panels.children[index] !== panel) panels.insertBefore(panel, panels.children[index] || null);
+        });
+        for (const [key, panel] of trackingCards) {
+            if (!keys.has(key)) {
+                panel.remove();
+                trackingCards.delete(key);
+            }
+        }
+        panels.classList.toggle('hidden', !entries.length || entries.every((_, index) => panels.children[index].classList.contains('hidden')));
     };
 
     const showFeedback = (message, error = false) => {
@@ -210,10 +259,10 @@
         $('game-mode').disabled = !available;
         $('tracked-character').disabled = !available || localBusy || !state.hasAPIKey || !!state.charactersLoading ||
             !availableCharacters().length;
-        const tracking = currentTracking();
-        $('btn-add-tracked').disabled = !available || busy || !state.hasAPIKey || !state.characterUid || !tracking ||
-            tracking.tracked !== true || tracking.requiredQuantity === 0 || !!tracking.loading || !!tracking.adding || !!safeText(tracking.error) ||
-            sameTrackingTarget(trackingFailure) || pendingOptions.size > 0;
+        const entries = trackingEntries();
+        [...$('tracked-panels').children].forEach((panel, index) => {
+            panel.querySelector('[data-tracked="add"]').disabled = !canAddTracking(entries[index]);
+        });
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
         $('btn-scan').querySelector('span').textContent = busy ? 'Processing…' : 'Scan now';
@@ -317,7 +366,12 @@
         updateControls();
     };
 
-    const sampleItem = {
+    const previewVariants = preview && new URLSearchParams(window.location.search).get('variants') === '1';
+    const sampleItem = previewVariants ? {
+        uid: 'preview-fuel-tank', name: 'Metal fuel tank', shortName: 'Fuel',
+        price: 118000, avg24hPrice: 121600, traderName: 'Therapist', traderPrice: 28920, traderPriceCur: '₽', slots: 6,
+        haveMarketData: true, bannedOnFlea: false,
+    } : {
         uid: 'preview-item', name: 'Galvion Caiman Hybrid helmet (MultiCam Alpine)', shortName: 'Caiman',
         price: 162000, avg24hPrice: 154800, traderName: 'Ragman', traderPrice: 25660, traderPriceCur: '₽', slots: 4,
         haveMarketData: true, bannedOnFlea: false,
@@ -329,6 +383,14 @@
             tracked: true, loading: false, adding: false, availableQuantity: 0, requiredQuantity: 7,
             remainingQuantity: 7, requirement: 'fir', requirements: [{ kind: 'fir', requiredQuantity: 7 }], error: '', status: '' },
     };
+    if (previewVariants) {
+        const variantError = 'Tarkov Market API cannot update variants that share the same item ID separately.';
+        const full = { ...previewState.tracking, variantName: 'Metal fuel tank (100/100)', availableQuantity: 1,
+            requiredQuantity: 4, remainingQuantity: 3, requirement: 'fir', requirements: [{ kind: 'fir', requiredQuantity: 4 }], error: variantError };
+        const empty = { ...previewState.tracking, variantName: 'Metal fuel tank (0/100)', availableQuantity: 2,
+            requiredQuantity: 6, remainingQuantity: 4, requirement: 'regular', requirements: [{ kind: 'regular', requiredQuantity: 6 }], error: variantError };
+        previewState.tracking = { ...full, variants: [full, empty] };
+    }
     let previewAPIKey = 'preview-api-key';
     const call = async (method, ...args) => {
         const app = nativeApp();
@@ -345,7 +407,8 @@
             previewState = { ...previewState, hasAPIKey: false, status: 'no_key', item: null, characterUid: '', characters: [], tracking: null };
         }
         if (method === 'SearchItem' || method === 'ScanNow') previewState = { ...previewState, item: sampleItem, status: 'Item recognized.' };
-        if (method === 'AddTrackedItem' && previewState.tracking && args[0] === previewState.tracking.itemUid) {
+        if (method === 'AddTrackedItem' && previewState.tracking && !previewState.tracking.error &&
+            !previewState.tracking.variants && args[0] === previewState.tracking.itemUid) {
             const availableQuantity = previewState.tracking.availableQuantity + 1;
             previewState = { ...previewState, tracking: { ...previewState.tracking, availableQuantity,
                 remainingQuantity: Math.max(0, previewState.tracking.requiredQuantity - availableQuantity), status: 'Added 1 item to Tracked Items stock.' } };
@@ -409,8 +472,7 @@
 
     const addTrackedItem = async () => {
         const tracking = currentTracking();
-        if (isBusy() || !state.hasAPIKey || !tracking || !tracking.tracked || tracking.requiredQuantity === 0 || tracking.loading || tracking.adding ||
-            safeText(tracking.error) || sameTrackingTarget(trackingFailure) || pendingOptions.size > 0 || !state.characterUid) return;
+        if (!canAddTracking(tracking)) return;
         const target = { itemUid: state.item.uid, charUid: state.characterUid };
         addingTracking = target;
         trackingFailure = null;
@@ -499,7 +561,6 @@
             }
         });
         $('btn-scan').addEventListener('click', () => action('ScanNow'));
-        $('btn-add-tracked').addEventListener('click', addTrackedItem);
         $('btn-save-key').addEventListener('click', async () => {
             const key = $('api-key').value.trim();
             if (!key || keyFromStorage || isBusy()) return;

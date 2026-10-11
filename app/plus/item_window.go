@@ -191,12 +191,7 @@ func (a *ItemWindowApp) GetState() ItemState {
 	st.Language = itemScanLanguage
 	st.OCRLanguages = itemOCRLanguages(a.state.OCRLanguages)
 	st.Characters = cloneCharacters(a.state.Characters)
-	if st.Tracking != nil {
-		tracking := *st.Tracking
-		tracking.Requirements = append([]ItemTrackingRequirement(nil), st.Tracking.Requirements...)
-		tracking.CompletedSources = append([]ItemTrackingCompletedSource(nil), st.Tracking.CompletedSources...)
-		st.Tracking = &tracking
-	}
+	st.Tracking = cloneTrackingState(st.Tracking)
 	if st.Item != nil {
 		item := *st.Item
 		st.Item = &item

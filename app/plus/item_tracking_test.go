@@ -148,7 +148,7 @@ func TestAddTrackedItemReadsFreshStockAndAddsExactlyOne(t *testing.T) {
 	if len(fake.writes) != 1 || fake.writes[0] != (stockWrite{"character-a", trackingBSGID, "revision-1", 4}) || fake.loads != 2 {
 		t.Fatalf("must read, write +1 with current revision, then read back: %+v, reads=%d", fake.writes, fake.loads)
 	}
-	if state.Tracking.AvailableQuantity != 4 || state.Tracking.RequiredQuantity != 7 || state.Tracking.RemainingQuantity != 3 || state.Tracking.Adding || state.Tracking.Error != "" || !strings.Contains(state.Tracking.Status, "Added 1 item") {
+	if state.Tracking.AvailableQuantity != 4 || state.Tracking.RequiredQuantity != 7 || state.Tracking.RemainingQuantity != 3 || state.Tracking.Adding || state.Tracking.Error != "" || state.Tracking.Variants != nil || !strings.Contains(state.Tracking.Status, "Added 1 item") {
 		t.Fatalf("incorrect saved view: %+v", state.Tracking)
 	}
 }
@@ -786,6 +786,152 @@ func variantTrackingFixture() market.TrackedSnapshot {
 	return snapshot
 }
 
+func detailedVariantTrackingFixture() market.TrackedSnapshot {
+	snapshot := variantTrackingFixture()
+	snapshot.Items[0].Sources = []market.TrackedSource{
+		{Type: "quest", FIR: true, RemainingRequiredQuantity: 3},
+		{Type: "hideout", RemainingRequiredQuantity: 1},
+		{Type: "quest", QuestID: "completed-fuel-quest", Amount: 5, Completed: true},
+	}
+	snapshot.Items[1].Sources = append(snapshot.Items[1].Sources,
+		market.TrackedSource{Type: "hideout", UpgradeKey: "completed-fuel-upgrade", Amount: 11, Completed: true},
+	)
+	return snapshot
+}
+
+func TestDuplicateVariantsExposeIndependentStockRequirementsAndCompletion(t *testing.T) {
+	snapshot := detailedVariantTrackingFixture()
+	view := trackedView(market.Item{UID: trackingItemUID, BSGID: trackingBSGID, Name: "Metal fuel tank"}, snapshot)
+	if len(view.Variants) != 2 {
+		t.Fatalf("both matching API rows must be exposed, excluding unrelated items: %+v", view)
+	}
+	full, empty := view.Variants[0], view.Variants[1]
+	if !full.Tracked || full.VariantName != "Metal fuel tank" || full.AvailableQuantity != 1 || full.RequiredQuantity != 4 || full.RemainingQuantity != 3 ||
+		full.Requirement != "mixed" || len(full.Requirements) != 2 ||
+		full.Requirements[0] != (ItemTrackingRequirement{Kind: "fir", RequiredQuantity: 3}) ||
+		full.Requirements[1] != (ItemTrackingRequirement{Kind: "regular", RequiredQuantity: 1}) ||
+		len(full.CompletedSources) != 1 || full.CompletedSources[0] != (ItemTrackingCompletedSource{Type: "quest", Quantity: 5}) {
+		t.Fatalf("full variant inherited, summed, or lost another row's data: %+v", full)
+	}
+	if !empty.Tracked || empty.VariantName != "Metal fuel tank (0/100)" || empty.AvailableQuantity != 2 || empty.RequiredQuantity != 6 || empty.RemainingQuantity != 4 ||
+		empty.Requirement != "regular" || len(empty.Requirements) != 1 ||
+		empty.Requirements[0] != (ItemTrackingRequirement{Kind: "regular", RequiredQuantity: 6}) ||
+		len(empty.CompletedSources) != 1 || empty.CompletedSources[0] != (ItemTrackingCompletedSource{Type: "hideout", Quantity: 11}) {
+		t.Fatalf("empty variant inherited, summed, or lost another row's data: %+v", empty)
+	}
+	for _, variant := range view.Variants {
+		if variant.ItemID != trackingBSGID || variant.ItemUID != trackingItemUID || variant.CharUID != "character-a" || variant.Error == "" || len(variant.Variants) != 0 {
+			t.Fatalf("each row must retain its identity and block unsupported separate stock writes: %+v", variant)
+		}
+	}
+}
+
+func TestDuplicateVariantsKeepAllRowsWithoutAnExactScannedName(t *testing.T) {
+	snapshot := detailedVariantTrackingFixture()
+	snapshot.Items = append(snapshot.Items, market.TrackedItem{
+		ItemID: trackingBSGID, Name: "Metal fuel tank (50/100)", AvailableQuantity: 3, RequiredQuantity: 9, RemainingQuantity: 6,
+		Sources: []market.TrackedSource{{Type: "quest", FIR: true, RemainingRequiredQuantity: 9}},
+	})
+	for _, name := range []string{"Unknown alias", "", "Metal fuel tank (50/100)"} {
+		t.Run(name, func(t *testing.T) {
+			view := trackedView(market.Item{UID: trackingItemUID, BSGID: trackingBSGID, Name: name}, snapshot)
+			if len(view.Variants) != 3 || view.Error == "" {
+				t.Fatalf("scanned alias must not hide or collapse same-ID rows: %+v", view)
+			}
+			wantNames := []string{"Metal fuel tank", "Metal fuel tank (0/100)", "Metal fuel tank (50/100)"}
+			for i, stock := range []int64{1, 2, 3} {
+				if variant := view.Variants[i]; variant.AvailableQuantity != stock || variant.VariantName != wantNames[i] {
+					t.Fatalf("variant %d lost its original API row: %+v", i, variant)
+				}
+			}
+			third := view.Variants[2]
+			if third.RequiredQuantity != 9 || third.RemainingQuantity != 6 || len(third.Requirements) != 1 ||
+				third.Requirements[0] != (ItemTrackingRequirement{Kind: "fir", RequiredQuantity: 9}) {
+				t.Fatalf("third variant must preserve its independent requirements: %+v", third)
+			}
+		})
+	}
+	// Even identical names cannot identify a stock write, but both rows must be
+	// available to display separately instead of silently choosing the first.
+	snapshot.Items[1].Name = snapshot.Items[0].Name
+	view := trackedView(market.Item{UID: trackingItemUID, BSGID: trackingBSGID, Name: "Metal fuel tank"}, snapshot)
+	if view.Tracked || len(view.Variants) != 3 || view.Variants[0].AvailableQuantity != 1 || view.Variants[1].AvailableQuantity != 2 {
+		t.Fatalf("duplicate display names must preserve their separate rows: %+v", view)
+	}
+}
+
+func TestDuplicateVariantStateCopiesIsolateNestedRowsAndSlices(t *testing.T) {
+	a, _ := newTrackingTestApp(t)
+	a.state.Item.Name = "Metal fuel tank"
+	snapshot := detailedVariantTrackingFixture()
+	if !a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, snapshot, time.Now(), "") {
+		t.Fatal("valid variant snapshot was not applied")
+	}
+	state := a.GetState()
+	state.Tracking.Variants[0].VariantName = "changed"
+	state.Tracking.Variants[0].AvailableQuantity = 99
+	state.Tracking.Variants[0].Requirements[0].RequiredQuantity = 88
+	state.Tracking.Variants[0].CompletedSources[0].Quantity = 77
+	state.Tracking.Variants[1].Requirements[0].Kind = "changed"
+	state.Tracking.Variants[1].CompletedSources[0].Type = "changed"
+	state.Tracking.Variants[1] = nil
+	state.Tracking.Requirements[0].RequiredQuantity = 66
+	snapshot.Items[0].AvailableQuantity = 55
+	snapshot.Items[0].Sources[0].RemainingRequiredQuantity = 44
+	fresh := a.GetState()
+	if len(fresh.Tracking.Variants) != 2 || fresh.Tracking.Variants[0].VariantName != "Metal fuel tank" ||
+		fresh.Tracking.Variants[0].AvailableQuantity != 1 || fresh.Tracking.Variants[0].Requirements[0].RequiredQuantity != 3 ||
+		fresh.Tracking.Variants[0].CompletedSources[0].Quantity != 5 || fresh.Tracking.Variants[1] == nil ||
+		fresh.Tracking.Variants[1].Requirements[0].Kind != "regular" || fresh.Tracking.Variants[1].CompletedSources[0].Type != "hideout" ||
+		fresh.Tracking.Requirements[0].RequiredQuantity != 3 || a.trackedSnapshot.Items[0].AvailableQuantity != 1 ||
+		a.trackedSnapshot.Items[0].Sources[0].RemainingRequiredQuantity != 3 {
+		t.Fatalf("returned variants or incoming API slices aliased private state: %+v", fresh.Tracking)
+	}
+}
+
+func TestDuplicateVariantsRefreshBothStocksAfterOriginalCacheExpires(t *testing.T) {
+	a, fake := newTrackingTestApp(t)
+	a.state.Item.Name = "Metal fuel tank"
+	fake.snapshot = detailedVariantTrackingFixture()
+	a.refreshTracking()
+	if fake.loads != 1 || len(a.GetState().Tracking.Variants) != 2 {
+		t.Fatal("initial API response must populate both variant rows")
+	}
+	fetchedAt := time.Now().Add(-time.Second)
+	a.trackedAt = fetchedAt
+	fake.snapshot.Items[0].AvailableQuantity = 5
+	fake.snapshot.Items[0].RemainingQuantity = 0
+	fake.snapshot.Items[1].AvailableQuantity = 7
+	fake.snapshot.Items[1].RemainingQuantity = 0
+	a.refreshTracking()
+	cached := a.GetState().Tracking.Variants
+	if fake.loads != 1 || !a.trackedAt.Equal(fetchedAt) || cached[0].AvailableQuantity != 1 || cached[1].AvailableQuantity != 2 {
+		t.Fatal("cached variants must preserve both original stocks and fetch time")
+	}
+	a.trackedAt = time.Now().Add(-6 * time.Second)
+	a.refreshTracking()
+	fresh := a.GetState().Tracking.Variants
+	if fake.loads != 2 || len(fresh) != 2 || fresh[0].AvailableQuantity != 5 || fresh[1].AvailableQuantity != 7 ||
+		fresh[0].RemainingQuantity != 0 || fresh[1].RemainingQuantity != 0 || fresh[0].RequiredQuantity != 4 || fresh[1].RequiredQuantity != 6 {
+		t.Fatalf("next API refresh must independently update every variant: loads=%d variants=%+v", fake.loads, fresh)
+	}
+}
+
+func TestDisplayedDuplicateVariantsNeverSendUnsupportedStockWrites(t *testing.T) {
+	for _, name := range []string{"Metal fuel tank", "Metal fuel tank (0/100)", "Unknown alias", ""} {
+		t.Run(name, func(t *testing.T) {
+			a, fake := newTrackingTestApp(t)
+			a.state.Item.Name = name
+			fake.snapshot = detailedVariantTrackingFixture()
+			a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
+			state := a.AddTrackedItem(trackingItemUID)
+			if len(fake.writes) != 0 || fake.loads != 0 || state.Tracking.Adding || len(state.Tracking.Variants) != 2 || state.Tracking.Error == "" {
+				t.Fatalf("read-only variants must never invent a selector or issue a stock write: writes=%+v loads=%d view=%+v", fake.writes, fake.loads, state.Tracking)
+			}
+		})
+	}
+}
+
 func TestDuplicateBSGVariantsDoNotBlockUnrelatedTrackedItems(t *testing.T) {
 	snapshot := variantTrackingFixture()
 	view := trackedView(market.Item{UID: "normal-market-uid", BSGID: "normal-item", Name: "Secure Flash drive"}, snapshot)
@@ -847,7 +993,7 @@ func TestDuplicateVariantDiscoveredDuringFreshReadCannotBeWritten(t *testing.T) 
 	a.state.Item.Name = "Metal fuel tank"
 	fake.snapshot = variantTrackingFixture()
 	state := a.AddTrackedItem(trackingItemUID)
-	if len(fake.writes) != 0 || !state.Tracking.Tracked || state.Tracking.Error == "" || state.Tracking.AvailableQuantity != 1 || state.Tracking.Adding {
+	if len(fake.writes) != 0 || !state.Tracking.Tracked || state.Tracking.Error == "" || state.Tracking.AvailableQuantity != 1 || state.Tracking.Adding || len(state.Tracking.Variants) != 2 || state.Tracking.Variants[1].AvailableQuantity != 2 {
 		t.Fatalf("fresh read must catch ID ambiguity before PATCH: %+v %+v", fake.writes, state.Tracking)
 	}
 	a.AddTrackedItem(trackingItemUID)

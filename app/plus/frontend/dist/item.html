@@ -63,18 +63,22 @@
             <p id="market-note" class="market-note hidden"></p>
         </section>
 
-        <section id="tracked-panel" class="tracked-panel hidden" aria-label="Tracked Items">
-            <div id="tracked-content" class="hidden">
+        <div id="tracked-panels" class="tracked-panels hidden" aria-label="Items Tracker"></div>
+        <template id="tracked-panel-template">
+        <section class="tracked-panel" aria-label="Items Tracker">
+            <div data-tracked="content" class="hidden">
                 <div class="tracked-heading"><h2>Items Tracker</h2></div>
-                <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd id="tracked-ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
-                <dl id="tracked-requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
-                <dl id="tracked-completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
-                <button id="btn-add-tracked" class="tracked-add-button" type="button" disabled
+                <p data-tracked="variant-name" class="tracked-variant-name hidden"></p>
+                <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
+                <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
+                <dl data-tracked="completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
+                <button data-tracked="add" class="tracked-add-button" type="button" disabled
                     title="Add 1 item to shared Tracked Items stock for the selected character">Add</button>
             </div>
-            <p id="tracked-status" class="tracked-status hidden" role="status" aria-live="polite"></p>
-            <p id="tracked-error" class="tracked-error hidden" role="alert"></p>
+            <p data-tracked="status" class="tracked-status hidden" role="status" aria-live="polite"></p>
+            <p data-tracked="error" class="tracked-error hidden" role="alert"></p>
         </section>
+        </template>
 
         <section class="scan-status" aria-label="Scan status">
             <div class="status-line"><span id="status-dot" class="status-dot" aria-hidden="true"></span>

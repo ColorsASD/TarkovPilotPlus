@@ -22,6 +22,8 @@ type ItemTrackingState struct {
 	ItemUID           string                        `json:"itemUid"`
 	ItemID            string                        `json:"itemId"`
 	CharUID           string                        `json:"charUid"`
+	VariantName       string                        `json:"variantName,omitempty"`
+	Variants          []*ItemTrackingState          `json:"variants,omitempty"`
 	Loading           bool                          `json:"loading"`
 	Adding            bool                          `json:"adding"`
 	Tracked           bool                          `json:"tracked"`
@@ -271,33 +273,43 @@ func (a *ItemWindowApp) refreshTracking() {
 
 func trackedView(item market.Item, snapshot market.TrackedSnapshot) *ItemTrackingState {
 	view := &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: snapshot.CharUID, Requirement: "unknown"}
-	matched := -1
-	matchingIDs, matchingNames := 0, 0
-	for index, tracked := range snapshot.Items {
+	var matches []market.TrackedItem
+	matchedName, matchingNames := -1, 0
+	for _, tracked := range snapshot.Items {
 		if tracked.ItemID != item.BSGID || item.BSGID == "" {
 			continue
 		}
-		matchingIDs++
-		if matched < 0 {
-			matched = index
-		}
+		matches = append(matches, tracked)
 		if strings.EqualFold(strings.TrimSpace(tracked.Name), strings.TrimSpace(item.Name)) && strings.TrimSpace(item.Name) != "" {
 			matchingNames++
-			matched = index
+			matchedName = len(matches) - 1
 		}
 	}
-	if matched < 0 {
+	if len(matches) == 0 {
 		return view
 	}
-	if matchingIDs > 1 {
-		view.Error = "Tarkov Market returned multiple item variants with the same ID. The target is ambiguous, so stock changes cannot be sent for this item."
-		// Az árkatalógus teljes neve alapján egyetlen változat adatai olvashatók,
-		// de a PATCH csak a közös BSG-azonosítót fogadja, így azt nem küldjük el.
-		if matchingNames != 1 {
-			return view
-		}
+	if len(matches) == 1 {
+		return trackedRecordView(item, snapshot, matches[0])
 	}
-	tracked := snapshot.Items[matched]
+	// Each API row keeps its own stock and requirements. The documented PATCH
+	// accepts only the shared item ID, so these separate rows remain read-only.
+	variants := make([]*ItemTrackingState, 0, len(matches))
+	for _, tracked := range matches {
+		variant := trackedRecordView(item, snapshot, tracked)
+		variant.VariantName = tracked.Name
+		variant.Error = "Separate stock updates are unavailable for variants sharing an item ID in the current Tarkov Market API."
+		variants = append(variants, variant)
+	}
+	if matchingNames == 1 {
+		*view = *variants[matchedName]
+	}
+	view.Error = "Tarkov Market returned multiple item variants with the same ID. The target is ambiguous, so stock changes cannot be sent for this item."
+	view.Variants = variants
+	return view
+}
+
+func trackedRecordView(item market.Item, snapshot market.TrackedSnapshot, tracked market.TrackedItem) *ItemTrackingState {
+	view := &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: snapshot.CharUID, Requirement: "unknown"}
 	view.Tracked = true
 	view.InventorySeparate = snapshot.FIRInventorySeparate
 	if snapshot.FIRInventorySeparate && view.Error == "" {
@@ -344,6 +356,22 @@ func trackedView(item market.Item, snapshot market.TrackedSnapshot) *ItemTrackin
 		view.Requirement = "regular"
 	}
 	return view
+}
+
+func cloneTrackingState(tracking *ItemTrackingState) *ItemTrackingState {
+	if tracking == nil {
+		return nil
+	}
+	copy := *tracking
+	copy.Requirements = append([]ItemTrackingRequirement(nil), tracking.Requirements...)
+	copy.CompletedSources = append([]ItemTrackingCompletedSource(nil), tracking.CompletedSources...)
+	if tracking.Variants != nil {
+		copy.Variants = make([]*ItemTrackingState, len(tracking.Variants))
+		for i, variant := range tracking.Variants {
+			copy.Variants[i] = cloneTrackingState(variant)
+		}
+	}
+	return &copy
 }
 
 func cloneTrackedSnapshot(snapshot market.TrackedSnapshot) market.TrackedSnapshot {
