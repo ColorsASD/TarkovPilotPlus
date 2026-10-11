@@ -1,6 +1,6 @@
 # In-memory geometric fixtures. This file never captures or activates a window.
 # The scanner test loads it after the embedded helper's definitions.
-function New-InspectionFixture([string]$kind, [double]$scale, [bool]$closeControl, [bool]$leftHandle = $false) {
+function New-InspectionFixture([string]$kind, [double]$scale, [bool]$closeControl, [bool]$leftHandle = $false, [string]$titleText = 'Synthetic item inspection title') {
     $bitmap = New-Object Drawing.Bitmap(800, 450, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     $pen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(225, 225, 225), 1.5)
@@ -22,7 +22,7 @@ function New-InspectionFixture([string]$kind, [double]$scale, [bool]$closeContro
                 # even when they sit beside a dark caption and a framed item panel.
                 $graphics.DrawString('ARMBAND COVERS ON SLING SHEATH', $font, [Drawing.Brushes]::White, 65, 45)
             } else {
-                $graphics.DrawString('Synthetic item inspection title', $font, [Drawing.Brushes]::White, 85, 45)
+                $graphics.DrawString($titleText, $font, [Drawing.Brushes]::White, 85, 45)
             }
             if ($closeControl) { $graphics.FillRectangle($redBrush, 666, 42, 20, 18) }
         } elseif ($kind -eq 'search') {
@@ -106,7 +106,28 @@ function Test-InspectionGeometry {
             }
         }
     }
+    foreach ($failure in @(Test-ShortInspectionTitles)) { $failures.Add($failure) }
     foreach ($failure in @(Test-TitleVariantProtocol)) { $failures.Add($failure) }
+    return $failures.ToArray()
+}
+
+function Test-ShortInspectionTitles {
+    $failures = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($title in @('Awl', 'UV')) {
+        foreach ($scale in @(0.75, 1.0, 1.25, 1.5, 2.0)) {
+            foreach ($closeControl in @($false, $true)) {
+                foreach ($leftHandle in @($false, $true)) {
+                    $bitmap = New-InspectionFixture 'inspect' $scale $closeControl $leftHandle $title
+                    try {
+                        $found = [TarkovPilotCapture.InspectionDetector]::Detect($bitmap)
+                        if ($found.Count -ne 1) {
+                            $failures.Add(('Short Inspect title rejected: {0}, scale={1}, close={2}, leftHandle={3}, detected={4}' -f $title, $scale, $closeControl, $leftHandle, $found.Count))
+                        }
+                    } finally { $bitmap.Dispose() }
+                }
+            }
+        }
+    }
     return $failures.ToArray()
 }
 

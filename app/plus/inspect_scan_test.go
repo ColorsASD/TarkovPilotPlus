@@ -182,6 +182,42 @@ func TestOpenedInspectMatchesLocalCatalogOnEveryClick(t *testing.T) {
 	}
 }
 
+func TestAutomaticAwlInspectionMatchesThreeCharacterCatalogName(t *testing.T) {
+	f := &inspectScannerFixture{
+		probe: scanner.Result{Active: true, InspectOpen: true, InspectCount: 1, Fingerprint: "awl-header"},
+		result: scanner.Result{
+			Active: true, InspectOpen: true, InspectCount: 1, Fingerprint: "awl-header",
+			TitleVariants: [][]string{{"Awl", "Awi"}}, Languages: []string{"en"},
+		},
+	}
+	a := inspectTestApp(f)
+	a.apiKey = "local-fixture-placeholder"
+	cacheDir := t.TempDir()
+	data, err := json.Marshal(map[string]any{
+		"version": 1, "mode": "pvp", "lang": "en", "updatedAt": time.Now(),
+		"items": []market.Item{
+			{UID: "awl", Name: "Awl"},
+			{UID: "splint", Name: "Immobilizing splint"},
+			{UID: "bayonet", Name: "ER FULCRUM BAYONET"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(cacheDir, "catalog-pvp-en.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.client = market.NewClient(cacheDir)
+	a.scan(true, 0)
+	st := a.GetState()
+	if f.probes != 1 || f.reads != 1 || st.Item == nil || st.Item.UID != "awl" || st.Busy || st.Error != "" {
+		t.Fatalf("the automatic workflow rejected or mismatched the three-character Awl title: probes=%d reads=%d state=%+v", f.probes, f.reads, st)
+	}
+	if st.ScanDetails == nil || st.ScanDetails.InspectCount != 1 || st.ScanDetails.Outcome != "Item recognized: Awl" {
+		t.Fatalf("the automatic Awl recognition details are missing: %+v", st.ScanDetails)
+	}
+}
+
 func TestAutomaticSwitchOffKeepsManualScanAndNameSearch(t *testing.T) {
 	f := &inspectScannerFixture{
 		probe:  scanner.Result{Active: true, InspectOpen: true},

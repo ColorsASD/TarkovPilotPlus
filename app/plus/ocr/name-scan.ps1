@@ -297,7 +297,10 @@ namespace TarkovPilotCapture {
                         lastInk = x;
                     } else if (lastInk >= 0 && x - lastInk > size * 3) break;
                 }
-                if (firstInk < 0 || firstInk - start > size * 2 || ink < size * 2 || lastInk - firstInk < size * 2) continue;
+                // The marker and dialog borders already establish an Inspect
+                // header. Short names such as Awl need only one marker-width
+                // of title ink; requiring two rejects them before OCR runs.
+                if (firstInk < 0 || firstInk - start > size * 2 || ink < size * 2 || lastInk - firstInk < size) continue;
                 return new Rectangle(Math.Max(start, firstInk - 2), top, Math.Min(end, lastInk + 3) - Math.Max(start, firstInk - 2), bottom - top);
             }
             return Rectangle.Empty;
