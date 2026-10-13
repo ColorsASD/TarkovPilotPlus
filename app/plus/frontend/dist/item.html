@@ -72,13 +72,17 @@
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <dl data-tracked="completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
+                <button data-tracked="add-fir" class="tracked-add-button" type="button" disabled
+                    title="Add 1 Found in Raid item to Tracked Items stock for the selected character"><span>Add Found in Raid item</span><kbd data-tracked="add-fir-hotkey" class="add-hotkey-badge hidden">F1</kbd></button>
                 <button data-tracked="add" class="tracked-add-button" type="button" disabled
-                    title="Add 1 item to shared Tracked Items stock for the selected character"><span>Add</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                    title="Add 1 item to shared Tracked Items stock for the selected character"><span data-tracked="add-label">Add Regular item</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
             </div>
             <p data-tracked="status" class="tracked-status hidden" role="status" aria-live="polite"></p>
             <p data-tracked="error" class="tracked-error hidden" role="alert"></p>
         </section>
         </template>
+
+        <button id="btn-handover" class="hidden" type="button" disabled>Hand in Items</button>
 
         <section class="scan-status" aria-label="Scan status">
             <div class="status-line"><span id="status-dot" class="status-dot" aria-hidden="true"></span>
@@ -122,25 +126,24 @@
                 <label class="check-row" title="Check the open Inspect window after a left-click"><input id="scan-automatic" type="checkbox" />
                     <span>Automatic scanning</span></label>
                 <div class="select-row">
-                    <label for="add-hotkey">Add shortcut</label>
-                    <select id="add-hotkey" aria-describedby="add-hotkey-status add-hotkey-hint">
-                        <option value="off">Disabled</option>
-                        <option value="F1" selected>F1</option>
-                        <option value="F2">F2</option>
-                        <option value="F3">F3</option>
-                        <option value="F4">F4</option>
-                        <option value="F5">F5</option>
-                        <option value="F6">F6</option>
-                        <option value="F7">F7</option>
-                        <option value="F8">F8</option>
-                        <option value="F9">F9</option>
-                        <option value="F10">F10</option>
-                        <option value="F11">F11</option>
-                        <option value="F12">F12</option>
-                    </select>
+                    <label for="fir-hotkey">Found in Raid shortcut</label>
+                    <div class="shortcut-field">
+                        <input id="fir-hotkey" type="text" value="F1" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="fir-hotkey-status add-hotkey-hint" />
+                        <button id="btn-disable-fir-hotkey" type="button">Disable</button>
+                    </div>
+                </div>
+                <p id="fir-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <div class="select-row">
+                    <label for="add-hotkey">Regular shortcut</label>
+                    <div class="shortcut-field">
+                        <input id="add-hotkey" type="text" value="F2" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="add-hotkey-status add-hotkey-hint" />
+                        <button id="btn-disable-add-hotkey" type="button">Disable</button>
+                    </div>
                 </div>
                 <p id="add-hotkey-status" class="hint" role="status" aria-live="polite"></p>
-                <p id="add-hotkey-hint" class="hint">The shortcut is reserved globally for normal Windows keyboard input while the app runs, even when Add is unavailable. Select Disabled to release it.</p>
+                <p id="add-hotkey-hint" class="hint">Focus a shortcut field and press a key or a combination with Ctrl, Alt or Shift. Use Disable to release that shortcut. Enabled shortcuts are reserved globally for normal Windows keyboard input while the app runs, even when adding is unavailable.</p>
                 <div class="select-row mode-row">
                     <label for="game-mode">Game mode</label>
                     <select id="game-mode">
@@ -156,6 +159,52 @@
                     </select>
                 </div>
                 <p id="characters-note" class="hint hidden"></p>
+                <button id="btn-refresh-local" type="button">Refresh progress</button>
+                <p id="local-progress-status" class="hint hidden" role="status" aria-live="polite"></p>
+                <section id="progress-sync-panel" class="progress-sync-panel" aria-labelledby="progress-sync-title">
+                    <h3 id="progress-sync-title">Pending uploads</h3>
+                    <dl class="stock-editor-summary">
+                        <div><dt>Operations</dt><dd id="progress-sync-count">—</dd></div>
+                        <div><dt>Items</dt><dd id="progress-sync-items">—</dd></div>
+                    </dl>
+                    <p id="progress-sync-status" class="hint hidden" role="status" aria-live="polite"></p>
+                    <p id="progress-sync-error" class="hint error hidden" role="alert"></p>
+                    <ul id="progress-sync-operations" class="progress-sync-operations hidden" aria-label="Pending upload items"></ul>
+                </section>
+                <div class="local-backup-panel" aria-label="Items Tracker backup">
+                    <div class="local-backup-toolbar">
+                        <button id="btn-import-local" type="button" disabled>Import</button>
+                        <button id="btn-export-local" type="button" disabled>Export</button>
+                    </div>
+                    <p id="local-backup-status" class="hint hidden" role="status" aria-live="polite"></p>
+                    <p id="local-backup-error" class="hint error hidden" role="alert"></p>
+                </div>
+                <details id="stock-editor" class="stock-editor-panel">
+                    <summary>Items Tracker</summary>
+                    <div class="stock-editor-content">
+                        <label for="stock-editor-search" class="sr-only">Search tracked items</label>
+                        <input id="stock-editor-search" type="search" placeholder="Search items…"
+                            autocomplete="off" spellcheck="false" maxlength="200" />
+                        <div class="stock-editor-toolbar">
+                            <button id="btn-refresh-stock-editor" type="button" disabled>Refresh</button>
+                            <button id="btn-retry-market-upload" class="hidden" type="button" disabled>Retry saved upload</button>
+                        </div>
+                        <p id="market-upload-retry-hint" class="hint hidden">Retry the saved Market upload without adding another item.</p>
+                        <button id="btn-discard-stock-editor" class="subtle-button hidden" type="button" disabled>Discard pending edit</button>
+                        <p id="stock-editor-pending-hint" class="hint hidden">Check Market stock before discarding an unverified edit.</p>
+                        <p class="hint">Stock corrections do not record a hand-in.</p>
+                        <p class="hint">Item shortcuts are paused while this list is open.</p>
+                        <p id="stock-editor-status" class="hint hidden" role="status" aria-live="polite"></p>
+                        <p id="stock-editor-warning" class="hint hidden" role="status" aria-live="polite"></p>
+                        <p id="stock-editor-error" class="hint error hidden" role="alert"></p>
+                        <p id="stock-editor-empty" class="hint hidden">No items found.</p>
+                        <table id="stock-editor-table" class="stock-editor-table" aria-label="Items Tracker stock">
+                            <colgroup><col class="stock-editor-item-column" /><col /><col /><col class="stock-editor-edit-column" /></colgroup>
+                            <thead><tr><th scope="col">Item</th><th scope="col">Stock</th><th scope="col">Used</th><th scope="col">Edit</th></tr></thead>
+                            <tbody id="stock-editor-rows"></tbody>
+                        </table>
+                    </div>
+                </details>
                 <div class="api-key-section">
                     <label for="api-key">Tarkov Market API key</label>
                     <div class="api-key-field">
@@ -194,13 +243,13 @@
                 <p>Items Tracker appears when the selected character still has an active mandatory requirement for the item.
                     The whole panel is hidden when no such item requirement remains.</p>
                 <p>Stock shows the shared stock and the required quantity, for example 2/5.
-                    Found In Raid and Regular requirements appear on separate rows, but share the same stock.</p>
-                <p>Click Add or press the Add shortcut (F1 by default) to increase the selected character's shared Tracked Items stock in the API by one item.
-                    The shortcut works while the game is in the foreground, but only when the loaded item's Add button is available.
+                    Found in Raid and Regular requirements appear on separate rows, but share the same stock.</p>
+                <p>Click Add Found in Raid item or press F1, or click Add Regular item or press F2, to add one item of that type to the selected character's stock.
+                    The shortcuts work while the game is in the foreground, but only when the loaded item's button is available.
                     Each physical press adds at most one item; holding the key does not repeat.</p>
-                <p>Choose a different Add shortcut in Settings, or select Disabled to release the key.
-                    While enabled, the key is reserved globally for normal Windows keyboard input even when no item can be added.
-                    Apps that use direct keyboard input may still receive the key.</p>
+                <p>F1 and F2 are the defaults. Set each shortcut separately in Settings, or use Disable to release it.
+                    While enabled, the keys are reserved globally for normal Windows keyboard input even when no item can be added.
+                    Apps that use direct keyboard input may still receive the keys.</p>
                 <p>Completed quest and hideout requirements appear on separate rows, for example 4 items completed.
                     These quantities indicate completion and do not increase stock.</p>
                 <p>Text recognition runs locally on screenshots. The app does not read or modify the game's memory
@@ -208,6 +257,36 @@
                 <p>Closing either app window closes both windows.</p>
             </div>
         </details>
+        <dialog id="handover-dialog" class="handover-dialog" aria-labelledby="handover-title">
+            <form id="handover-form" class="handover-form">
+                <h2 id="handover-title">Hand in Items</h2>
+                <div class="search-panel" aria-label="Hand-in item search">
+                    <div class="search-form">
+                        <label for="handover-search-name" class="sr-only">Item name</label>
+                        <input id="handover-search-name" type="search" placeholder="Item name…"
+                            autocomplete="off" spellcheck="false" maxlength="200" />
+                        <button id="btn-handover-search" type="button" disabled>Search</button>
+                    </div>
+                    <button id="btn-handover-scan" class="scan-button" type="button" disabled
+                        title="Read the open Inspect window title in 3 seconds">
+                        <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6 3H3v3M12 3h3v3M3 12v3h3M15 12v3h-3M6 9h6" /></svg>
+                        <span>Scan now</span>
+                    </button>
+                    <label class="check-row" title="Check the open Inspect window after a left-click">
+                        <input id="handover-automatic" type="checkbox" />
+                        <span>Automatic scanning</span>
+                    </label>
+                </div>
+                <p id="handover-empty" class="hint">Open an item's Inspect window to add it.</p>
+                <ul id="handover-items" class="handover-items" aria-label="Items to hand in"></ul>
+                <p id="handover-status" class="handover-status hidden" role="status" aria-live="polite"></p>
+                <p id="handover-error" class="handover-error hidden" role="alert"></p>
+                <div class="handover-actions">
+                    <button id="btn-handover-cancel" class="subtle-button" type="button">Cancel</button>
+                    <button id="btn-handover-confirm" type="submit" disabled>Confirm hand-in</button>
+                </div>
+            </form>
+        </dialog>
     </main>
     <script src="item.js"></script>
 </body>

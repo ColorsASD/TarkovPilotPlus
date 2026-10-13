@@ -151,6 +151,7 @@ type Client struct {
 	progressWriteGate *requestGate
 	now               func() time.Time
 	mu                sync.Mutex
+	loadMu            sync.Mutex
 	catalogs          map[string]Catalog
 }
 
@@ -186,12 +187,13 @@ func (c *Client) Load(ctx context.Context, apiKey, mode, lang string) (Catalog, 
 	if err := ctx.Err(); err != nil {
 		return Catalog{}, err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return Catalog{}, err
 	}
 	key := mode + "-" + lang
+	c.mu.Lock()
 	cached, ok := c.catalogs[key]
 	if !ok {
 		cached, ok = c.readCache(mode, lang)
@@ -199,6 +201,7 @@ func (c *Client) Load(ctx context.Context, apiKey, mode, lang string) (Catalog, 
 			c.catalogs[key] = cached
 		}
 	}
+	c.mu.Unlock()
 	if ok {
 		age := c.now().Sub(cached.UpdatedAt)
 		if age >= 0 && age < cacheTTL {
@@ -212,10 +215,37 @@ func (c *Client) Load(ctx context.Context, apiKey, mode, lang string) (Catalog, 
 		return cloneCatalog(cached), err
 	}
 	result := Catalog{Items: items, UpdatedAt: c.now()}
+	c.mu.Lock()
 	c.catalogs[key] = result
+	c.mu.Unlock()
 	// A lemezcache hibája nem teszi használhatatlanná a sikeres API-választ.
 	_ = c.writeCache(mode, lang, result)
 	return cloneCatalog(result), nil
+}
+
+// CachedCatalog kizárólag helyi adatot olvas. Egy lejárt katalógus azonnal
+// használható névpárosításra, amíg a friss árak a háttérben érkeznek.
+func (c *Client) CachedCatalog(mode, lang string) (Catalog, bool) {
+	mode, lang, err := parameters(mode, lang)
+	if err != nil {
+		return Catalog{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := mode + "-" + lang
+	cached, ok := c.catalogs[key]
+	if !ok {
+		cached, ok = c.readCache(mode, lang)
+		if ok {
+			c.catalogs[key] = cached
+		}
+	}
+	if !ok {
+		return Catalog{}, false
+	}
+	age := c.now().Sub(cached.UpdatedAt)
+	cached.Stale = age < 0 || age >= cacheTTL
+	return cloneCatalog(cached), true
 }
 
 func cloneCatalog(catalog Catalog) Catalog {

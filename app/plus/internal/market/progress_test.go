@@ -171,6 +171,23 @@ func TestTrackedWriteUnchangedIsSuccessful(t *testing.T) {
 	}
 }
 
+func TestTrackedWriteMissingChangedIsUncertainAndNeverRetries(t *testing.T) {
+	for _, body := range []string{
+		`{"ok":true,"revision":"revision-2","notificationDelivered":true}`,
+		`{"ok":true,"changed":null,"revision":"revision-2","notificationDelivered":true}`,
+	} {
+		calls := 0
+		client := progressTestClient(t, func(*http.Request) (*http.Response, error) {
+			calls++
+			return response(200, body), nil
+		})
+		result, err := client.SetTrackedQuantity(context.Background(), "key", "char-1", progressItemID, "revision-1", 1)
+		if !errors.Is(err, ErrProgressWriteUncertain) || !errors.Is(err, ErrInvalidProgress) || result.OK || calls != 1 {
+			t.Fatalf("missing mutation acknowledgment was treated as an explicit no-op or repeated: result=%+v err=%v calls=%d", result, err, calls)
+		}
+	}
+}
+
 func TestTrackedConflictNeverRetriesAndAllowsExplicitReread(t *testing.T) {
 	methods := make([]string, 0)
 	client := progressTestClient(t, func(req *http.Request) (*http.Response, error) {

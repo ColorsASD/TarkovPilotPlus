@@ -5,28 +5,131 @@ import (
 	"strings"
 )
 
-const defaultTrackedAddHotkey = "F1"
+const defaultTrackedAddHotkey = "F2"
+const defaultTrackedFIRHotkey = "F1"
+
+const (
+	trackedHotkeyCtrl    uint32 = 1 << 8
+	trackedHotkeyAlt     uint32 = 1 << 9
+	trackedHotkeyShift   uint32 = 1 << 10
+	trackedHotkeyWin     uint32 = 1 << 11
+	trackedHotkeyKeyMask uint32 = 0xff
+)
+
+type trackedHotkeyBindings struct {
+	regular, fir uint32
+}
+
+func (b trackedHotkeyBindings) configuredKey(key, modifiers uint32) uint32 {
+	chord := key | modifiers
+	if b.fir != 0 && chord == b.fir {
+		return b.fir
+	}
+	if b.regular != 0 && chord == b.regular {
+		return b.regular
+	}
+	return 0
+}
 
 func normalizeTrackedAddHotkey(value string) string {
-	value = strings.ToUpper(strings.TrimSpace(value))
-	if value == "OFF" {
-		return "off"
+	return normalizeTrackedShortcut(value, defaultTrackedAddHotkey)
+}
+
+func normalizeTrackedFIRHotkey(value string) string {
+	return normalizeTrackedShortcut(value, defaultTrackedFIRHotkey)
+}
+
+func normalizeTrackedShortcut(value, fallback string) string {
+	if canonical, _, ok := parseTrackedShortcut(value); ok {
+		return canonical
 	}
-	if strings.HasPrefix(value, "F") {
-		if number, err := strconv.Atoi(value[1:]); err == nil && number >= 1 && number <= 12 && value == "F"+strconv.Itoa(number) {
-			return value
-		}
+	if canonical, _, ok := parseTrackedShortcut(fallback); ok {
+		return canonical
 	}
 	return defaultTrackedAddHotkey
 }
 
-func trackedAddHotkeyVK(value string) uint32 {
-	value = normalizeTrackedAddHotkey(value)
-	if value == "off" {
-		return 0
+// Chords use the base Windows key in the low byte and the modifier mask above
+// it. A canonical string is persisted; the packed value is hook-thread state.
+func parseTrackedShortcut(value string) (canonical string, chord uint32, ok bool) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "OFF" {
+		return "off", 0, true
 	}
-	number, _ := strconv.Atoi(value[1:])
-	return uint32(0x70 + number - 1) // VK_F1 .. VK_F12.
+	parts := strings.Split(value, "+")
+	var modifiers uint32
+	for _, part := range parts[:len(parts)-1] {
+		var modifier uint32
+		switch strings.TrimSpace(part) {
+		case "CTRL":
+			modifier = trackedHotkeyCtrl
+		case "ALT":
+			modifier = trackedHotkeyAlt
+		case "SHIFT":
+			modifier = trackedHotkeyShift
+		default:
+			return "", 0, false
+		}
+		if modifiers&modifier != 0 {
+			return "", 0, false
+		}
+		modifiers |= modifier
+	}
+	name, key := trackedShortcutBaseKey(strings.TrimSpace(parts[len(parts)-1]))
+	if key == 0 {
+		return "", 0, false
+	}
+	var prefix strings.Builder
+	for _, modifier := range []struct {
+		bit  uint32
+		name string
+	}{{trackedHotkeyCtrl, "Ctrl"}, {trackedHotkeyAlt, "Alt"}, {trackedHotkeyShift, "Shift"}} {
+		if modifiers&modifier.bit != 0 {
+			prefix.WriteString(modifier.name)
+			prefix.WriteByte('+')
+		}
+	}
+	prefix.WriteString(name)
+	return prefix.String(), key | modifiers, true
+}
+
+func trackedShortcutBaseKey(value string) (string, uint32) {
+	if len(value) == 1 && (value[0] >= 'A' && value[0] <= 'Z' || value[0] >= '0' && value[0] <= '9') {
+		return value, uint32(value[0])
+	}
+	if strings.HasPrefix(value, "F") {
+		if number, err := strconv.Atoi(value[1:]); err == nil && number >= 1 && number <= 12 && value == "F"+strconv.Itoa(number) {
+			return value, uint32(0x70 + number - 1)
+		}
+	}
+	switch value {
+	case "SPACE":
+		return "Space", 0x20
+	case "INSERT":
+		return "Insert", 0x2d
+	case "DELETE":
+		return "Delete", 0x2e
+	case "HOME":
+		return "Home", 0x24
+	case "END":
+		return "End", 0x23
+	case "PAGEUP":
+		return "PageUp", 0x21
+	case "PAGEDOWN":
+		return "PageDown", 0x22
+	}
+	return "", 0
+}
+
+func trackedHotkeyChordsEqual(left, right string) bool {
+	_, l, validLeft := parseTrackedShortcut(left)
+	_, r, validRight := parseTrackedShortcut(right)
+	return validLeft && validRight && l != 0 && l == r
+}
+
+func trackedAddHotkeyVK(value string) uint32 {
+	_, chord, _ := parseTrackedShortcut(normalizeTrackedAddHotkey(value))
+	return chord & trackedHotkeyKeyMask
 }
 
 type trackedHotkeyPress struct {
@@ -34,13 +137,13 @@ type trackedHotkeyPress struct {
 	captured bool
 }
 
-// trackedHotkeyKeys belongs to the hook thread. It retains only the reserved
-// function keys and modifier states; ordinary keyboard input is never stored.
+// trackedHotkeyKeys belongs to the hook thread. It retains only press/release
+// booleans for supported shortcut keys and modifiers; no typed text is stored.
 // Physical and injected presses are independent, so a synthetic key-up cannot
 // release a physical hold or produce another stock increment through repeats.
 type trackedHotkeyKeys struct {
-	physical         [12]trackedHotkeyPress
-	injected         [12]trackedHotkeyPress
+	physical         [256]trackedHotkeyPress
+	injected         [256]trackedHotkeyPress
 	modifiers        [11]bool
 	virtualModifiers [11]bool
 }
@@ -61,12 +164,43 @@ func trackedHotkeyModifierIndex(key uint32) int {
 }
 
 func (k *trackedHotkeyKeys) modified() bool {
+	return k.modifierMask(false) != 0
+}
+
+func (k *trackedHotkeyKeys) modifierMask(altDown bool) uint32 {
+	var mask uint32
 	for index := range k.modifiers {
 		if k.modifiers[index] || k.virtualModifiers[index] {
+			switch trackedHotkeyModifierKeys[index] {
+			case 0x10, 0xa0, 0xa1:
+				mask |= trackedHotkeyShift
+			case 0x11, 0xa2, 0xa3:
+				mask |= trackedHotkeyCtrl
+			case 0x12, 0xa4, 0xa5:
+				mask |= trackedHotkeyAlt
+			case 0x5b, 0x5c:
+				mask |= trackedHotkeyWin
+			}
+		}
+	}
+	if altDown {
+		mask |= trackedHotkeyAlt
+	}
+	return mask
+}
+
+func (k *trackedHotkeyKeys) hasInjectedModifiers() bool {
+	for _, held := range k.virtualModifiers {
+		if held {
 			return true
 		}
 	}
 	return false
+}
+
+func trackedHotkeySupportedKey(key uint32) bool {
+	return key >= 0x70 && key <= 0x7b || key >= 'A' && key <= 'Z' || key >= '0' && key <= '9' ||
+		key == 0x20 || key == 0x2d || key == 0x2e || key == 0x24 || key == 0x23 || key == 0x21 || key == 0x22
 }
 
 // seed records keys already held when the hook starts. Their first observed
@@ -75,8 +209,8 @@ func (k *trackedHotkeyKeys) modified() bool {
 func (k *trackedHotkeyKeys) seed(key uint32, down bool) {
 	if index := trackedHotkeyModifierIndex(key); index >= 0 {
 		k.modifiers[index] = down
-	} else if key >= 0x70 && key <= 0x7b {
-		press := &k.physical[key-0x70]
+	} else if trackedHotkeySupportedKey(key) {
+		press := &k.physical[key]
 		if !press.down && !press.captured {
 			press.down = down
 		}
@@ -108,12 +242,12 @@ func (k *trackedHotkeyKeys) event(key uint32, down, injected, altDown bool, conf
 		}
 		return false, false
 	}
-	if key < 0x70 || key > 0x7b {
+	if !trackedHotkeySupportedKey(key) {
 		return false, false
 	}
-	press := &k.physical[key-0x70]
+	press := &k.physical[key]
 	if injected {
-		press = &k.injected[key-0x70]
+		press = &k.injected[key]
 	}
 	if !down {
 		consume = press.captured
@@ -124,6 +258,6 @@ func (k *trackedHotkeyKeys) event(key uint32, down, injected, altDown bool, conf
 		return press.captured, false
 	}
 	press.down = true
-	press.captured = configured != 0 && key == configured && !altDown && !k.modified()
-	return press.captured, press.captured && !injected
+	press.captured = configured != 0 && key|k.modifierMask(altDown) == configured
+	return press.captured, press.captured && !injected && !k.hasInjectedModifiers()
 }

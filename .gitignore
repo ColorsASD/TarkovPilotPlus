@@ -21,6 +21,16 @@
 api-key.bin
 item-settings.json
 item-cache/
+dev-cache/
+local-progress/
+market-fallback/
+stock-usage/
+handovers/
+stock-edits/
+market-fallback-sync/
+.local-progress-import/
+.local-progress-backups/
+*.tpp-local-backup.json
 settings.json
 logs/
 *.log

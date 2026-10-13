@@ -77,7 +77,7 @@ func (a *ItemWindowApp) watchInspectClicks() {
 			released := wasDown && !down
 			wasDown = down
 			st := a.GetState()
-			if !st.Enabled || !st.Automatic || !st.HasAPIKey {
+			if !st.Enabled || !handoverAutomaticScan(st) || !st.HasAPIKey {
 				gate.pending = time.Time{}
 				continue
 			}
@@ -111,7 +111,7 @@ func (a *ItemWindowApp) runAutomaticInspects(requests <-chan struct{}) {
 			}
 			if a.ctx.Err() == nil {
 				st := a.GetState()
-				if st.Enabled && st.Automatic && st.HasAPIKey {
+				if st.Enabled && handoverAutomaticScan(st) && st.HasAPIKey {
 					a.scanLocked(true, 0)
 				}
 			}

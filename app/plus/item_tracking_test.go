@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 )
 
 const trackingItemUID = "fce1532d-cc17-4c7f-8fc8-8427e425b751"
@@ -27,6 +30,7 @@ type fakeTrackingAPI struct {
 	snapshot         market.TrackedSnapshot
 	characters       []market.Character
 	loads            int
+	commits          int
 	lists            int
 	lookups          int
 	writes           []stockWrite
@@ -37,10 +41,67 @@ type fakeTrackingAPI struct {
 	lookupError      error
 }
 
+type unifiedTrackingFixture struct{ *fakeTrackingAPI }
+
+// These tests exercise the retained synchronous Market CAS protocol. Public
+// Add now durably stages local stock before a separate background upload.
+func addMarketTrackedItemForTest(a *ItemWindowApp, uid, kind string) ItemState {
+	if !a.trackingMu.TryLock() {
+		a.notifyTrackedAddBusy(uid, nil)
+		return a.GetState()
+	}
+	defer a.trackingMu.Unlock()
+	if kind == "fir" {
+		return a.addMarketTrackedItemKind(uid, nil, nil, kind)
+	}
+	return a.addMarketTrackedItem(uid, nil, nil)
+}
+
+func setTrackingTestSnapshot(t *testing.T, a *ItemWindowApp, remote market.TrackedSnapshot) {
+	t.Helper()
+	snapshot, err := a.localStore.Apply(marketProgressOnly(remote))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.localSnapshot, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
+	a.state.Local = localLists(snapshot, a.localAt, "")
+	a.state.Tracking = localTrackedView(*a.state.Item, snapshot)
+}
+
+func assertNoTrackingTestStockAdded(t *testing.T, a *ItemWindowApp) {
+	t.Helper()
+	for _, store := range []*localprogress.Store{a.localStore, a.marketFallbackStock()} {
+		snapshot, err := store.Load("character-a", "PVP")
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range snapshot.Items {
+			if row.LocalCollectedQuantity != 0 || row.MarketRegularQuantity != 0 || row.MarketFIRQuantity != 0 {
+				t.Fatalf("rejected foreground action saved stock despite making no API call: %+v", row)
+			}
+		}
+	}
+}
+
+func (f *unifiedTrackingFixture) LoadQuests(context.Context, string, string, string) (market.QuestSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return market.QuestSnapshot{CharUID: f.snapshot.CharUID, GameMode: f.snapshot.GameMode, Revision: f.snapshot.Revision, Quests: []market.Quest{}}, nil
+}
+
+func (f *unifiedTrackingFixture) LoadHideout(context.Context, string, string, string) (market.HideoutSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return market.HideoutSnapshot{CharUID: f.snapshot.CharUID, GameMode: f.snapshot.GameMode, Revision: f.snapshot.Revision, Modules: []market.HideoutUpgrade{}}, nil
+}
+
 func trackingFixture() market.TrackedSnapshot {
 	return market.TrackedSnapshot{CharUID: "character-a", GameMode: "PVP", Revision: "revision-1", Items: []market.TrackedItem{{
 		ItemID: trackingBSGID, Name: "Immobilizing splint", RequiredQuantity: 7, RemainingQuantity: 7,
-		Sources: []market.TrackedSource{{Type: "quest", Amount: 7, RemainingRequiredQuantity: 7, FIR: true}},
+		Sources: []market.TrackedSource{{Type: "quest", Amount: 7, RemainingRequiredQuantity: 7}},
 	}}}
 }
 
@@ -51,9 +112,23 @@ func newTrackingTestApp(t *testing.T) (*ItemWindowApp, *fakeTrackingAPI) {
 	fake := &fakeTrackingAPI{snapshot: trackingFixture(), characters: []market.Character{{CharUID: "character-a", Name: "Minta", GameMode: "PVP"}}}
 	item := market.Item{UID: trackingItemUID, BSGID: trackingBSGID, Name: "Immobilizing splint"}
 	a := &ItemWindowApp{ctx: ctx, apiKey: "local-test-key", tracker: fake, dir: t.TempDir(), state: ItemState{
-		ItemOptions: ItemOptions{Enabled: true, Automatic: true, Language: "en", Mode: "pvp", CharacterUID: "character-a", revision: 8},
+		ItemOptions: ItemOptions{Enabled: true, Automatic: true, Language: "en", Mode: "pvp", CharacterUID: "character-a", AddHotkey: "F2", FIRHotkey: "F1", revision: 8},
 		HasAPIKey:   true, Item: &item, Tracking: trackedView(item, fake.snapshot),
 	}}
+	// A nyilvános Add és shortcut mindig a két forrás közös állapotát használja.
+	// A fixture kezdeti betöltése nem fogyasztja a vizsgált API-olvasásszámlálót.
+	a.tracker = &unifiedTrackingFixture{fakeTrackingAPI: fake}
+	a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{}, Hideout: []tarkovdev.Station{}}}
+	a.localStore = localprogress.NewStore(t.TempDir())
+	a.state.LocalProgress = true
+	snapshot, err := a.localStore.Apply(marketProgressOnly(fake.snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.localSnapshot, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
+	a.state.Local = localLists(snapshot, a.localAt, "")
+	a.state.Tracking = localTrackedView(item, snapshot)
+	a.localAt = time.Time{}
 	return a, fake
 }
 
@@ -100,6 +175,10 @@ func (f *fakeTrackingAPI) commitWrite(write stockWrite) market.ProgressWriteResu
 	f.snapshot.Items[0].AvailableQuantity = write.Quantity
 	f.snapshot.Items[0].RemainingQuantity = max(0, f.snapshot.Items[0].RequiredQuantity-write.Quantity)
 	f.snapshot.Revision = "revision-saved"
+	f.commits++
+	if f.commits > 1 {
+		f.snapshot.Revision = fmt.Sprintf("revision-saved-%d", f.commits)
+	}
 	return market.ProgressWriteResult{OK: true, Changed: true, Revision: f.snapshot.Revision, NotificationDelivered: true}
 }
 
@@ -144,7 +223,7 @@ func TestAddTrackedItemReadsFreshStockAndAddsExactlyOne(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot.Items[0].AvailableQuantity = 3
 	fake.snapshot.Items[0].RemainingQuantity = 4
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 || fake.writes[0] != (stockWrite{"character-a", trackingBSGID, "revision-1", 4}) || fake.loads != 2 {
 		t.Fatalf("must read, write +1 with current revision, then read back: %+v, reads=%d", fake.writes, fake.loads)
 	}
@@ -173,15 +252,15 @@ func mixedTrackingRequirementsFixture() market.TrackedSnapshot {
 func TestTrackedRequirementsKeepFIRAndRegularSeparateFromSharedStock(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot = mixedTrackingRequirementsFixture()
-	a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
-	view := a.state.Tracking
+	view := trackedView(*a.state.Item, fake.snapshot)
 	if view.Requirement != "mixed" || len(view.Requirements) != 2 ||
 		view.Requirements[0] != (ItemTrackingRequirement{Kind: "fir", RequiredQuantity: 7}) ||
 		view.Requirements[1] != (ItemTrackingRequirement{Kind: "regular", RequiredQuantity: 3}) ||
 		view.AvailableQuantity != 5 || view.RequiredQuantity != 10 || view.RemainingQuantity != 5 {
 		t.Fatalf("source requirements were merged, reduced by stock, or taken from original amounts: %+v", view)
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	setTrackingTestSnapshot(t, a, fake.snapshot)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 || fake.writes[0].Quantity != 6 || state.Tracking.AvailableQuantity != 6 ||
 		len(state.Tracking.Requirements) != 2 || state.Tracking.Requirements[0].RequiredQuantity != 7 || state.Tracking.Requirements[1].RequiredQuantity != 3 {
 		t.Fatalf("adding shared stock changed a requirement or invented a per-type write: writes=%+v view=%+v", fake.writes, state.Tracking)
@@ -214,7 +293,7 @@ func TestCompletedSourcesKeepOriginalQuantitySeparateFromStock(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot = completedCMSFixture()
 	a.state.Item.Name = "CMS surgical kit"
-	a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
+	setTrackingTestSnapshot(t, a, fake.snapshot)
 	view := a.GetState().Tracking
 	if view.AvailableQuantity != 0 || view.RequiredQuantity != 0 || len(view.Requirements) != 0 ||
 		len(view.CompletedSources) != 1 || view.CompletedSources[0] != (ItemTrackingCompletedSource{Type: "quest", Quantity: 4}) {
@@ -235,8 +314,8 @@ func TestCompletedSourcesKeepOriginalQuantitySeparateFromStock(t *testing.T) {
 	fake.snapshot.Items[0].RemainingQuantity = 1
 	fake.snapshot.Items[0].Sources = append(fake.snapshot.Items[0].Sources,
 		market.TrackedSource{Type: "hideout", Amount: 1, RemainingRequiredQuantity: 1})
-	a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
-	state = a.AddTrackedItem(trackingItemUID)
+	setTrackingTestSnapshot(t, a, fake.snapshot)
+	state = addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 || fake.writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 ||
 		state.Tracking.RequiredQuantity != 1 || len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 4 {
 		t.Fatalf("adding actual stock changed historical completion: writes=%+v view=%+v", fake.writes, state.Tracking)
@@ -318,7 +397,7 @@ func TestTrackedConflictReconcilesFromNewStockOnce(t *testing.T) {
 		}
 		return fake.commitWrite(write), nil
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 2 || fake.writes[0].Quantity != 4 || fake.writes[1].Quantity != 6 || fake.writes[1].Revision != "revision-2" || state.Tracking.AvailableQuantity != 6 || state.Tracking.Error != "" {
 		t.Fatalf("conflict must add one to the new stock, not replay the old count: %+v %+v", fake.writes, state.Tracking)
 	}
@@ -329,7 +408,7 @@ func TestTrackedRepeatedConflictStopsWithoutFurtherWrites(t *testing.T) {
 	fake.writeHook = func(stockWrite) (market.ProgressWriteResult, error) {
 		return market.ProgressWriteResult{}, market.ErrProgressConflict
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 2 || state.Tracking.Error == "" || state.Tracking.Adding {
 		t.Fatalf("repeated conflict should stop: %+v %+v", fake.writes, state.Tracking)
 	}
@@ -345,7 +424,7 @@ func TestTrackedUncertainWriteOnlyReadsBack(t *testing.T) {
 				}
 				return market.ProgressWriteResult{}, market.ErrProgressWriteUncertain
 			}
-			state := a.AddTrackedItem(trackingItemUID)
+			state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 			if len(fake.writes) != 1 || fake.loads != 2 || state.Tracking.Adding {
 				t.Fatalf("an uncertain PATCH must never be replayed: writes=%+v, loads=%d, view=%+v", fake.writes, fake.loads, state.Tracking)
 			}
@@ -357,7 +436,7 @@ func TestTrackedUncertainWriteOnlyReadsBack(t *testing.T) {
 				if state.Tracking.Error == "" {
 					t.Fatal("unknown result must be visible")
 				}
-				a.AddTrackedItem(trackingItemUID)
+				addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 				if len(fake.writes) != 1 {
 					t.Fatal("error must require a refresh before another explicit add")
 				}
@@ -379,16 +458,16 @@ func TestConfirmedWriteSurvivesReadbackOrNotificationFailure(t *testing.T) {
 		result.NotificationDelivered = false
 		return result, nil
 	}
-	state := a.AddTrackedItem(trackingItemUID)
-	if len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error != "" || state.Tracking.Adding || !strings.Contains(state.Tracking.Status, "Added 1 item") || !strings.Contains(state.Tracking.Status, "notification") {
-		t.Fatalf("confirmed PATCH remains successful without web notification/readback: %+v", state.Tracking)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
+	if len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error == "" || state.Tracking.Adding || !strings.Contains(state.Tracking.Status, "confirmed stock 1") || !strings.Contains(state.Tracking.Status, "readback is unavailable") || !strings.Contains(state.Tracking.Status, "notification") {
+		t.Fatalf("confirmed PATCH must show verification pending without inventing a successful readback: %+v", state.Tracking)
 	}
 	if !a.trackedAt.IsZero() {
 		t.Fatal("failed readback must not mark the complete snapshot as freshly fetched")
 	}
 	fake.loadHook = nil
 	a.refreshTracking()
-	if fake.loads != 3 || a.trackedAt.IsZero() || a.GetState().Tracking.AvailableQuantity != 1 {
+	if fake.loads != 3 || a.localAt.IsZero() || a.GetState().Tracking.AvailableQuantity != 1 {
 		t.Fatal("the next scan must read fresh API data without losing confirmed stock")
 	}
 }
@@ -401,13 +480,13 @@ func TestConcurrentAddIsSuppressed(t *testing.T) {
 		<-release
 		return fake.commitWrite(write), nil
 	}
-	go func() { done <- a.AddTrackedItem(trackingItemUID) }()
+	go func() { done <- addMarketTrackedItemForTest(a, trackingItemUID, "regular") }()
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):
 		t.Fatal("write not started")
 	}
-	second := a.AddTrackedItem(trackingItemUID)
+	second := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	close(release)
 	var first ItemState
 	select {
@@ -441,6 +520,7 @@ func TestAddRejectsStaleOrUntrackedTargets(t *testing.T) {
 			if fake.loads != 0 || len(fake.writes) != 0 {
 				t.Fatal("stale/untracked target must not touch API stock")
 			}
+			assertNoTrackingTestStockAdded(t, a)
 		})
 	}
 }
@@ -448,8 +528,8 @@ func TestAddRejectsStaleOrUntrackedTargets(t *testing.T) {
 func TestSeparateFIRInventoryCannotUseGenericQuantityPatch(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot.FIRInventorySeparate = true
-	state := a.AddTrackedItem(trackingItemUID)
-	if len(fake.writes) != 0 || !state.Tracking.Tracked || !state.Tracking.InventorySeparate || state.Tracking.Error == "" || state.Tracking.Adding {
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
+	if len(fake.writes) != 0 || !state.Tracking.Tracked || !strings.Contains(state.Tracking.Error, "separate Found in Raid stock") || state.Tracking.Adding {
 		t.Fatalf("unsupported separate stock must not be modified: %+v", state.Tracking)
 	}
 }
@@ -460,7 +540,7 @@ func TestItemChangeDuringFreshReadCancelsPatch(t *testing.T) {
 		a.acceptItem(market.Item{UID: "another", BSGID: "other-item"}, true, a.GetState().ItemOptions, nil)
 		return trackingFixture(), nil
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 0 || state.Item.UID != "another" || state.Tracking != nil {
 		t.Fatal("old item must not be written or redisplayed after selection changes")
 	}
@@ -475,7 +555,7 @@ func TestProfileChangeAfterPatchCannotOverwriteCurrentState(t *testing.T) {
 		a.SetOptions(opts)
 		return result, nil
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 || fake.writes[0].Character != "character-a" || state.CharacterUID != "character-b" || state.Tracking != nil {
 		t.Fatal("saved response must not retarget the character selected afterwards")
 	}
@@ -519,7 +599,7 @@ func TestPendingStockWriteIsCanceledWhenItsTargetChanges(t *testing.T) {
 					return fake.commitWrite(write), nil
 				}
 			}
-			go func() { done <- a.AddTrackedItem(trackingItemUID) }()
+			go func() { done <- addMarketTrackedItemForTest(a, trackingItemUID, "regular") }()
 			select {
 			case <-entered:
 			case <-time.After(3 * time.Second):
@@ -587,31 +667,31 @@ func TestOldCatalogResolvesBSGIDOnceAndPreservesItOnSameItem(t *testing.T) {
 func TestTrackingCacheKeepsOriginalFetchTimeAndExpiresDuringRepeatedScans(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	a.refreshTracking()
-	if fake.loads != 1 || a.trackedAt.IsZero() {
+	if fake.loads != 1 || a.localAt.IsZero() {
 		t.Fatal("initial tracking refresh must record a successful API fetch")
 	}
 	// Backdate the fetch instead of waiting for real time to pass. Repeated
 	// scans within the TTL must keep this exact timestamp, not restart it.
 	fetchedAt := time.Now().Add(-time.Second)
-	a.trackedAt = fetchedAt
+	a.localAt = fetchedAt
 	fake.snapshot.Items[0].AvailableQuantity = 3
 	fake.snapshot.Items[0].RemainingQuantity = 4
 	for i := 0; i < 10; i++ {
 		a.refreshTracking()
-		if fake.loads != 1 || !a.trackedAt.Equal(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 0 {
-			t.Fatalf("cached scan %d renewed the original fetch or refetched prematurely: loads=%d fetchedAt=%v", i, fake.loads, a.trackedAt)
+		if fake.loads != 1 || !a.localAt.Equal(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 0 {
+			t.Fatalf("cached scan %d renewed the original fetch or refetched prematurely: loads=%d fetchedAt=%v", i, fake.loads, a.localAt)
 		}
 	}
-	a.trackedAt = time.Now().Add(-6 * time.Second)
+	a.localAt = time.Now().Add(-6 * time.Second)
 	before := time.Now()
 	a.refreshTracking()
 	after := time.Now()
-	if fake.loads != 2 || a.GetState().Tracking.AvailableQuantity != 3 || a.trackedAt.Before(before) || a.trackedAt.After(after) {
-		t.Fatalf("expired snapshot must fetch changed stock and record the actual fetch time: loads=%d view=%+v fetchedAt=%v", fake.loads, a.GetState().Tracking, a.trackedAt)
+	if fake.loads != 2 || a.GetState().Tracking.AvailableQuantity != 3 || a.localAt.Before(before) || a.localAt.After(after) {
+		t.Fatalf("expired snapshot must fetch changed stock and record the actual fetch time: loads=%d view=%+v fetchedAt=%v", fake.loads, a.GetState().Tracking, a.localAt)
 	}
-	fetchedAt = a.trackedAt
+	fetchedAt = a.localAt
 	a.refreshTracking()
-	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) {
+	if fake.loads != 2 || !a.localAt.Equal(fetchedAt) {
 		t.Fatal("newly fetched snapshot should be reusable without extending its lifetime")
 	}
 }
@@ -620,7 +700,7 @@ func TestTrackingFailedRefreshDoesNotRenewExpiredSnapshot(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	a.refreshTracking()
 	fetchedAt := time.Now().Add(-6 * time.Second)
-	a.trackedAt = fetchedAt
+	a.localAt = fetchedAt
 	fake.snapshot.Items[0].AvailableQuantity = 2
 	fake.snapshot.Items[0].RemainingQuantity = 5
 	fake.loadHook = func(count int) (market.TrackedSnapshot, error) {
@@ -630,11 +710,11 @@ func TestTrackingFailedRefreshDoesNotRenewExpiredSnapshot(t *testing.T) {
 		return cloneTrackedSnapshot(fake.snapshot), nil
 	}
 	a.refreshTracking()
-	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.trackedSnapshot.Items[0].AvailableQuantity != 0 || a.GetState().Tracking.Error == "" {
+	if fake.loads != 2 || !a.localAt.IsZero() || a.localSnapshot.Items[0].MarketAvailableQuantity != 0 || a.GetState().Tracking.Error == "" {
 		t.Fatal("failed fetch must preserve the expired snapshot and report the failure")
 	}
 	a.refreshTracking()
-	if fake.loads != 3 || !a.trackedAt.After(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 2 || a.GetState().Tracking.Error != "" {
+	if fake.loads != 3 || !a.localAt.After(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 2 || a.GetState().Tracking.Error != "" {
 		t.Fatal("next scan must retry the expired snapshot and display fresh API stock")
 	}
 }
@@ -645,38 +725,42 @@ func TestTrackingWrongProfileResponseDoesNotRenewSnapshot(t *testing.T) {
 			a, fake := newTrackingTestApp(t)
 			a.refreshTracking()
 			fetchedAt := time.Now().Add(-6 * time.Second)
-			a.trackedAt = fetchedAt
+			a.localAt = fetchedAt
 			if profile == "character" {
 				fake.snapshot.CharUID = "another-character"
 			} else {
 				fake.snapshot.GameMode = "PVE"
 			}
 			a.refreshTracking()
-			if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.trackedSnapshot.CharUID != "character-a" || a.trackedSnapshot.GameMode != "PVP" || a.GetState().Tracking.Error == "" {
+			if fake.loads != 2 || !a.localAt.IsZero() || a.localSnapshot.CharUID != "character-a" || a.localSnapshot.GameMode != "PVP" || a.GetState().Tracking.Error == "" {
 				t.Fatal("an incompatible API snapshot must not renew cached data")
 			}
 		})
 	}
 }
 
-func TestAddedStockIsReusedUntilItsReadbackExpires(t *testing.T) {
+func TestAddedStockRefreshesCompleteProgressBeforeReusingCache(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot.Items[0].AvailableQuantity = 3
 	fake.snapshot.Items[0].RemainingQuantity = 4
-	state := a.AddTrackedItem(trackingItemUID)
-	if fake.loads != 2 || len(fake.writes) != 1 || fake.writes[0].Quantity != 4 || state.Tracking.AvailableQuantity != 4 || a.trackedAt.IsZero() {
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
+	if fake.loads != 2 || len(fake.writes) != 1 || fake.writes[0].Quantity != 4 || state.Tracking.AvailableQuantity != 4 || a.trackedAt.IsZero() || !a.localAt.IsZero() {
 		t.Fatal("Add must use fresh stock and record the successful readback")
 	}
-	fetchedAt := a.trackedAt
 	a.refreshTracking()
-	if fake.loads != 2 || !a.trackedAt.Equal(fetchedAt) || a.GetState().Tracking.AvailableQuantity != 4 {
-		t.Fatal("rescanning after Add must retain the confirmed stock without renewing the fetch time")
+	if fake.loads != 3 || a.localAt.IsZero() || a.GetState().Tracking.AvailableQuantity != 4 {
+		t.Fatal("after a Market write the complete quest/hideout merge must refresh before caching")
 	}
-	a.trackedAt = time.Now().Add(-6 * time.Second)
+	fetchedAt := a.localAt
+	a.refreshTracking()
+	if fake.loads != 3 || !a.localAt.Equal(fetchedAt) {
+		t.Fatal("rescanning a complete merged snapshot renewed its original fetch time")
+	}
+	a.localAt = time.Now().Add(-6 * time.Second)
 	fake.snapshot.Items[0].AvailableQuantity = 5
 	fake.snapshot.Items[0].RemainingQuantity = 2
 	a.refreshTracking()
-	if fake.loads != 3 || a.GetState().Tracking.AvailableQuantity != 5 {
+	if fake.loads != 4 || a.GetState().Tracking.AvailableQuantity != 5 {
 		t.Fatal("rescanning after expiry must fetch externally changed stock")
 	}
 }
@@ -684,6 +768,7 @@ func TestAddedStockIsReusedUntilItsReadbackExpires(t *testing.T) {
 func TestTrackingResponseAndStateCopiesDoNotAlias(t *testing.T) {
 	a, _ := newTrackingTestApp(t)
 	snapshot := trackingFixture()
+	snapshot.Items[0].Sources[0].FIR = true
 	a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, snapshot, time.Now(), "")
 	snapshot.Items[0].AvailableQuantity = 99
 	snapshot.Items[0].Sources[0].FIR = false
@@ -746,7 +831,7 @@ func TestCharacterSelectionKeepsDuplicateNamesAndWritesChosenUID(t *testing.T) {
 			fake.snapshot.CharUID, fake.snapshot.GameMode = selected, "SEASON"
 			a.acceptItem(market.Item{UID: trackingItemUID, BSGID: trackingBSGID}, true, state.ItemOptions, nil)
 			a.refreshTracking()
-			state = a.AddTrackedItem(trackingItemUID)
+			state = addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 			if len(fake.writes) != 1 || fake.writes[0].Character != selected || state.Tracking.CharUID != selected || state.Tracking.AvailableQuantity != 1 {
 				t.Fatalf("write must reach the selected duplicate's UID: %+v %+v", fake.writes, state.Tracking)
 			}
@@ -785,6 +870,7 @@ func TestCharacterLevelsAndUIDsAreCopiedIndependently(t *testing.T) {
 func variantTrackingFixture() market.TrackedSnapshot {
 	snapshot := trackingFixture()
 	snapshot.Items[0].Name = "Metal fuel tank"
+	snapshot.Items[0].Sources[0].FIR = true
 	snapshot.Items[0].RequiredQuantity = 4
 	snapshot.Items[0].AvailableQuantity = 1
 	snapshot.Items[0].RemainingQuantity = 3
@@ -872,13 +958,15 @@ func TestDuplicateVariantsKeepAllRowsWithoutAnExactScannedName(t *testing.T) {
 }
 
 func TestDuplicateVariantStateCopiesIsolateNestedRowsAndSlices(t *testing.T) {
-	a, _ := newTrackingTestApp(t)
+	a, fake := newTrackingTestApp(t)
 	a.state.Item.Name = "Metal fuel tank"
 	snapshot := detailedVariantTrackingFixture()
-	if !a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, snapshot, time.Now(), "") {
-		t.Fatal("valid variant snapshot was not applied")
-	}
+	fake.snapshot = cloneTrackedSnapshot(snapshot)
+	a.refreshTracking()
 	state := a.GetState()
+	if state.Tracking == nil || len(state.Tracking.Variants) != 2 {
+		t.Fatalf("complete merged refresh did not retain both Market variants: %+v", state.Tracking)
+	}
 	state.Tracking.Variants[0].VariantName = "changed"
 	state.Tracking.Variants[0].AvailableQuantity = 99
 	state.Tracking.Variants[0].Requirements[0].RequiredQuantity = 88
@@ -894,8 +982,8 @@ func TestDuplicateVariantStateCopiesIsolateNestedRowsAndSlices(t *testing.T) {
 		fresh.Tracking.Variants[0].AvailableQuantity != 1 || fresh.Tracking.Variants[0].Requirements[0].RequiredQuantity != 3 ||
 		fresh.Tracking.Variants[0].CompletedSources[0].Quantity != 5 || fresh.Tracking.Variants[1] == nil ||
 		fresh.Tracking.Variants[1].Requirements[0].Kind != "regular" || fresh.Tracking.Variants[1].CompletedSources[0].Type != "hideout" ||
-		fresh.Tracking.Requirements[0].RequiredQuantity != 3 || a.trackedSnapshot.Items[0].AvailableQuantity != 1 ||
-		a.trackedSnapshot.Items[0].Sources[0].RemainingRequiredQuantity != 3 {
+		fresh.Tracking.Requirements[0].RequiredQuantity != 3 || a.localSnapshot.Items[0].MarketAvailableQuantity != 1 ||
+		a.localSnapshot.Items[0].Sources[0].RemainingRequiredQuantity != 3 {
 		t.Fatalf("returned variants or incoming API slices aliased private state: %+v", fresh.Tracking)
 	}
 }
@@ -909,17 +997,17 @@ func TestDuplicateVariantsRefreshBothStocksAfterOriginalCacheExpires(t *testing.
 		t.Fatal("initial API response must populate both variant rows")
 	}
 	fetchedAt := time.Now().Add(-time.Second)
-	a.trackedAt = fetchedAt
+	a.localAt = fetchedAt
 	fake.snapshot.Items[0].AvailableQuantity = 5
 	fake.snapshot.Items[0].RemainingQuantity = 0
 	fake.snapshot.Items[1].AvailableQuantity = 7
 	fake.snapshot.Items[1].RemainingQuantity = 0
 	a.refreshTracking()
 	cached := a.GetState().Tracking.Variants
-	if fake.loads != 1 || !a.trackedAt.Equal(fetchedAt) || cached[0].AvailableQuantity != 1 || cached[1].AvailableQuantity != 2 {
+	if fake.loads != 1 || !a.localAt.Equal(fetchedAt) || cached[0].AvailableQuantity != 1 || cached[1].AvailableQuantity != 2 {
 		t.Fatal("cached variants must preserve both original stocks and fetch time")
 	}
-	a.trackedAt = time.Now().Add(-6 * time.Second)
+	a.localAt = time.Now().Add(-6 * time.Second)
 	a.refreshTracking()
 	fresh := a.GetState().Tracking.Variants
 	if fake.loads != 2 || len(fresh) != 2 || fresh[0].AvailableQuantity != 5 || fresh[1].AvailableQuantity != 7 ||
@@ -952,7 +1040,7 @@ func TestDuplicateBSGVariantsDoNotBlockUnrelatedTrackedItems(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	fake.snapshot = snapshot
 	a.state.Item = &market.Item{UID: trackingItemUID, BSGID: "normal-item", Name: "Secure Flash drive"}
-	a.state.Tracking = trackedView(*a.state.Item, snapshot)
+	setTrackingTestSnapshot(t, a, snapshot)
 	// The fake commit helper targets the first record; return a confirmed write
 	// directly here and let readback fail so the production fallback updates by ID.
 	fake.writeHook = func(stockWrite) (market.ProgressWriteResult, error) {
@@ -964,8 +1052,8 @@ func TestDuplicateBSGVariantsDoNotBlockUnrelatedTrackedItems(t *testing.T) {
 		}
 		return cloneTrackedSnapshot(snapshot), nil
 	}
-	state := a.AddTrackedItem(trackingItemUID)
-	if len(fake.writes) != 1 || fake.writes[0].Item != "normal-item" || fake.writes[0].Quantity != 4 || state.Tracking.AvailableQuantity != 4 || state.Tracking.Error != "" {
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "fir")
+	if len(fake.writes) != 1 || fake.writes[0].Item != "normal-item" || fake.writes[0].Quantity != 4 || state.Tracking.AvailableQuantity != 4 || state.Tracking.Error == "" || !strings.Contains(state.Tracking.Status, "confirmed stock 4") {
 		t.Fatalf("unambiguous item must still add one: %+v %+v", fake.writes, state.Tracking)
 	}
 }
@@ -1003,11 +1091,11 @@ func TestDuplicateVariantDiscoveredDuringFreshReadCannotBeWritten(t *testing.T) 
 	a, fake := newTrackingTestApp(t)
 	a.state.Item.Name = "Metal fuel tank"
 	fake.snapshot = variantTrackingFixture()
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 0 || !state.Tracking.Tracked || state.Tracking.Error == "" || state.Tracking.AvailableQuantity != 1 || state.Tracking.Adding || len(state.Tracking.Variants) != 2 || state.Tracking.Variants[1].AvailableQuantity != 2 {
 		t.Fatalf("fresh read must catch ID ambiguity before PATCH: %+v %+v", fake.writes, state.Tracking)
 	}
-	a.AddTrackedItem(trackingItemUID)
+	addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 0 {
 		t.Fatal("known ambiguous variant must remain read-only")
 	}
@@ -1017,9 +1105,9 @@ func TestUncertainWriteIsNotConfirmedByAmbiguousReadback(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	a.state.Item.Name = "Metal fuel tank"
 	fake.snapshot.Items[0].Name = a.state.Item.Name
-	a.state.Tracking = trackedView(*a.state.Item, fake.snapshot)
+	setTrackingTestSnapshot(t, a, fake.snapshot)
 	fake.loadHook = func(count int) (market.TrackedSnapshot, error) {
-		if count == 1 {
+		if count <= 1 {
 			return cloneTrackedSnapshot(fake.snapshot), nil
 		}
 		// The exact-name record has the requested target of one, but its ID is
@@ -1029,12 +1117,12 @@ func TestUncertainWriteIsNotConfirmedByAmbiguousReadback(t *testing.T) {
 	fake.writeHook = func(stockWrite) (market.ProgressWriteResult, error) {
 		return market.ProgressWriteResult{}, market.ErrProgressWriteUncertain
 	}
-	state := a.AddTrackedItem(trackingItemUID)
+	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 || fake.loads != 2 || state.Tracking.Adding || state.Tracking.AvailableQuantity != 1 ||
-		!strings.Contains(state.Tracking.Error, "add result could not be verified") || strings.Contains(state.Tracking.Status, "verified") {
+		!strings.Contains(state.Tracking.Error, "add result could not be verified") || strings.Contains(state.Tracking.Status, "API stock verified") || strings.Contains(state.Tracking.Status, "Added 1 item") {
 		t.Fatalf("ambiguous stock must not confirm or replay an uncertain PATCH: writes=%+v loads=%d view=%+v", fake.writes, fake.loads, state.Tracking)
 	}
-	a.AddTrackedItem(trackingItemUID)
+	addMarketTrackedItemForTest(a, trackingItemUID, "regular")
 	if len(fake.writes) != 1 {
 		t.Fatal("unconfirmed ambiguous stock must block another write")
 	}

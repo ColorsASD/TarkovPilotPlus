@@ -126,6 +126,12 @@ const $ = (id) => document.getElementById(id);
 let hookIdDirty = false; // the user is editing the field — don't overwrite it with backend data
 let lastState = null;
 let hookActionBusy = false;
+let handInOpening = false;
+
+const updateHandInControl = () => {
+    const app = window.go && window.go.main && window.go.main.App;
+    $('btn-hand-in').disabled = handInOpening || !app || typeof app.OpenItemHandover !== 'function';
+};
 
 const setDot = (id, ok) => $(id).classList.toggle('ok', !!ok);
 
@@ -199,6 +205,7 @@ const render = (st) => {
 
     // event log
     $('event-log').textContent = (st.eventLog || []).join('\n');
+    updateHandInControl();
 };
 
 // --- quest progress sync ---
@@ -435,6 +442,23 @@ const closeQuestSync = () => {
 // --- event handlers ---
 
 const bind = () => {
+    $('btn-hand-in').addEventListener('click', async () => {
+        if (handInOpening) return;
+        handInOpening = true;
+        $('hand-in-status').textContent = '';
+        $('hand-in-status').classList.add('hidden');
+        updateHandInControl();
+        try {
+            if (!await App().OpenItemHandover()) throw new Error('unavailable');
+        } catch (_) {
+            $('hand-in-status').textContent = 'The item window could not be opened. Try again.';
+            $('hand-in-status').classList.add('error');
+            $('hand-in-status').classList.remove('hidden');
+        } finally {
+            handInOpening = false;
+            updateHandInControl();
+        }
+    });
     $('btn-save-key').addEventListener('click', async () => {
         const val = $('hookid').value.trim();
         const action = hookAction();

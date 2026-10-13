@@ -5,11 +5,45 @@ package plus
 type trackedAddHotkeyTarget struct {
 	UID, ItemID, CharUID string
 	Revision             uint64
+	Kind                 string
+}
+
+func trackedAddHotkeyEnabled(opts ItemOptions) bool {
+	return trackedActionHotkeyEnabled(opts, "regular") || trackedActionHotkeyEnabled(opts, "fir")
+}
+
+func trackedActionHotkeyEnabled(opts ItemOptions, kind string) bool {
+	if kind == "fir" {
+		return normalizeTrackedFIRHotkey(opts.FIRHotkey) != "off"
+	}
+	return normalizeTrackedAddHotkey(opts.AddHotkey) != "off"
+}
+
+func (a *ItemWindowApp) trackedAddHotkeyTargetCurrent(target *trackedAddHotkeyTarget) bool {
+	if target == nil {
+		return false
+	}
+	if target.Kind == "fir" {
+		return trackedActionHotkeyEnabled(a.state.ItemOptions, "fir") && a.addHotkeyFIRTarget.Load() == target
+	}
+	return (target.Kind == "" || target.Kind == "regular") && trackedActionHotkeyEnabled(a.state.ItemOptions, "regular") && a.addHotkeyTarget.Load() == target
 }
 
 func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
+	if a.stockEditorBlocksStockLocked() || a.state.HotkeyCapture {
+		return false
+	}
+	if a.state.Local == nil || a.state.Local.Loading || a.state.Local.StockError || a.state.Local.Error != "" {
+		return false
+	}
 	t := a.state.Tracking
 	item := a.state.Item
+	if item != nil && (a.handoverBlocksItemLocked(item.BSGID) || a.stockEditorBlocksItemLocked(item.BSGID) || a.progressUnsafeItemLocked(item.BSGID) != "") {
+		return false
+	}
+	if item != nil && a.marketFallbackBlocksItemLocked(item.BSGID) && !a.marketFallbackAppendAllowedLocked(item.BSGID) && (t == nil || t.Storage != "local") {
+		return false
+	}
 	return a.ctx != nil && a.ctx.Err() == nil && a.tracker != nil && a.apiKey != "" && a.state.HasAPIKey &&
 		!a.state.Busy && a.state.Error == "" && item != nil && item.UID != "" && item.BSGID != "" &&
 		a.state.CharacterUID != "" && t != nil && t.ItemUID == item.UID && t.ItemID == item.BSGID &&
@@ -20,20 +54,40 @@ func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
 func (a *ItemWindowApp) publishTrackedAddHotkey() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.state.AddHotkeyReady || normalizeTrackedAddHotkey(a.state.AddHotkey) == "off" || !a.canAddTrackedItemLocked() {
+	if !a.state.AddHotkeyReady || !trackedAddHotkeyEnabled(a.state.ItemOptions) || !a.canAddTrackedItemLocked() {
 		a.addHotkeyTarget.Store(nil)
+		a.addHotkeyFIRTarget.Store(nil)
 		return
 	}
-	a.addHotkeyTarget.Store(&trackedAddHotkeyTarget{
-		UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
-		CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision,
-	})
+	if trackedActionHotkeyEnabled(a.state.ItemOptions, "regular") && a.state.Tracking.AddRegularAllowed {
+		a.addHotkeyTarget.Store(&trackedAddHotkeyTarget{
+			UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
+			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision, Kind: "regular",
+		})
+	} else {
+		a.addHotkeyTarget.Store(nil)
+	}
+	if trackedActionHotkeyEnabled(a.state.ItemOptions, "fir") && a.state.Tracking.AddFIRAllowed {
+		a.addHotkeyFIRTarget.Store(&trackedAddHotkeyTarget{
+			UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
+			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision, Kind: "fir",
+		})
+	} else {
+		a.addHotkeyFIRTarget.Store(nil)
+	}
 }
 
 // This runs in the Windows keyboard callback: no locks, API calls or Wails
 // events. An occupied worker drops another press instead of replaying it later.
 func (a *ItemWindowApp) requestTrackedAddHotkey() {
-	target := a.addHotkeyTarget.Load()
+	a.queueTrackedAddHotkey(a.addHotkeyTarget.Load())
+}
+
+func (a *ItemWindowApp) requestTrackedAddFIRHotkey() {
+	a.queueTrackedAddHotkey(a.addHotkeyFIRTarget.Load())
+}
+
+func (a *ItemWindowApp) queueTrackedAddHotkey(target *trackedAddHotkeyTarget) {
 	if target == nil || !a.addHotkeyPending.CompareAndSwap(false, true) {
 		return
 	}
@@ -49,11 +103,12 @@ func (a *ItemWindowApp) runTrackedAddHotkeys() {
 		select {
 		case <-a.ctx.Done():
 			a.addHotkeyTarget.Store(nil)
+			a.addHotkeyFIRTarget.Store(nil)
 			a.addHotkeyPending.Store(false)
 			return
 		case target := <-a.addHotkeyRequests:
 			if a.ctx.Err() == nil && target != nil {
-				a.addTrackedItem(target.UID, target)
+				a.addTrackedItemKind(target.UID, target, target.Kind)
 			}
 			a.addHotkeyPending.Store(false)
 		}
@@ -64,12 +119,13 @@ func (a *ItemWindowApp) startTrackedAddHotkey() {
 	a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
 	go a.runTrackedAddHotkeys()
 	a.hotkeyConfigMu.Lock()
-	hotkey := newTrackedAddHotkey(a.ctx, a.requestTrackedAddHotkey, a.setTrackedAddHotkeyStatus)
+	hotkey := newTrackedAddHotkey(a.ctx, a.requestTrackedAddHotkey, a.setTrackedAddHotkeyStatus, a.requestTrackedAddFIRHotkey)
 	a.mu.Lock()
 	a.addHotkey = hotkey
-	key := a.state.AddHotkey
+	opts := a.state.ItemOptions
+	capture := a.localBackupBusyLocked() || a.state.HotkeyCapture || a.state.StockEditor != nil && a.state.StockEditor.Open
 	a.mu.Unlock()
-	hotkey.SetKey(key)
+	configureTrackedHotkeyKeys(hotkey, opts, capture)
 	a.hotkeyConfigMu.Unlock()
 }
 
@@ -77,16 +133,40 @@ func (a *ItemWindowApp) configureTrackedAddHotkey() {
 	a.hotkeyConfigMu.Lock()
 	defer a.hotkeyConfigMu.Unlock()
 	a.mu.Lock()
-	hotkey, key := a.addHotkey, a.state.AddHotkey
+	hotkey, opts := a.addHotkey, a.state.ItemOptions
+	capture := a.localBackupBusyLocked() || a.state.HotkeyCapture || a.state.StockEditor != nil && a.state.StockEditor.Open
 	a.mu.Unlock()
 	if hotkey != nil {
-		hotkey.SetKey(key)
+		configureTrackedHotkeyKeys(hotkey, opts, capture)
 	}
+}
+
+func configureTrackedHotkeyKeys(hotkey *trackedAddHotkey, opts ItemOptions, capture ...bool) {
+	if len(capture) > 0 && capture[0] {
+		hotkey.SetKeys("off", "off")
+		return
+	}
+	hotkey.SetKeys(normalizeTrackedAddHotkey(opts.AddHotkey), normalizeTrackedFIRHotkey(opts.FIRHotkey))
+}
+
+func (a *ItemWindowApp) SetHotkeyCapture(enabled bool) ItemState {
+	a.mu.Lock()
+	if enabled && (a.localBackupBusyLocked() || a.state.Busy || a.state.Handover != nil && a.state.Handover.Busy) {
+		a.mu.Unlock()
+		return a.GetState()
+	}
+	a.state.HotkeyCapture = enabled
+	a.addHotkeyTarget.Store(nil)
+	a.addHotkeyFIRTarget.Store(nil)
+	a.mu.Unlock()
+	a.configureTrackedAddHotkey()
+	a.emit()
+	return a.GetState()
 }
 
 func (a *ItemWindowApp) setTrackedAddHotkeyStatus(ready bool, message string) {
 	a.mu.Lock()
-	a.state.AddHotkeyReady = ready && normalizeTrackedAddHotkey(a.state.AddHotkey) != "off" && a.ctx != nil && a.ctx.Err() == nil
+	a.state.AddHotkeyReady = ready && !a.localBackupBusyLocked() && !a.state.HotkeyCapture && !(a.state.StockEditor != nil && a.state.StockEditor.Open) && trackedAddHotkeyEnabled(a.state.ItemOptions) && a.ctx != nil && a.ctx.Err() == nil
 	a.state.AddHotkeyError = message
 	a.mu.Unlock()
 	a.emit()
@@ -100,6 +180,7 @@ func (a *ItemWindowApp) stopTrackedAddHotkey() {
 	a.addHotkey = nil
 	a.state.AddHotkeyReady = false
 	a.addHotkeyTarget.Store(nil)
+	a.addHotkeyFIRTarget.Store(nil)
 	a.mu.Unlock()
 	if hotkey != nil {
 		hotkey.Close()

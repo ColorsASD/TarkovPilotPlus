@@ -54,9 +54,11 @@ type trackedAddHotkey struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	key          atomic.Uint32
+	bindings     atomic.Pointer[trackedHotkeyBindings]
 	installation atomic.Pointer[trackedHotkeyStatus]
 	stopping     atomic.Bool
 	trigger      func()
+	triggerFIR   func()
 	status       func(bool, string)
 	statuses     chan struct{}
 	done         chan struct{}
@@ -66,7 +68,7 @@ type trackedAddHotkey struct {
 // trigger runs on the keyboard hook thread at the first physical key-down. It
 // must only capture atomic state and send a nonblocking request; application
 // locks, API requests, OCR, logging, and UI calls belong to the action worker.
-func newTrackedAddHotkey(ctx context.Context, trigger func(), status func(bool, string)) *trackedAddHotkey {
+func newTrackedAddHotkey(ctx context.Context, trigger func(), status func(bool, string), firTrigger ...func()) *trackedAddHotkey {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -75,16 +77,33 @@ func newTrackedAddHotkey(ctx context.Context, trigger func(), status func(bool, 
 		ctx: ctx, cancel: cancel, trigger: trigger, status: status,
 		statuses: make(chan struct{}, 1), done: make(chan struct{}),
 	}
+	if len(firTrigger) > 0 {
+		h.triggerFIR = firTrigger[0]
+	}
 	// Keep the reservation disabled until the caller applies its saved option.
-	// This avoids briefly capturing F1 when the saved setting is off or F2.
+	// This avoids briefly capturing a default when the saved setting is disabled
+	// or uses a different shortcut.
 	go h.runStatuses()
 	go h.runHook()
 	return h
 }
 
 func (h *trackedAddHotkey) SetKey(key string) {
+	h.SetKeys(key, "off")
+}
+
+func (h *trackedAddHotkey) SetKeys(regular, fir string) {
 	if h != nil {
-		h.key.Store(trackedAddHotkeyVK(key))
+		_, regularChord, _ := parseTrackedShortcut(normalizeTrackedAddHotkey(regular))
+		_, firChord, _ := parseTrackedShortcut(normalizeTrackedFIRHotkey(fir))
+		binding := &trackedHotkeyBindings{regular: regularChord, fir: firChord}
+		if binding.regular != 0 && binding.regular == binding.fir {
+			// SetOptions rejects duplicates. Keep native configuration fail-closed
+			// if a caller bypasses that validation rather than guessing a quality.
+			binding = &trackedHotkeyBindings{}
+		}
+		h.bindings.Store(binding)
+		h.key.Store(binding.regular)
 		h.reportCurrent()
 	}
 }
@@ -96,6 +115,7 @@ func (h *trackedAddHotkey) Close() {
 	h.closeOnce.Do(func() {
 		h.stopping.Store(true)
 		h.key.Store(0)
+		h.bindings.Store(nil)
 		h.cancel()
 	})
 	timer := time.NewTimer(2 * time.Second)
@@ -120,11 +140,13 @@ func (h *trackedAddHotkey) reportCurrent() {
 }
 
 func (h *trackedAddHotkey) currentStatus() trackedHotkeyStatus {
-	if h.key.Load() == 0 && !h.stopping.Load() {
+	binding := h.bindings.Load()
+	enabled := binding != nil && (binding.regular != 0 || binding.fir != 0)
+	if !enabled && !h.stopping.Load() {
 		return trackedHotkeyStatus{}
 	}
 	if state := h.installation.Load(); state != nil {
-		return trackedHotkeyStatus{ready: state.ready && h.key.Load() != 0 && !h.stopping.Load(), error: state.error}
+		return trackedHotkeyStatus{ready: state.ready && enabled && !h.stopping.Load(), error: state.error}
 	}
 	return trackedHotkeyStatus{}
 }
@@ -196,10 +218,7 @@ func (h *trackedAddHotkey) runHook() {
 			up := kind == 0x101 || kind == 0x105   // WM_(SYS)KEYUP.
 			if down || up {
 				event := input
-				consume, trigger := keys.event(event.Key, down, event.Flags&0x12 != 0, event.Flags&0x20 != 0, h.key.Load())
-				if trigger && !h.stopping.Load() && h.trigger != nil {
-					h.trigger()
-				}
+				consume := h.keyEvent(&keys, event.Key, down, event.Flags&0x12 != 0, event.Flags&0x20 != 0)
 				if consume {
 					return 1
 				}
@@ -234,7 +253,10 @@ func (h *trackedAddHotkey) runHook() {
 		value, _, _ := trackedHotkeyAsyncState.Call(uintptr(key))
 		keys.seed(key, value&0x8000 != 0)
 	}
-	for key := uint32(0x70); key <= 0x7b; key++ {
+	for key := uint32(0); key <= trackedHotkeyKeyMask; key++ {
+		if !trackedHotkeySupportedKey(key) {
+			continue
+		}
 		value, _, _ := trackedHotkeyAsyncState.Call(uintptr(key))
 		keys.seed(key, value&0x8000 != 0)
 	}
@@ -260,4 +282,26 @@ func (h *trackedAddHotkey) runHook() {
 			trackedHotkeyDispatchMessage.Call(uintptr(unsafe.Pointer(&message)))
 		}
 	}
+}
+
+// A binding is sampled once per event so configuration changes cannot mix the
+// Regular and FiR destinations inside one callback. Physical hold state stays
+// in the shared hook state, including captured releases after mode changes.
+func (h *trackedAddHotkey) keyEvent(keys *trackedHotkeyKeys, key uint32, down, injected, alt bool) bool {
+	binding := h.bindings.Load()
+	var configured uint32
+	if binding != nil {
+		configured = binding.configuredKey(key, keys.modifierMask(alt))
+	}
+	consume, trigger := keys.event(key, down, injected, alt, configured)
+	if trigger && !h.stopping.Load() {
+		action := h.trigger
+		if binding != nil && configured == binding.fir {
+			action = h.triggerFIR
+		}
+		if action != nil {
+			action()
+		}
+	}
+	return consume
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -166,12 +165,40 @@ func (c *Client) SetTrackedQuantity(ctx context.Context, apiKey, charUID, itemID
 	if err != nil {
 		return ProgressWriteResult{}, err
 	}
-	var result ProgressWriteResult
-	if json.Unmarshal(response, &result) != nil || !result.OK || !validRevision(result.Revision) {
-		return ProgressWriteResult{}, errors.Join(ErrProgressWriteUncertain, ErrInvalidProgress)
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(response, &fields) != nil || fields == nil {
+		return ProgressWriteResult{}, invalidWriteResponse("invalid_json", nil, nil)
 	}
-	// notificationDelivered=false mellett a mentés már megtörtént; nem hiba és
-	// nem oka újabb PATCH-nek. changed=false szintén sikeres, idempotens eredmény.
+	var ok, changed *bool
+	if field := fields["ok"]; len(field) != 0 {
+		if json.Unmarshal(field, &ok) != nil {
+			ok = nil
+		}
+	}
+	changedField, exists := fields["changed"]
+	if !exists {
+		return ProgressWriteResult{}, invalidWriteResponse("missing_changed", ok, nil)
+	}
+	if string(bytes.TrimSpace(changedField)) == "null" {
+		return ProgressWriteResult{}, invalidWriteResponse("null_changed", ok, nil)
+	}
+	if json.Unmarshal(changedField, &changed) != nil || changed == nil {
+		return ProgressWriteResult{}, invalidWriteResponse("invalid_changed", ok, nil)
+	}
+	if ok == nil || !*ok {
+		return ProgressWriteResult{}, invalidWriteResponse("not_ok", ok, changed)
+	}
+	var ackRevision string
+	if json.Unmarshal(fields["revision"], &ackRevision) != nil || !validRevision(ackRevision) {
+		return ProgressWriteResult{}, invalidWriteResponse("invalid_revision", ok, changed)
+	}
+	var result ProgressWriteResult
+	if json.Unmarshal(response, &result) != nil {
+		return ProgressWriteResult{}, invalidWriteResponse("invalid_schema", ok, changed)
+	}
+	// notificationDelivered=false nem oka újabb PATCH-nek. changed=false
+	// sikeres, idempotens setter eredmény, de nem igazol új hozzáadott darabot;
+	// a hívó külön ellenőrzi a készletet és a művelet típusát.
 	return result, nil
 }
 
@@ -260,37 +287,42 @@ func (c *Client) apiRequest(ctx context.Context, apiKey, method, path string, qu
 			err = ctx.Err()
 		} else {
 			gate.backoff(0)
-			err = ErrProgressUnavailable
+			reason := "network"
+			var timedOut interface{ Timeout() bool }
+			if errors.As(err, &timedOut) && timedOut.Timeout() {
+				reason = "timeout"
+			}
+			err = &progressDiagnosticError{details: ProgressWriteFailureInfo{Reason: reason}, cause: ErrProgressUnavailable}
 		}
 		return nil, uncertainWrite(err, writeGate != nil)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
-		return nil, ErrUnauthorized
+		return nil, progressHTTPError(resp.StatusCode, ErrUnauthorized)
 	case http.StatusForbidden:
-		return nil, ErrProgressForbidden
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressForbidden)
 	case http.StatusNotFound:
-		return nil, ErrProgressNotFound
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressNotFound)
 	case http.StatusConflict:
-		return nil, ErrProgressConflict
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressConflict)
 	case http.StatusPreconditionRequired:
-		return nil, ErrProgressRevisionRequired
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressRevisionRequired)
 	case http.StatusBadRequest:
-		return nil, ErrProgressInvalidRequest
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressInvalidRequest)
 	case http.StatusTooManyRequests:
 		delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		gate.backoff(delay)
 		if writeGate != nil {
 			writeGate.backoff(delay)
 		}
-		return nil, ErrRateLimited
+		return nil, progressHTTPError(resp.StatusCode, ErrRateLimited)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("Tarkov Market API response: HTTP %d", resp.StatusCode)
+		err := progressHTTPError(resp.StatusCode, ErrProgressInvalidRequest)
 		if resp.StatusCode >= 500 {
 			gate.backoff(0)
-			err = fmt.Errorf("%w: HTTP %d", ErrProgressUnavailable, resp.StatusCode)
+			err = progressHTTPError(resp.StatusCode, ErrProgressUnavailable)
 		}
 		return nil, uncertainWrite(err, writeGate != nil && resp.StatusCode >= 500)
 	}
