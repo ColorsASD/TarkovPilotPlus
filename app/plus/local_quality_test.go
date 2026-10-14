@@ -97,8 +97,10 @@ func TestLocalAnyQualitySharesProgressAndStopsAlternativeCollection(t *testing.T
 			for i := want; i < 3; i++ {
 				state = addAndSyncCachedTest(t, a, trackingItemUID, "fir")
 			}
-			if state.Tracking.RequiredQuantity != 0 || len(state.Tracking.AnyGroups) != 0 || a.canAddLocalForTest() || len(state.Local.QuestItems) != 0 {
-				t.Fatalf("covered Any kept requesting alternatives: %+v", state)
+			if state.Tracking.RequiredQuantity != 0 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 1 ||
+				state.Tracking.AnyGroups[0].AvailableQuantity != 3 || state.Tracking.AnyGroups[0].RequiredQuantity != 3 || state.Tracking.AnyGroups[0].FIR != fir ||
+				a.canAddLocalForTest() || len(state.Local.QuestItems) != 0 {
+				t.Fatalf("covered Any lost its full ratio or kept requesting alternatives: %+v", state)
 			}
 			before := state.Tracking.AvailableQuantity
 			state = addAndSyncCachedTest(t, a, trackingItemUID, "regular")
@@ -108,8 +110,17 @@ func TestLocalAnyQualitySharesProgressAndStopsAlternativeCollection(t *testing.T
 			a.localAt = time.Time{}
 			a.state.Item = &market.Item{UID: "second-item", BSGID: second, Name: "Second item"}
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
-			if state = a.GetState(); state.Tracking.RequiredQuantity != 0 || len(state.Tracking.AnyGroups) != 0 {
-				t.Fatalf("refresh or candidate change reopened a covered Any group: %+v", state.Tracking)
+			if state = a.GetState(); state.Tracking.RequiredQuantity != 0 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 1 ||
+				state.Tracking.AnyGroups[0].AvailableQuantity != 3 || state.Tracking.AnyGroups[0].RequiredQuantity != 3 || state.Tracking.AnyGroups[0].FIR != fir ||
+				state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed {
+				t.Fatalf("refresh or candidate change lost a full Any ratio or reopened collection: %+v", state.Tracking)
+			}
+			fake.quests.Quests[1].Completed, fake.quests.Quests[1].Status = true, "completed"
+			a.localAt = time.Time{}
+			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
+			if state = a.GetState(); state.Tracking.RequiredQuantity != 0 || len(state.Tracking.AnyGroups) != 0 ||
+				len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 3 {
+				t.Fatalf("completed quest kept an active full Any requirement: %+v", state.Tracking)
 			}
 		})
 	}
@@ -180,14 +191,16 @@ func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
 			for _, row := range a.localSnapshot.Items {
 				stock += row.AvailableQuantity
 			}
-			if stock != 9 || len(fake.writes) != 3 || len(state.Tracking.AnyGroups) != 0 {
+			if stock != 9 || len(fake.writes) != 3 || len(state.Tracking.AnyGroups) != 1 ||
+				state.Tracking.AnyGroups[0].AvailableQuantity != 6 || state.Tracking.AnyGroups[0].RequiredQuantity != 6 {
 				t.Fatalf("nine pieces did not cover exactly the three goals: stock=%d writes=%+v state=%+v", stock, fake.writes, state.Tracking)
 			}
 			a.state.Item = &market.Item{UID: "augmentin-uid", BSGID: augmentin, Name: augmentin}
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 			state = a.GetState()
-			if state.Tracking.RequiredQuantity != 3 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 0 || len(state.Local.QuestItems) != 1 {
-				t.Fatalf("covered alternatives hid or enlarged the remaining fixed requirement: %+v", state)
+			if state.Tracking.RequiredQuantity != 3 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 1 ||
+				state.Tracking.AnyGroups[0].AvailableQuantity != 6 || state.Tracking.AnyGroups[0].RequiredQuantity != 6 || len(state.Local.QuestItems) != 1 {
+				t.Fatalf("covered alternatives lost their ratio or changed the fixed requirement: %+v", state)
 			}
 		})
 	}

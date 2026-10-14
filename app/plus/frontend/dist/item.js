@@ -278,12 +278,10 @@
             Number.isInteger(requirement.requiredQuantity) && requirement.requiredQuantity >= 0).sort((a, b) =>
                 a.kind === b.kind ? 0 : a.kind === 'fir' ? -1 : 1) : [];
         const noRequiredQuantity = tracked && tracking.requiredQuantity === 0;
-        const noRemainingRequirement = noRequiredQuantity || tracked &&
-            Number.isSafeInteger(tracking.remainingQuantity) && tracking.remainingQuantity === 0;
-        const visibleRequirements = noRequiredQuantity ? [] : requirements;
-        const anyGroups = tracked && !noRequiredQuantity && Array.isArray(tracking.anyGroups) ? tracking.anyGroups.filter((group) =>
+        const visibleRequirements = requirements;
+        const anyGroups = tracked && Array.isArray(tracking.anyGroups) ? tracking.anyGroups.filter((group) =>
             group && Number.isSafeInteger(group.requiredQuantity) && group.requiredQuantity > 0 &&
-            Number.isSafeInteger(group.availableQuantity) && group.availableQuantity >= 0 && group.availableQuantity < group.requiredQuantity).reduce((totals, group) => {
+            Number.isSafeInteger(group.availableQuantity) && group.availableQuantity >= 0 && group.availableQuantity <= group.requiredQuantity).reduce((totals, group) => {
                 const fir = group.fir === true;
                 let total = totals.find((entry) => entry.fir === fir);
                 if (!total) {
@@ -300,9 +298,10 @@
         const separateInventory = tracked && tracking.firInventorySeparate === true;
         const completedSources = tracked && Array.isArray(tracking.completedSources) ? tracking.completedSources.filter((source) =>
             source && typeof source === 'object' && !Array.isArray(source)) : [];
-        panel.classList.toggle('hidden', noRemainingRequirement && !error && !(tracking && tracking.loading) && !adding ||
+        const noActiveRequirement = noRequiredQuantity && !visibleRequirements.some((requirement) => requirement.requiredQuantity > 0) && !anyGroups.length;
+        panel.classList.toggle('hidden', noActiveRequirement && !error && !(tracking && tracking.loading) && !adding ||
             !tracked && !error && !(tracking && tracking.loading) && !adding);
-        element('content').classList.toggle('hidden', !tracked || noRequiredQuantity);
+        element('content').classList.toggle('hidden', !tracked || noActiveRequirement);
         const variantName = multipleVariants ? variantLabel : '';
         element('variant-name').textContent = variantName;
         element('variant-name').classList.toggle('hidden', !variantName);

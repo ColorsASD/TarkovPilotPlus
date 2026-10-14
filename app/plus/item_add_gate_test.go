@@ -170,8 +170,154 @@ func TestAddGateCMSAnyFIRUsesGlobalUnknownCandidateStock(t *testing.T) {
 	addAndSyncCachedTest(t, a, trackingItemUID, "regular")
 	state := addAndSyncCachedTest(t, a, trackingItemUID, "fir")
 	if len(fake.writes) != 1 || fake.writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 ||
-		state.Tracking.RequiredQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || len(state.Tracking.AnyGroups) != 0 {
+		state.Tracking.RequiredQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || len(state.Tracking.AnyGroups) != 1 ||
+		state.Tracking.AnyGroups[0].AvailableQuantity != 2 || state.Tracking.AnyGroups[0].RequiredQuantity != 2 {
 		t.Fatalf("CMS failed to cover the global missing piece or kept collecting: writes=%+v state=%+v", fake.writes, state.Tracking)
+	}
+}
+
+func TestAddGateFilledVisibleRequirementsBlockButtonsAndHotkeys(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		for _, any := range []bool{false, true} {
+			for _, fir := range []bool{false, true} {
+				name := map[bool]string{false: "local", true: "market"}[remote] +
+					map[bool]string{false: "-fixed", true: "-any"}[any] + map[bool]string{false: "-regular", true: "-fir"}[fir]
+				t.Run(name, func(t *testing.T) {
+					a, fake, dir := newFixedAddGateTestApp(t, remote, fir)
+					objective := &a.devRequirements.(*fakeRequirements).catalog.Tasks[0].Objectives[0]
+					objective.Count = 10
+					if any {
+						objective.ItemIDs = append(objective.ItemIDs, "alternative-item")
+					}
+					if remote {
+						fake.snapshot.Items[0].RequiredQuantity, fake.snapshot.Items[0].RemainingQuantity = 10, 10
+						fake.snapshot.Items[0].Sources[0].Amount, fake.snapshot.Items[0].Sources[0].RemainingRequiredQuantity = 10, 10
+					}
+					a.localAt = time.Time{}
+					a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
+					a.state.AddHotkeyReady = true
+					a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
+					a.publishTrackedAddHotkey()
+					kind := "regular"
+					if fir {
+						kind = "fir"
+					}
+					for i := 0; i < 9; i++ {
+						addAndSyncCachedTest(t, a, trackingItemUID, kind)
+					}
+					if view := a.GetState().Tracking; !view.AddFIRAllowed || view.AddRegularAllowed == fir {
+						t.Fatalf("the last required piece was disabled prematurely: %+v", view)
+					}
+					runTrackedHotkeyTestWorker(t, a)
+					if fir {
+						a.requestTrackedAddFIRHotkey()
+					} else {
+						a.requestTrackedAddHotkey()
+					}
+					waitTrackedHotkeyIdle(t, a)
+					state := syncCachedMarketTest(t, a)
+					if state.Tracking.AvailableQuantity != 10 || state.Tracking.RemainingQuantity != 0 ||
+						state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+						t.Fatalf("a filled requirement kept a stock action available: %+v", state.Tracking)
+					}
+					if any {
+						if len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != 10 || state.Tracking.AnyGroups[0].RequiredQuantity != 10 {
+							t.Fatalf("filled Any demand must remain visible while both actions are disabled: %+v", state.Tracking)
+						}
+					} else if len(state.Tracking.Requirements) != 1 || state.Tracking.Requirements[0].AvailableQuantity != 10 || state.Tracking.Requirements[0].RequiredQuantity != 10 {
+						t.Fatalf("filled typed demand must remain 10/10 while both actions are disabled: %+v", state.Tracking)
+					}
+					before, loads, writes := addGateFile(t, dir), fake.loads, len(fake.writes)
+					a.AddTrackedItem(trackingItemUID)
+					state = a.AddTrackedItemFIR(trackingItemUID)
+					a.requestTrackedAddHotkey()
+					a.requestTrackedAddFIRHotkey()
+					if fake.loads != loads || len(fake.writes) != writes || !bytes.Equal(before, addGateFile(t, dir)) ||
+						state.Tracking.AvailableQuantity != 10 || a.addHotkeyPending.Load() || len(a.addHotkeyRequests) != 0 {
+						t.Fatalf("visible 10/10 demand accepted another button or shortcut: writes=%+v state=%+v", fake.writes, state.Tracking)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAddGateQueuedShortcutRechecksStockFilledByAnotherAction(t *testing.T) {
+	for _, any := range []bool{false, true} {
+		for _, fir := range []bool{false, true} {
+			name := map[bool]string{false: "fixed", true: "any"}[any] + map[bool]string{false: "-regular", true: "-fir"}[fir]
+			t.Run(name, func(t *testing.T) {
+				a, fake, dir := newFixedAddGateTestApp(t, false, fir)
+				stockID := trackingBSGID
+				if any {
+					stockID = "alternative-item"
+					a.devRequirements.(*fakeRequirements).catalog.Tasks[0].Objectives[0].ItemIDs = []string{trackingBSGID, stockID}
+					a.localAt = time.Time{}
+					a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
+				}
+				a.state.AddHotkeyReady = true
+				a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
+				a.publishTrackedAddHotkey()
+				kind := "regular"
+				if fir {
+					kind = "fir"
+					a.requestTrackedAddFIRHotkey()
+				} else {
+					a.requestTrackedAddHotkey()
+				}
+				if !a.addHotkeyPending.Load() {
+					t.Fatal("the initially open requirement did not queue its shortcut")
+				}
+				if _, err := a.localStore.AddKind("character-a", "PVP", stockID, kind); err != nil {
+					t.Fatal(err)
+				}
+				before, loads := addGateFile(t, dir), fake.loads
+				runTrackedHotkeyTestWorker(t, a)
+				waitTrackedHotkeyIdle(t, a)
+				state := a.GetState()
+				if fake.loads != loads || len(fake.writes) != 0 || !bytes.Equal(before, addGateFile(t, dir)) ||
+					state.Tracking.RemainingQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed ||
+					a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+					t.Fatalf("queued shortcut used stale eligibility after the fresh stock filled demand: %+v", state.Tracking)
+				}
+			})
+		}
+	}
+}
+
+func TestAddGateFilledRegularRequirementBlocksOnlyRegularShortcut(t *testing.T) {
+	a, fake := newDevOnlyTestApp(t)
+	a.state.AddHotkeyReady = true
+	a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
+	a.publishTrackedAddHotkey()
+	// A korábban lenyomott Regular gyorsbillentyű még a régi készletre mutat.
+	a.requestTrackedAddHotkey()
+	for i := 0; i < 5; i++ {
+		if _, err := a.localStore.AddKind("character-a", "PVP", trackingBSGID, "regular"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runTrackedHotkeyTestWorker(t, a)
+	waitTrackedHotkeyIdle(t, a)
+	state := a.GetState()
+	if state.Tracking.AvailableQuantity != 5 || state.Tracking.RemainingQuantity != 2 ||
+		state.Tracking.AddRegularAllowed || !state.Tracking.AddFIRAllowed || a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() == nil {
+		t.Fatalf("filled Regular demand disabled FiR or accepted a stale Regular shortcut: %+v", state.Tracking)
+	}
+	loads := fake.loads
+	a.AddTrackedItem(trackingItemUID)
+	a.requestTrackedAddHotkey()
+	if a.addHotkeyPending.Load() || len(a.addHotkeyRequests) != 0 || a.GetState().Tracking.AvailableQuantity != 5 {
+		t.Fatal("a filled Regular requirement accepted its button or shortcut while FiR remained open")
+	}
+	for i := 0; i < 2; i++ {
+		a.requestTrackedAddFIRHotkey()
+		waitTrackedHotkeyIdle(t, a)
+	}
+	state = a.GetState()
+	if fake.loads != loads || len(fake.writes) != 0 || state.Tracking.AvailableQuantity != 7 || state.Tracking.RemainingQuantity != 0 ||
+		state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+		t.Fatalf("the still eligible FiR shortcut did not fill exactly the missing FiR demand: %+v", state.Tracking)
 	}
 }
 

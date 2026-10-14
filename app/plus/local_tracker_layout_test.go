@@ -116,19 +116,25 @@ func groupedLayoutStates(t *testing.T, differentCandidates bool) map[string]Item
 		for i := 0; i < 4; i++ {
 			states["partial"] = a.AddTrackedItem(layoutAugmentin + "-uid")
 		}
+		for i := 0; i < 2; i++ {
+			states["full"] = a.AddTrackedItem(layoutAugmentin + "-uid")
+		}
 	}
 	return states
 }
 
 func TestLocalTrackerAggregatesOnlyIdenticalAnyEligibility(t *testing.T) {
 	states := groupedLayoutStates(t, false)
-	for key, wantAvailable := range map[string]int64{"zero": 0, "partial": 4} {
+	for key, wantAvailable := range map[string]int64{"zero": 0, "partial": 4, "full": 6} {
 		tracking := states[key].Tracking
 		if len(tracking.Requirements) != 0 || len(tracking.AnyGroups) != 1 || tracking.AnyGroups[0].AvailableQuantity != wantAvailable || tracking.AnyGroups[0].RequiredQuantity != 6 {
 			t.Fatalf("%s equivalent Any groups were not displayed together: %+v", key, tracking)
 		}
 		if len(tracking.CompletedSources) != 0 {
 			t.Fatal("covering an Any group completed a quest")
+		}
+		if key == "full" && (tracking.RequiredQuantity != 0 || tracking.RemainingQuantity != 0 || tracking.AddRegularAllowed || tracking.AddFIRAllowed) {
+			t.Fatalf("full Any display reopened collection: %+v", tracking)
 		}
 	}
 	different := groupedLayoutStates(t, true)["zero"].Tracking
@@ -139,5 +145,36 @@ func TestLocalTrackerAggregatesOnlyIdenticalAnyEligibility(t *testing.T) {
 		if group.AvailableQuantity != 0 || group.RequiredQuantity != 3 {
 			t.Fatalf("different candidate set ratio changed: %+v", different)
 		}
+	}
+}
+
+func TestLocalTrackerFullFixedRequirementsKeepRatiosUntilQuestCompletion(t *testing.T) {
+	for _, fir := range []bool{false, true} {
+		kind := map[bool]string{false: "regular", true: "fir"}[fir]
+		t.Run(kind, func(t *testing.T) {
+			a, fake := newDevOnlyTestApp(t)
+			a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{
+				{ID: "quest-b", Objectives: []tarkovdev.Objective{{ID: "fixed-ten", Type: "giveItem", Count: 10, FoundInRaid: fir, ItemIDs: []string{trackingBSGID}}}},
+			}, Hideout: []tarkovdev.Station{}}}
+			refreshLayoutItem(t, a, trackingBSGID, "Tracked item")
+			var state ItemState
+			for i := 0; i < 10; i++ {
+				state = addAndSyncCachedTest(t, a, trackingBSGID+"-uid", kind)
+			}
+			if available, required := requirementStock(t, state, kind); available != 10 || required != 10 {
+				t.Fatalf("full fixed requirement lost its 10/10 ratio: %+v", state.Tracking)
+			}
+			if state.Tracking.RequiredQuantity != 10 || state.Tracking.RemainingQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || len(state.Tracking.CompletedSources) != 0 {
+				t.Fatalf("full stock changed the active requirement or allowed more collection: %+v", state.Tracking)
+			}
+			fake.quests.Quests[1].Completed, fake.quests.Quests[1].Status = true, "completed"
+			state = refreshLayoutItem(t, a, trackingBSGID, "Tracked item")
+			if state.Tracking.RequiredQuantity != 0 || len(state.Tracking.Requirements) != 0 || len(state.Tracking.AnyGroups) != 0 || len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 10 {
+				t.Fatalf("completed quest kept an active full fixed requirement: %+v", state.Tracking)
+			}
+			if len(fake.writes) != 0 {
+				t.Fatal("local fixed requirement wrote Market stock")
+			}
+		})
 	}
 }

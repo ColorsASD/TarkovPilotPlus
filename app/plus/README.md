@@ -39,7 +39,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.1.0`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.1.1`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -50,7 +50,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.1.0`.
+version is `1.1.1`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -155,9 +155,12 @@ that packet once, preserve additions received during the request and do not coun
 an upload as a hand-in. The complete Market inventory remains in memory. Existing
 item catalogs can also be read while their expired prices refresh in the background.
 
-The Items Tracker card is hidden when its typed remaining requirement reaches
-zero. Stock remains available in the settings editor, and a later hand-in can
-make the card visible again. A raw stock total cannot hide an unmet FiR requirement.
+The Items Tracker card and its Found in Raid, Regular, Any (FiR) and Any rows
+remain visible when stock covers their requirements, for example 10/10. Add
+buttons and shortcuts cannot add another piece unless an eligible requirement
+still needs it. Completing or canceling the associated goal removes its active
+requirement. Stock remains available in the settings editor. A raw stock total
+cannot satisfy an unmet FiR requirement with known Regular stock.
 If a fresh Market response removes an item or exposes multiple variants sharing
 its ID, its previous unique stock is invalidated immediately. Only that item is
 protected until the complete requirements refresh; its saved local stock remains.
@@ -225,14 +228,14 @@ stock first, then supplementary Market stock, then live Market stock.
 Alternative candidates belong to shared Any groups. Mandatory requirements
 reserve suitable stock first, then a deterministic maximum-flow allocation shares
 the remainder between overlapping groups. The existing tracker shows at most
-one Any (FiR) row and one Any row, summing visible group progress by type even
-when their eligible item sets differ. Already covered rows are excluded before
-these display totals are calculated. This display summary does not change Stock,
+one Any (FiR) row and one Any row, summing active group progress by type even
+when their eligible item sets differ. Covered groups remain in these display
+totals until their associated goals are completed. This display summary does not change Stock,
 individual goal identities, eligible items or allocations. Groups with the same
 candidate set and FiR condition can already share progress before display, including
-covered active groups until that whole group row is covered. Covering a group
-removes its collection requirement for all alternatives without completing the
-quest. Other mandatory requirements remain visible. Completing the associated
+covered active groups. Covering a group stops further collection for all
+alternatives without completing the quest, and its filled Any row remains
+visible. Other mandatory requirements remain visible. Completing the associated
 Market goal closes its dev additions. Completed Any goals show their required
 group item count once, without identifying which alternatives were handed in.
 Ambiguous Market objective associations keep

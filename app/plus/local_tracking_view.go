@@ -28,7 +28,6 @@ type localTrackingDisplayBucket struct {
 	key                 localTrackingDisplayKey
 	ids                 []string
 	available, required int64
-	open                bool
 }
 
 // simplifyLocalTrackingView csak a nézetet alakítja át. A fix követelmények
@@ -89,7 +88,6 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 				bucket.ids = append(bucket.ids, group.id)
 				bucket.required += group.count
 				bucket.available += group.count - group.remaining
-				bucket.open = bucket.open || group.remaining > 0
 				seenActive[group.id] = true
 			}
 			continue
@@ -121,9 +119,8 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 	view.AnyGroups = []ItemTrackingAnyGroup{}
 	ordered := make([]*localTrackingDisplayBucket, 0, len(buckets))
 	for _, bucket := range buckets {
-		if bucket.open {
-			ordered = append(ordered, bucket)
-		}
+		// A lefedett igény x/x-ként megmarad a forrás teljesítéséig.
+		ordered = append(ordered, bucket)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
 		left, right := ordered[i].key, ordered[j].key
