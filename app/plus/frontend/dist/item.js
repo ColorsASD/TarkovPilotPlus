@@ -306,9 +306,11 @@
         element('variant-name').textContent = variantName;
         element('variant-name').classList.toggle('hidden', !variantName);
         panel.setAttribute('aria-label', variantName ? 'Items Tracker: ' + variantName : 'Items Tracker');
-        element('ratio').textContent = tracked ? noRequiredQuantity ? itemsText(tracking.availableQuantity) :
-            quantityText(tracking.availableQuantity) + '/' + quantityText(tracking.requiredQuantity) : '—/—';
-        element('ratio').setAttribute('aria-label', noRequiredQuantity ? 'Stock quantity' : 'Available / required quantity');
+        const anyRequirementsCovered = anyGroups.length > 0 && anyGroups.every((group) => group.availableQuantity === group.requiredQuantity);
+        const stockRequiredQuantity = noRequiredQuantity && anyRequirementsCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
+        element('ratio').textContent = tracked ?
+            quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
+        element('ratio').setAttribute('aria-label', 'Available / required quantity');
         element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
             const row = document.createElement('div');
             row.className = 'tracked-requirement-row';

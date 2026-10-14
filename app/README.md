@@ -47,7 +47,7 @@ or Wails tools are optional and are not required for the standard commands above
 ## Release
 
 The original application version remains in `version.go` (`2.1.1`), while the
-independent Plus version is in `plus/version.go` (`1.1.1`). The build script can
+independent Plus version is in `plus/version.go` (`1.1.2`). The build script can
 increment only the Plus version; it leaves the original version unchanged. It
 builds the EXE and local OCR components and writes both versions to
 `versions.json`. The upstream repository, commit and version are recorded in
@@ -57,7 +57,7 @@ in [plus/README.md](plus/README.md).
 Every build creates `build/bin/TarkovPilotPlus-<version>-windows-x64/`, containing
 `TarkovPilotPlus.exe`, `versions.json` and the complete `ocr` directory. The build
 also produces `build/bin/TarkovPilotPlus-<version>-windows-x64.zip` with the same
-distribution files and its `.sha256` file. The current package version is `1.1.1`.
+distribution files and its `.sha256` file. The current package version is `1.1.2`.
 
 The default compiler output filename is `TarkovPilotPlus.exe`. A custom
 `-OutputFilename` changes the compiler output name, but the executable is moved

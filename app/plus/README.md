@@ -39,7 +39,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.1.1`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.1.2`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -50,7 +50,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.1.1`.
+version is `1.1.2`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -170,8 +170,13 @@ stay in memory; source ordering and stock-only revisions do not block local addi
 
 Regular and Found in Raid both fill the current Market requirement first,
 then save additional quantities locally. Items absent from Market use local stock
-directly. The Stock ratio combines live Market and local quantities; the existing
-Regular and Found in Raid rows show allocated stock against fixed requirements.
+directly. The Stock row always shows an available/required ratio, combining live
+Market and local quantities. Once all Any groups are covered and no other
+collection requirement remains, Stock displays the item's available quantity
+as a complete ratio, such as 2/2 or 0/0, while Any remains 8/8. This display
+convention does not change the stored collection requirement or Add eligibility.
+The existing Regular and Found in Raid rows show allocated stock against fixed
+requirements.
 Any requirements appear in their own rows without being counted again in the
 fixed requirement rows.
 Known Regular stock cannot satisfy FiR requirements. FiR stock satisfies FiR
@@ -230,7 +235,7 @@ reserve suitable stock first, then a deterministic maximum-flow allocation share
 the remainder between overlapping groups. The existing tracker shows at most
 one Any (FiR) row and one Any row, summing active group progress by type even
 when their eligible item sets differ. Covered groups remain in these display
-totals until their associated goals are completed. This display summary does not change Stock,
+totals until their associated goals are completed. This display summary does not change stored stock,
 individual goal identities, eligible items or allocations. Groups with the same
 candidate set and FiR condition can already share progress before display, including
 covered active groups. Covering a group stops further collection for all
