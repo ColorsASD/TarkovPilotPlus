@@ -74,7 +74,7 @@ func (a *ItemWindowApp) canAddLocalForTest() bool {
 }
 func TestLocalModeMarketItemWritesMarketAndMirrorsStock(t *testing.T) {
 	a, fake := newLocalTestApp(t)
-	state := addMarketKindForTest(t, a, trackingItemUID, "regular")
+	state := addMarketItemForTest(t, a, trackingItemUID)
 	if len(fake.writes) != 1 || fake.writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Storage != "market" {
 		t.Fatalf("Market membership did not route to API: writes=%+v state=%+v", fake.writes, state.Tracking)
 	}

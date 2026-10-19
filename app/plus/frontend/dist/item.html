@@ -72,10 +72,10 @@
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <dl data-tracked="completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
-                <button data-tracked="add-fir" class="tracked-add-button" type="button" disabled
-                    title="Add 1 Found in Raid item to Tracked Items stock for the selected character"><span>Add Found in Raid item</span><kbd data-tracked="add-fir-hotkey" class="add-hotkey-badge hidden">F1</kbd></button>
                 <button data-tracked="add" class="tracked-add-button" type="button" disabled
-                    title="Add 1 item to shared Tracked Items stock for the selected character"><span data-tracked="add-label">Add Regular item</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                    title="Add 1 item to shared Tracked Items stock for the selected character"><span>Add item</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                <button data-tracked="remove" class="tracked-add-button" type="button" disabled
+                    title="Remove 1 item from shared Tracked Items stock for the selected character"><span>Remove item</span><kbd data-tracked="remove-hotkey" class="add-hotkey-badge hidden"></kbd></button>
             </div>
             <p data-tracked="status" class="tracked-status hidden" role="status" aria-live="polite"></p>
             <p data-tracked="error" class="tracked-error hidden" role="alert"></p>
@@ -125,24 +125,24 @@
                 <label class="check-row" title="Check the open Inspect window after a left-click"><input id="scan-automatic" type="checkbox" />
                     <span>Automatic scanning</span></label>
                 <div class="select-row">
-                    <label for="fir-hotkey">Found in Raid shortcut</label>
+                    <label for="add-hotkey">Add item shortcut</label>
                     <div class="shortcut-field">
-                        <input id="fir-hotkey" type="text" value="F1" readonly autocomplete="off" spellcheck="false"
-                            title="Focus, then press a shortcut" aria-describedby="fir-hotkey-status add-hotkey-hint" />
-                        <button id="btn-disable-fir-hotkey" type="button">Disable</button>
-                    </div>
-                </div>
-                <p id="fir-hotkey-status" class="hint" role="status" aria-live="polite"></p>
-                <div class="select-row">
-                    <label for="add-hotkey">Regular shortcut</label>
-                    <div class="shortcut-field">
-                        <input id="add-hotkey" type="text" value="F2" readonly autocomplete="off" spellcheck="false"
+                        <input id="add-hotkey" type="text" value="F1" readonly autocomplete="off" spellcheck="false"
                             title="Focus, then press a shortcut" aria-describedby="add-hotkey-status add-hotkey-hint" />
                         <button id="btn-disable-add-hotkey" type="button">Disable</button>
                     </div>
                 </div>
                 <p id="add-hotkey-status" class="hint" role="status" aria-live="polite"></p>
-                <p id="add-hotkey-hint" class="hint">Focus a shortcut field and press a key or a combination with Ctrl, Alt or Shift. Use Disable to release that shortcut. Enabled shortcuts are reserved globally for normal Windows keyboard input while the app runs, even when adding is unavailable.</p>
+                <div class="select-row">
+                    <label for="remove-hotkey">Remove item shortcut</label>
+                    <div class="shortcut-field">
+                        <input id="remove-hotkey" type="text" value="F2" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="remove-hotkey-status add-hotkey-hint" />
+                        <button id="btn-disable-remove-hotkey" type="button">Disable</button>
+                    </div>
+                </div>
+                <p id="remove-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <p id="add-hotkey-hint" class="hint">Focus a shortcut field and press a key or a combination with Ctrl, Alt or Shift. Use Disable to release that shortcut. Enabled shortcuts are reserved globally for normal Windows keyboard input while the app runs, even when their stock action is unavailable. Each action needs a different shortcut.</p>
                 <div class="select-row mode-row">
                     <label for="game-mode">Game mode</label>
                     <select id="game-mode">
@@ -195,20 +195,26 @@
                     This does not require an open Inspect window or Automatic scanning.</p>
                 <p>Flea Market shows Best price and 24-hour average price. Trader shows the best trader price.
                     The price per slot appears in parentheses. Trader prices use the trader's own currency.</p>
-                <p>Items Tracker uses only Tarkov Market progress and appears when the selected character still has an active mandatory requirement for the item.
+                <p>Items Tracker uses only Tarkov Market progress and appears when the selected character has an active mandatory requirement or remaining stock for the item.
                     Filled requirements remain visible, for example 10/10, until the associated goal is completed.
-                    Add buttons and shortcuts stop adding when no eligible requirement needs another item.</p>
+                    Refreshes keep the loaded panel visible while data updates in the background; stock actions pause until the refresh finishes.
+                    The Add item button and shortcut stop adding when no eligible requirement needs another item.</p>
                 <p>Stock always shows available stock / required quantity, for example 2/5.
-                    When all Any requirements are covered and no other item requirement remains, Stock shows your available stock as complete, for example 2/2 or 0/0, while Any can show 8/8.
+                    When the collection target is covered and no other item requirement remains, Stock shows your available stock as complete, for example 2/2 or 0/0.
                     Found in Raid and Regular requirements appear on separate rows, but share the same stock.</p>
-                <p>Click Add Found in Raid item or press F1, or click Add Regular item or press F2, to add one item of that type to the selected character's stock.
-                    The shortcuts work while the game is in the foreground, but only when the loaded item's button is available.
-                    Each physical press adds at most one item; holding the key does not repeat.
+                <p>Shared and Shared (FiR) show the latest group progress confirmed by Tarkov Market, including stock from other eligible items.
+                    Stock includes pending additions and removals immediately; Shared progress updates after the API confirms it.
+                    The collection target takes other eligible items into account without subtracting the selected item's own stock twice.</p>
+                <p>Click Add item or press F1 to add one item to the selected character's shared stock.
+                    Click Remove item or press F2 to remove one item when stock is available.
+                    Found in Raid and Regular labels describe the API requirements; adding does not assign an item quality.
+                    Each shortcut works while the game is in the foreground, but only when the loaded item's corresponding button is available.
+                    Each physical press changes stock by at most one item; holding the key does not repeat.
                     Stock changes immediately while the update is sent to Tarkov Market in the background.
-                    The status log shows how many items are waiting for the API save. A rejected update restores the confirmed stock. Network errors keep pending items in memory; uncertain saves are checked before retrying.
+                    The status log shows how many stock changes are waiting for the API save. A rejected update restores the confirmed stock. Network errors keep pending changes in memory; uncertain saves are checked before retrying.
                     Pending updates are kept only while the app runs; closing with unsaved items shows a warning.</p>
-                <p>F1 and F2 are the defaults. Set each shortcut separately in Settings, or use Disable to release it.
-                    While enabled, the keys are reserved globally for normal Windows keyboard input even when no item can be added.
+                <p>F1 adds and F2 removes by default. Change each shortcut separately in Settings, or use Disable to release it.
+                    While enabled, the keys are reserved globally for normal Windows keyboard input even when the corresponding stock action is unavailable.
                     Apps that use direct keyboard input may still receive the keys.</p>
                 <p>Completed quest and hideout requirements appear on separate rows, for example 4 items completed.
                     These quantities indicate completion and do not increase stock.</p>

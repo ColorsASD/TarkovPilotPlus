@@ -71,7 +71,7 @@ func TestPendingAddReturnsImmediatelyAndRapidClicksRespectCapacity(t *testing.T)
 		}
 	}
 	state := a.AddTrackedItem(trackingItemUID)
-	if state.PendingAdds.Count != 7 || state.Tracking.AvailableQuantity != 7 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || len(fake.writes) != 0 {
+	if state.PendingAdds.Count != 7 || state.Tracking.AvailableQuantity != 7 || state.Tracking.AddAllowed || len(fake.writes) != 0 {
 		t.Fatalf("queued capacity allowed an eighth item or sent an unchecked write: %+v", state)
 	}
 	state.PendingAdds.Count = 999
@@ -150,7 +150,7 @@ func TestPendingAcceptedAddKeepsOriginalKeyProfileAndItem(t *testing.T) {
 	keys := make(chan string, 1)
 	a.tracker = &pendingKeyTracker{fakeTrackingAPI: fake, keys: keys}
 	started, unblock := blockFirstPendingReadForTest(t, fake)
-	a.AddTrackedItemFIR(trackingItemUID)
+	a.AddTrackedItem(trackingItemUID)
 	<-started
 	a.mu.Lock()
 	a.apiKey = "new-account-key"
@@ -165,7 +165,7 @@ func TestPendingAcceptedAddKeepsOriginalKeyProfileAndItem(t *testing.T) {
 	if len(fake.writes) != 1 || fake.writes[0].Character != "character-a" || fake.writes[0].Item != trackingBSGID || <-keys != "local-test-key" {
 		t.Fatalf("accepted add was redirected by the new visible target: %+v", fake.writes)
 	}
-	if state.CharacterUID != "character-b" || state.Item.BSGID != "new-visible-bsg" || state.Tracking.AvailableQuantity != 9 || state.PendingAdds.Count != 0 || len(a.marketKinds) != 0 {
+	if state.CharacterUID != "character-b" || state.Item.BSGID != "new-visible-bsg" || state.Tracking.AvailableQuantity != 9 || state.PendingAdds.Count != 0 {
 		t.Fatalf("old account response changed current state or its session types: %+v", state)
 	}
 }
@@ -212,15 +212,16 @@ func TestPendingAnyCandidateAbsentFromRawItemsStaysOptimisticUntilVerified(t *te
 	}
 	a.AddTrackedItem(trackingItemUID)
 	state := waitPendingForTest(t, a)
-	if state.PendingAdds.Count != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.MarketAvailableQuantity != 0 || state.Tracking.Adding || len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != 1 || len(fake.writes) != 1 {
+	if state.PendingAdds.Count != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.MarketAvailableQuantity != 0 || state.Tracking.Adding || len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != 0 || len(fake.writes) != 1 {
 		t.Fatalf("unreadable ACK lost the synthesized Any reservation or claimed confirmation: %+v", state)
 	}
 	fake.loadHook = nil
 	fake.snapshot.Revision = "confirmed-any-add"
+	setFakeMarketGroupProgress(&fake.snapshot, 1)
 	fake.snapshot.Items = []market.TrackedItem{{ItemID: trackingBSGID, Name: "Immobilizing splint", AvailableQuantity: 1}}
 	a.RecheckPendingAdds()
 	state = waitPendingForTest(t, a)
-	if state.PendingAdds.Count != 0 || state.Tracking.AvailableQuantity != 1 || state.Tracking.MarketAvailableQuantity != 1 || len(fake.writes) != 1 {
+	if state.PendingAdds.Count != 0 || state.Tracking.AvailableQuantity != 1 || state.Tracking.MarketAvailableQuantity != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != 1 || len(fake.writes) != 1 {
 		t.Fatalf("verified Any reservation was lost or counted twice: %+v", state)
 	}
 }

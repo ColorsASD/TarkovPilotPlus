@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-const defaultTrackedAddHotkey = "F2"
-const defaultTrackedFIRHotkey = "F1"
+const defaultTrackedAddHotkey = "F1"
+const defaultTrackedRemoveHotkey = "F2"
 
 const (
 	trackedHotkeyCtrl    uint32 = 1 << 8
@@ -16,27 +16,12 @@ const (
 	trackedHotkeyKeyMask uint32 = 0xff
 )
 
-type trackedHotkeyBindings struct {
-	regular, fir uint32
-}
-
-func (b trackedHotkeyBindings) configuredKey(key, modifiers uint32) uint32 {
-	chord := key | modifiers
-	if b.fir != 0 && chord == b.fir {
-		return b.fir
-	}
-	if b.regular != 0 && chord == b.regular {
-		return b.regular
-	}
-	return 0
-}
-
 func normalizeTrackedAddHotkey(value string) string {
 	return normalizeTrackedShortcut(value, defaultTrackedAddHotkey)
 }
 
-func normalizeTrackedFIRHotkey(value string) string {
-	return normalizeTrackedShortcut(value, defaultTrackedFIRHotkey)
+func normalizeTrackedRemoveHotkey(value string) string {
+	return normalizeTrackedShortcut(value, defaultTrackedRemoveHotkey)
 }
 
 func normalizeTrackedShortcut(value, fallback string) string {
@@ -119,12 +104,6 @@ func trackedShortcutBaseKey(value string) (string, uint32) {
 		return "PageDown", 0x22
 	}
 	return "", 0
-}
-
-func trackedHotkeyChordsEqual(left, right string) bool {
-	_, l, validLeft := parseTrackedShortcut(left)
-	_, r, validRight := parseTrackedShortcut(right)
-	return validLeft && validRight && l != 0 && l == r
 }
 
 func trackedAddHotkeyVK(value string) uint32 {

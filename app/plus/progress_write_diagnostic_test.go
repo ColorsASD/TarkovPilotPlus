@@ -59,7 +59,7 @@ func TestTrackedWriteFailureDiagnosticSurvivesToStateWithoutSecrets(t *testing.T
 			fake.writeHook = func(write stockWrite) (market.ProgressWriteResult, error) {
 				return client.SetTrackedQuantity(context.Background(), "local-test-key", write.Character, write.Item, write.Revision, write.Quantity)
 			}
-			a.AddTrackedItemFIR(trackingItemUID)
+			a.AddTrackedItem(trackingItemUID)
 			state := waitPendingForTest(t, a)
 			status := state.Tracking.Status
 			if calls.Load() != 1 || len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1+int64(tc.pending) || state.Tracking.MarketAvailableQuantity != 1 ||
@@ -98,7 +98,7 @@ func TestProgressDiagnosticUnknownErrorAndBoundedNames(t *testing.T) {
 		t.Fatalf("item name was not bounded and sanitized: %q", name)
 	}
 	a, _ := newTrackingTestApp(t)
-	state := addMarketTrackedItemForTest(a, trackingItemUID, "regular")
+	state := addMarketTrackedItemForTest(a, trackingItemUID)
 	if state.Tracking.Status != "Added 1 item to Tracked Items stock." {
 		t.Fatalf("normal success was changed by error diagnostics: %s", state.Tracking.Status)
 	}

@@ -39,7 +39,7 @@ type ItemOptions struct {
 	Mode         string `json:"mode"`
 	CharacterUID string `json:"characterUid"`
 	AddHotkey    string `json:"addHotkey"`
-	FIRHotkey    string `json:"firHotkey"`
+	RemoveHotkey string `json:"removeHotkey"`
 	revision     uint64
 }
 
@@ -63,8 +63,8 @@ type ItemState struct {
 	PendingAdds       *PendingAddState    `json:"pendingAdds"`
 	AddHotkeyReady    bool                `json:"addHotkeyReady"`
 	AddHotkeyError    string              `json:"addHotkeyError"`
-	FIRHotkeyReady    bool                `json:"firHotkeyReady"`
-	FIRHotkeyError    string              `json:"firHotkeyError"`
+	RemoveHotkeyReady bool                `json:"removeHotkeyReady"`
+	RemoveHotkeyError string              `json:"removeHotkeyError"`
 	HotkeyCapture     bool                `json:"hotkeyCapture"`
 }
 
@@ -89,9 +89,10 @@ type ItemWindowApp struct {
 	marketNetworkMu       sync.Mutex
 	hotkeyConfigMu        sync.Mutex
 	addHotkey             *trackedAddHotkey
+	removeHotkey          *trackedAddHotkey
 	addHotkeyRequests     chan *trackedAddHotkeyTarget
 	addHotkeyTarget       atomic.Pointer[trackedAddHotkeyTarget]
-	addHotkeyFIRTarget    atomic.Pointer[trackedAddHotkeyTarget]
+	removeHotkeyTarget    atomic.Pointer[trackedAddHotkeyTarget]
 	addHotkeyPending      atomic.Bool
 	catalogRefreshPending atomic.Bool
 	tracker               trackingAPI
@@ -101,7 +102,6 @@ type ItemWindowApp struct {
 	trackedSnapshot       market.TrackedSnapshot
 	trackedAt             time.Time
 	trackedRevision       uint64
-	marketKinds           map[string]marketKindState
 	confirmedProgress     localprogress.Snapshot
 	pendingAddQueue       []pendingMarketAdd
 	pendingAddRunning     bool
@@ -132,13 +132,15 @@ func NewItemWindowApp() (*ItemWindowApp, error) {
 		return nil, err
 	}
 	a := &ItemWindowApp{dir: dir, ocr: scanner.New(nameScanScript)}
-	a.state.ItemOptions = ItemOptions{Enabled: true, Automatic: true, Language: itemScanLanguage, Mode: "pvp", AddHotkey: defaultTrackedAddHotkey, FIRHotkey: defaultTrackedFIRHotkey}
+	a.state.ItemOptions = ItemOptions{Enabled: true, Automatic: true, Language: itemScanLanguage, Mode: "pvp", AddHotkey: defaultTrackedAddHotkey, RemoveHotkey: defaultTrackedRemoveHotkey}
 	a.state.OCRLanguages = []string{itemScanLanguage}
 	a.state.Status = "Enter your Tarkov Market API key in settings."
 	if data, err := os.ReadFile(filepath.Join(dir, "item-settings.json")); err == nil {
-		var saved ItemOptions
-		if json.Unmarshal(data, &saved) == nil {
-			a.state.ItemOptions = normalizeSavedItemOptions(saved)
+		if saved, err := migrateSavedItemOptions(filepath.Join(dir, "item-settings.json"), data); err == nil {
+			a.state.ItemOptions = saved
+		} else if saved.Language == itemScanLanguage {
+			a.state.ItemOptions = saved
+			a.state.Error = "The saved item settings could not be migrated. Open settings and save them again."
 		}
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "api-key.bin")); err == nil {
@@ -167,7 +169,11 @@ func normalizeItemOptions(o ItemOptions) ItemOptions {
 	// A kompatibilis language mező megmarad, de a tárgyjelző mindig angol.
 	o.Language = itemScanLanguage
 	o.AddHotkey = normalizeTrackedAddHotkey(o.AddHotkey)
-	o.FIRHotkey = normalizeTrackedFIRHotkey(o.FIRHotkey)
+	o.RemoveHotkey = normalizeTrackedRemoveHotkey(o.RemoveHotkey)
+	// A régi Add választás maradjon meg akkor is, ha az éppen F2 volt.
+	if o.AddHotkey != "off" && o.AddHotkey == o.RemoveHotkey {
+		o.RemoveHotkey = "off"
+	}
 	o.Mode = strings.ToLower(o.Mode)
 	o.CharacterUID = strings.TrimSpace(o.CharacterUID)
 	if len(o.CharacterUID) > 128 || strings.ContainsAny(o.CharacterUID, "/\\\r\n\x00") {
@@ -189,24 +195,50 @@ func itemOCRLanguages(languages []string) []string {
 }
 
 func normalizeSavedItemOptions(o ItemOptions) ItemOptions {
-	if o.FIRHotkey == "" {
-		// Régi mentésekben egyetlen gyorsbillentyű és kapcsolható mód volt.
-		// Az új alapérték FiR F1 / Regular F2; a teljes tiltás megmarad.
-		if normalizeTrackedAddHotkey(o.AddHotkey) == "off" {
-			o.AddHotkey, o.FIRHotkey = "off", "off"
-		} else {
-			o.AddHotkey, o.FIRHotkey = defaultTrackedAddHotkey, defaultTrackedFIRHotkey
-		}
-	}
 	o = normalizeItemOptions(o)
-	if trackedHotkeyChordsEqual(o.AddHotkey, o.FIRHotkey) {
-		o.AddHotkey, o.FIRHotkey = defaultTrackedAddHotkey, defaultTrackedFIRHotkey
-	}
 	// A korábbi két kapcsoló együttes állapota határozza meg az automatikát.
 	// A kézi beolvasás az új, egyetlen kapcsolótól függetlenül elérhető marad.
 	o.Automatic = o.Enabled && o.Automatic
 	o.Enabled = true
 	return o
+}
+
+func decodeSavedItemOptions(data []byte) (ItemOptions, error) {
+	var saved ItemOptions
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return ItemOptions{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return ItemOptions{}, err
+	}
+	if raw, legacy := fields["firHotkey"]; legacy {
+		// A régi FiR művelet F1/custom/off választását visszük tovább.
+		// A megszűnt Regular művelet gyorsbillentyűje nem írhatja ezt felül.
+		var shortcut string
+		if err := json.Unmarshal(raw, &shortcut); err != nil {
+			return ItemOptions{}, err
+		}
+		saved.AddHotkey = shortcut
+	}
+	return normalizeSavedItemOptions(saved), nil
+}
+
+func migrateSavedItemOptions(path string, data []byte) (ItemOptions, error) {
+	saved, err := decodeSavedItemOptions(data)
+	if err != nil {
+		return ItemOptions{}, err
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(data, &fields)
+	if _, legacy := fields["firHotkey"]; legacy {
+		encoded, err := json.MarshalIndent(saved, "", "    ")
+		if err == nil {
+			err = writePrivateFile(path, encoded)
+		}
+		return saved, err
+	}
+	return saved, nil
 }
 
 func (a *ItemWindowApp) startup(ctx context.Context, parent windows.Handle, parentPID int) {
@@ -243,20 +275,22 @@ func (a *ItemWindowApp) GetState() ItemState {
 	st := a.state
 	st.StateSequence = a.stateSequence
 	st.AddHotkey = normalizeTrackedAddHotkey(st.AddHotkey)
-	st.FIRHotkey = normalizeTrackedFIRHotkey(st.FIRHotkey)
-	st.FIRHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && st.FIRHotkey != "off"
-	st.FIRHotkeyError = st.AddHotkeyError
 	st.AddHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && st.AddHotkey != "off"
-	if st.FIRHotkey == "off" || st.HotkeyCapture {
-		st.FIRHotkeyError = ""
-	}
 	if st.AddHotkey == "off" || st.HotkeyCapture {
 		st.AddHotkeyError = ""
+	}
+	st.RemoveHotkey = normalizeTrackedRemoveHotkey(st.RemoveHotkey)
+	st.RemoveHotkeyReady = st.RemoveHotkeyReady && !st.HotkeyCapture && st.RemoveHotkey != "off"
+	if st.RemoveHotkey == "off" || st.HotkeyCapture {
+		st.RemoveHotkeyError = ""
 	}
 	st.Language = itemScanLanguage
 	st.OCRLanguages = itemOCRLanguages(a.state.OCRLanguages)
 	st.Characters = cloneCharacters(a.state.Characters)
 	st.Tracking = cloneTrackingState(st.Tracking)
+	if st.Tracking != nil && !a.canRemoveTrackedItemLocked() {
+		st.Tracking.RemoveAllowed = false
+	}
 	st.Local = cloneLocalProgressState(st.Local)
 	st.PendingAdds = clonePendingAddState(st.PendingAdds)
 
@@ -286,20 +320,23 @@ func (a *ItemWindowApp) RevealAPIKey() string {
 }
 
 func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
-	for _, shortcut := range []struct{ name, value string }{{"Regular", options.AddHotkey}, {"Found in Raid", options.FIRHotkey}} {
-		if strings.TrimSpace(shortcut.value) == "" {
-			continue
-		}
-		if _, _, valid := parseTrackedShortcut(shortcut.value); !valid {
-			a.setError("Choose a valid " + shortcut.name + " shortcut.")
+	if strings.TrimSpace(options.AddHotkey) != "" {
+		if _, _, valid := parseTrackedShortcut(options.AddHotkey); !valid {
+			a.setError("Choose a valid Add shortcut.")
 			return a.GetState()
 		}
 	}
-	options = normalizeItemOptions(options)
-	if options.AddHotkey != "off" && options.AddHotkey == options.FIRHotkey {
-		a.setError("Regular and Found in Raid shortcuts must be different.")
+	if strings.TrimSpace(options.RemoveHotkey) != "" {
+		if _, _, valid := parseTrackedShortcut(options.RemoveHotkey); !valid {
+			a.setError("Choose a valid Remove shortcut.")
+			return a.GetState()
+		}
+	}
+	if add, remove := normalizeTrackedAddHotkey(options.AddHotkey), normalizeTrackedRemoveHotkey(options.RemoveHotkey); add != "off" && add == remove {
+		a.setError("Choose different shortcuts for Add item and Remove item.")
 		return a.GetState()
 	}
+	options = normalizeItemOptions(options)
 	a.mu.Lock()
 	// A kiválasztott karakter egyedi azonosítója határozza meg a játékmódot.
 	// Kézi módváltáskor a korábbi, más módban lévő karaktert elengedjük.
@@ -322,20 +359,29 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 	keepProgress := a.apiKey != "" && options.CharacterUID == a.state.CharacterUID && options.Mode == a.state.Mode
 	options.revision = a.state.ItemOptions.revision + 1
 	changed := a.state.Mode != options.Mode || a.state.Language != options.Language
-	hotkeyChanged := a.state.AddHotkey != options.AddHotkey || a.state.FIRHotkey != options.FIRHotkey
+	hotkeyChanged := a.state.AddHotkey != options.AddHotkey
+	removeHotkeyChanged := a.state.RemoveHotkey != options.RemoveHotkey
 	a.state.ItemOptions = options
 
 	if hotkeyChanged {
 		a.state.AddHotkeyReady = false
 		a.state.AddHotkeyError = ""
 	}
-	a.state.Tracking = nil
-	a.state.Local = nil
+	if removeHotkeyChanged {
+		a.state.RemoveHotkeyReady = false
+		a.state.RemoveHotkeyError = ""
+	}
 	a.localAt = time.Time{}
 	if keepProgress {
+		if a.state.Tracking != nil {
+			a.state.Tracking = cloneTrackingState(a.state.Tracking)
+			a.state.Tracking.Loading = true
+		}
+		a.state.Local = &LocalProgressState{Loading: true}
 		a.localRevision = options.revision
 	} else {
-		a.marketKinds = nil
+		a.state.Tracking = nil
+		a.state.Local = nil
 		a.localSnapshot = localprogress.Snapshot{}
 		a.confirmedProgress = localprogress.Snapshot{}
 	}

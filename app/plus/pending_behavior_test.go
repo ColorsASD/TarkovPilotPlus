@@ -33,7 +33,7 @@ func TestPendingAddKeepsOriginalItemAfterInspectChanges(t *testing.T) {
 		Sources: []market.TrackedSource{{Type: "quest", Amount: 3, RemainingRequiredQuantity: 3}}})
 	setTrackingTestSnapshot(t, a, fake.snapshot)
 	started, release := blockFirstPendingRead(t, fake)
-	a.AddTrackedItemFIR(trackingItemUID)
+	a.AddTrackedItem(trackingItemUID)
 	<-started
 	a.mu.Lock()
 	a.state.Item = &other

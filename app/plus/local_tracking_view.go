@@ -14,6 +14,8 @@ type localTrackingDisplayGroup struct {
 	fir, completed, optional bool
 	count, amount, remaining int64
 	allocated                int64
+	marketProgressKnown      bool
+	marketAvailable          int64
 	alternatives             int
 	members                  map[string]bool
 	candidates               string
@@ -36,7 +38,11 @@ type localTrackingDisplayBucket struct {
 // külön maradnak a globális Any arányoktól; a csoportok belső azonossága és
 // készletkiosztása nem változik a megjelenítéshez használt összevonástól.
 func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot) {
-	if view == nil || len(view.Variants) != 0 {
+	if view == nil {
+		return
+	}
+	view.RemoveAllowed = false
+	if len(view.Variants) != 0 {
 		return
 	}
 	rows := make(map[string]int)
@@ -46,7 +52,10 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 	if rows[row.ItemID] != 1 {
 		return
 	}
+	view.RemoveAllowed = row.AvailableQuantity > 0 && row.AvailableQuantity <= localprogress.MaxQuantity && !snapshot.FIRInventorySeparate &&
+		!view.InventorySeparate && !view.Loading && !view.Adding && view.Error == ""
 	groups := localTrackingDisplayGroups(snapshot, rows)
+	confirmedMarketStock := row.MarketTracked && !snapshot.FIRInventorySeparate
 	firAvailable, regularAvailable := row.CollectionFIRAvailableQuantity, row.CollectionRegularAvailableQuantity
 	var firRequired, regularRequired int64
 	completed := []ItemTrackingCompletedSource{}
@@ -73,7 +82,7 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 			continue
 		}
 		if knownGroup && !group.completed {
-			if group.remaining > 0 {
+			if group.remaining > 0 && !confirmedMarketStock {
 				if source.FIR {
 					firAvailable = max(0, firAvailable-source.AllocatedQuantity)
 				} else {
@@ -87,13 +96,19 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 					bucket = &localTrackingDisplayBucket{key: key}
 					buckets[key] = bucket
 				}
+				available := group.count - group.remaining
+				// A csoportsor a Market előrehaladása; a Stock célját és az
+				// Add-korlátot ettől külön számítjuk.
+				if group.marketProgressKnown {
+					available = min(group.marketAvailable, group.count)
+				}
 				bucket.ids = append(bucket.ids, group.id)
 				bucket.sources = append(bucket.sources, ItemTrackingAnySource{
 					GroupID: group.id, QuestName: group.questName, Category: group.category,
-					AvailableQuantity: group.count - group.remaining, RequiredQuantity: group.count,
+					AvailableQuantity: available, RequiredQuantity: group.count,
 				})
 				bucket.required += group.count
-				bucket.available += group.count - group.remaining
+				bucket.available += available
 				seenActive[group.id] = true
 			}
 			continue
@@ -104,6 +119,11 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 		} else {
 			regularRequired += source.RemainingRequiredQuantity
 		}
+	}
+	if confirmedMarketStock {
+		// Az API egy közös készletet ad, külön típusonkénti darabszámot nem.
+		// A még nem visszaigazolt Add csak a Stock számlálóját növeli.
+		firAvailable, regularAvailable = row.MarketAvailableQuantity, row.MarketAvailableQuantity
 	}
 	view.Requirements = []ItemTrackingRequirement{}
 	if firRequired > 0 {
@@ -167,6 +187,7 @@ func localTrackingDisplayGroups(snapshot localprogress.Snapshot, rows map[string
 				group = &localTrackingDisplayGroup{id: source.GroupID, kind: kind, fir: source.FIR, completed: source.Completed, optional: source.Optional,
 					questName: strings.TrimSpace(source.Name), category: strings.TrimSpace(source.GroupName),
 					count: source.RemainingRequiredQuantity, amount: amount, remaining: source.GroupRemainingQuantity,
+					marketProgressKnown: source.MarketGroupProgressKnown, marketAvailable: source.MarketGroupAvailableQuantity,
 					alternatives: source.Alternatives, members: make(map[string]bool), valid: true}
 				groups[source.GroupID] = group
 			}

@@ -27,13 +27,16 @@ var (
 
 type Source struct {
 	market.TrackedSource
-	Origin                 string `json:"origin"`
-	GroupID                string `json:"groupId,omitempty"`
-	Alternatives           int    `json:"alternatives,omitempty"`
-	GroupAmount            int64  `json:"groupAmount,omitempty"`
-	AllocationKnown        bool   `json:"allocationKnown"`
-	AllocatedQuantity      int64  `json:"allocatedQuantity"`
-	GroupRemainingQuantity int64  `json:"groupRemainingQuantity"`
+	Origin       string `json:"origin"`
+	GroupID      string `json:"groupId,omitempty"`
+	Alternatives int    `json:"alternatives,omitempty"`
+	GroupAmount  int64  `json:"groupAmount,omitempty"`
+	// A legutóbbi Market-válasz csoportadata; a helyi kiosztás nem írja át.
+	MarketGroupProgressKnown     bool  `json:"marketGroupProgressKnown"`
+	MarketGroupAvailableQuantity int64 `json:"marketGroupAvailableQuantity"`
+	AllocationKnown              bool  `json:"allocationKnown"`
+	AllocatedQuantity            int64 `json:"allocatedQuantity"`
+	GroupRemainingQuantity       int64 `json:"groupRemainingQuantity"`
 }
 
 type Item struct {
@@ -41,8 +44,6 @@ type Item struct {
 	MarketTracked                      bool     `json:"marketTracked"`
 	MarketRequiredQuantity             int64    `json:"marketRequiredQuantity"`
 	MarketAvailableQuantity            int64    `json:"marketAvailableQuantity"`
-	MarketRegularQuantity              int64    `json:"marketRegularQuantity"`
-	MarketFIRQuantity                  int64    `json:"marketFIRQuantity"`
 	Name                               string   `json:"name"`
 	ShortName                          string   `json:"shortName"`
 	Slots                              float64  `json:"slots"`
@@ -113,6 +114,11 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.Items == nil || snapshot.Revision == "" || len(snapshot.Revision) > 256 {
 		return ErrInvalidSnapshot
 	}
+	type groupProgress struct {
+		known     bool
+		available int64
+	}
+	groups := make(map[string]groupProgress)
 	for _, item := range snapshot.Items {
 		if !validID(item.ItemID) {
 			return ErrInvalidIdentity
@@ -121,12 +127,6 @@ func validateSnapshot(snapshot Snapshot) error {
 			return ErrInvalidQuantity
 		}
 		if !validQuantity(item.MarketRequiredQuantity) || !validQuantity(item.MarketAvailableQuantity) {
-			return ErrInvalidQuantity
-		}
-		if !validQuantity(item.MarketRegularQuantity) || !validQuantity(item.MarketFIRQuantity) {
-			return ErrInvalidQuantity
-		}
-		if item.MarketRegularQuantity > item.MarketAvailableQuantity-item.MarketFIRQuantity || item.MarketRegularQuantity+item.MarketFIRQuantity > item.AvailableQuantity {
 			return ErrInvalidQuantity
 		}
 		for _, source := range item.Sources {
@@ -141,6 +141,24 @@ func validateSnapshot(snapshot Snapshot) error {
 			}
 			if source.Alternatives < 0 || source.Alternatives > 100_000 || (source.Alternatives > 1 && source.GroupID == "") {
 				return ErrInvalidSnapshot
+			}
+			if !validQuantity(source.MarketGroupAvailableQuantity) {
+				return ErrInvalidQuantity
+			}
+			if !source.MarketGroupProgressKnown && source.MarketGroupAvailableQuantity != 0 {
+				return ErrInvalidSnapshot
+			}
+			if source.MarketGroupProgressKnown {
+				if source.GroupID == "" || source.Amount == 0 {
+					return ErrInvalidSnapshot
+				}
+			}
+			if source.GroupID != "" {
+				reported := groupProgress{source.MarketGroupProgressKnown, source.MarketGroupAvailableQuantity}
+				if previous, exists := groups[source.GroupID]; exists && previous != reported {
+					return ErrInvalidSnapshot
+				}
+				groups[source.GroupID] = reported
 			}
 		}
 	}

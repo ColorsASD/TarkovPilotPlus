@@ -24,8 +24,7 @@ func (f trackedHotkeyRoundTripFunc) RoundTrip(request *http.Request) (*http.Resp
 func newTrackedHotkeyTestApp(t *testing.T) (*ItemWindowApp, *fakeTrackingAPI) {
 	t.Helper()
 	a, fake := newTrackingTestApp(t)
-	a.state.AddHotkey = "F2"
-	a.state.FIRHotkey = "F1"
+	a.state.AddHotkey = "F1"
 	a.state.AddHotkeyReady = true
 	a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
 	a.publishTrackedAddHotkey()
@@ -73,30 +72,78 @@ func trackedHotkeyAPICalls(fake *fakeTrackingAPI) (int, []stockWrite) {
 	return fake.loads, append([]stockWrite(nil), fake.writes...)
 }
 
-func confirmedTrackedHotkeyState(t *testing.T, a *ItemWindowApp, fake *fakeTrackingAPI, kind string) ItemState {
+func confirmedTrackedHotkeyState(t *testing.T, a *ItemWindowApp, fake *fakeTrackingAPI) ItemState {
 	t.Helper()
 	state := waitPendingForTest(t, a)
 	loads, writes := trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || state.Tracking.AvailableQuantity != writes[0].Quantity || state.Tracking.Adding || state.Tracking.Error != "" {
 		t.Fatalf("shortcut did not return verified Market stock: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
 	}
-	known := trackedHotkeySessionKinds(t, a)
-	wantRegular, wantFIR := int64(1), int64(0)
-	if kind == "fir" {
-		wantRegular, wantFIR = 0, 1
-	}
-	if known.stock != writes[0].Quantity || known.regular != wantRegular || known.fir != wantFIR {
-		t.Fatalf("confirmed shortcut lost its in-memory quality: %+v, want %d/%d", known, wantRegular, wantFIR)
-	}
 	return state
 }
 
-func trackedHotkeySessionKinds(t *testing.T, a *ItemWindowApp) marketKindState {
-	t.Helper()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.marketKinds[marketKindKey(a.state.CharacterUID, a.state.Mode, trackingBSGID)]
+func TestTrackedHotkeySingleBindingKeepsTheCapturedItemAndOwner(t *testing.T) {
+	a, fake := newTrackedHotkeyTestApp(t)
+	if a.GetState().AddHotkey != "F1" || a.addHotkeyTarget.Load() == nil {
+		t.Fatal("the single default Add binding was not published")
+	}
+	a.requestTrackedAddHotkey()
+	a.requestTrackedAddHotkey()
+	if len(a.addHotkeyRequests) != 1 {
+		t.Fatal("an occupied Add worker queued another physical action")
+	}
+	queued := <-a.addHotkeyRequests
+	if queued.CharUID != "character-a" || queued.ItemID != trackingBSGID || queued.Revision != a.state.ItemOptions.revision {
+		t.Fatalf("single Add lost its immutable item or owner: %+v", queued)
+	}
+	a.addHotkeyRequests <- queued
+	runTrackedHotkeyTestWorker(t, a)
+	waitTrackedHotkeyIdle(t, a)
+	confirmedTrackedHotkeyState(t, a, fake)
 }
+
+func TestTrackedHotkeyCaptureIsTransientAndInvalidatesQueuedTargets(t *testing.T) {
+	a, fake := newTrackedHotkeyTestApp(t)
+	a.addHotkey = &trackedAddHotkey{statuses: make(chan struct{}, 1)}
+	a.addHotkey.SetKey(a.state.AddHotkey)
+	settings, err := json.Marshal(a.state.ItemOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(a.dir, "item-settings.json")
+	if err := os.WriteFile(settingsPath, settings, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := a.addHotkeyTarget.Load()
+	a.requestTrackedAddHotkey()
+	state := a.SetHotkeyCapture(true)
+	if !state.HotkeyCapture || state.AddHotkeyReady || a.addHotkeyTarget.Load() != nil || a.addHotkey.key.Load() != 0 || a.canAddLocalForTest() {
+		t.Fatalf("capture did not pause the native and public Add actions: %+v", state)
+	}
+	a.AddTrackedItem(trackingItemUID)
+	state = a.SetHotkeyCapture(false)
+	if state.HotkeyCapture || !state.AddHotkeyReady || a.addHotkey.key.Load() != 0x70 || a.trackedAddHotkeyTargetCurrent(old) || a.addHotkeyTarget.Load() == old {
+		t.Fatalf("ending capture changed the binding or revived an old queued target: %+v", state)
+	}
+	runTrackedHotkeyTestWorker(t, a)
+	waitTrackedHotkeyIdle(t, a)
+	loads, writes := trackedHotkeyAPICalls(fake)
+	after, err := os.ReadFile(settingsPath)
+	if err != nil || !bytes.Equal(settings, after) || loads != 0 || len(writes) != 0 {
+		t.Fatalf("capture persisted settings or executed an old target: reads=%d writes=%+v err=%v", loads, writes, err)
+	}
+}
+
+func TestTrackedHotkeyDisabledChoiceDoesNotReserveOrQueueAdd(t *testing.T) {
+	a, _ := newTrackedHotkeyTestApp(t)
+	a.state.AddHotkey = "off"
+	a.publishTrackedAddHotkey()
+	a.requestTrackedAddHotkey()
+	if trackedAddHotkeyEnabled(a.state.ItemOptions) || a.addHotkeyTarget.Load() != nil || len(a.addHotkeyRequests) != 0 {
+		t.Fatal("explicitly disabled Add shortcut was replaced by the default")
+	}
+}
+
 func TestTrackedHotkeyAddsExactlyOneFromFreshStock(t *testing.T) {
 	a, fake := newTrackedHotkeyTestApp(t)
 	// The displayed/cached count deliberately differs from the API stock.
@@ -108,155 +155,13 @@ func TestTrackedHotkeyAddsExactlyOneFromFreshStock(t *testing.T) {
 	runTrackedHotkeyTestWorker(t, a)
 	a.requestTrackedAddHotkey()
 	waitTrackedHotkeyIdle(t, a)
-	state := confirmedTrackedHotkeyState(t, a, fake, "regular")
+	state := confirmedTrackedHotkeyState(t, a, fake)
 	loads, writes := trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0] != (stockWrite{"character-a", trackingBSGID, "revision-1", 4}) {
 		t.Fatalf("shortcut must GET fresh stock, PATCH +1 with its revision, then verify it: reads=%d writes=%+v", loads, writes)
 	}
 	if state.Tracking.AvailableQuantity != 4 || state.Tracking.RemainingQuantity != 3 || state.Tracking.Adding || state.Tracking.Error != "" {
 		t.Fatalf("shortcut did not publish the confirmed stock: %+v", state.Tracking)
-	}
-}
-
-func TestTrackedHotkeyKindsShareOnePendingWorker(t *testing.T) {
-	a, _ := newTrackedHotkeyTestApp(t)
-	a.publishTrackedAddHotkey()
-	regular, fir := a.addHotkeyTarget.Load(), a.addHotkeyFIRTarget.Load()
-	if regular == nil || fir == nil || regular.Kind != "regular" || fir.Kind != "fir" ||
-		!a.trackedAddHotkeyTargetCurrent(regular) || !a.trackedAddHotkeyTargetCurrent(fir) {
-		t.Fatal("the unified tracker did not publish independent typed targets")
-	}
-	a.requestTrackedAddFIRHotkey()
-	a.requestTrackedAddHotkey()
-	if len(a.addHotkeyRequests) != 1 || !a.addHotkeyPending.Load() {
-		t.Fatal("a second kind bypassed the occupied worker")
-	}
-	if queued := <-a.addHotkeyRequests; queued != fir || queued.Kind != "fir" {
-		t.Fatal("the first physical target lost its kind")
-	}
-	a.addHotkeyPending.Store(false)
-	a.state.FIRHotkey = "off"
-	a.publishTrackedAddHotkey()
-	if a.addHotkeyFIRTarget.Load() != nil || a.trackedAddHotkeyTargetCurrent(fir) || a.addHotkeyTarget.Load() == nil {
-		t.Fatal("disabling FiR retained its queued target or disabled Regular")
-	}
-}
-
-func TestTrackedHotkeyDefaultActionsKeepPhysicalKindThroughUnifiedRouting(t *testing.T) {
-	for _, kind := range []string{"regular", "fir"} {
-		t.Run(kind, func(t *testing.T) {
-			a, fake := newTrackedHotkeyTestApp(t)
-			if a.GetState().AddHotkey != "F2" || a.GetState().FIRHotkey != "F1" {
-				t.Fatal("fixture did not use Regular F2 / Found in Raid F1")
-			}
-			if kind == "fir" {
-				a.requestTrackedAddFIRHotkey()
-			} else {
-				a.requestTrackedAddHotkey()
-			}
-			queued := <-a.addHotkeyRequests
-			if queued.Kind != kind || queued.CharUID != "character-a" || queued.ItemID != trackingBSGID || queued.Revision != a.state.ItemOptions.revision {
-				t.Fatalf("shortcut lost its immutable physical quality or owner: %+v", queued)
-			}
-			a.addHotkeyRequests <- queued
-			runTrackedHotkeyTestWorker(t, a)
-			waitTrackedHotkeyIdle(t, a)
-			confirmedTrackedHotkeyState(t, a, fake, kind)
-			row := trackedHotkeySessionKinds(t, a)
-			wantRegular, wantFIR := int64(1), int64(0)
-			if kind == "fir" {
-				wantRegular, wantFIR = 0, 1
-			}
-			_, writes := trackedHotkeyAPICalls(fake)
-			if len(writes) != 1 || writes[0].Quantity != 1 || row.regular != wantRegular || row.fir != wantFIR {
-				t.Fatalf("public hotkey action used the other quality or duplicated Market count locally: writes=%+v row=%+v", writes, row)
-			}
-		})
-	}
-}
-
-func TestTrackedHotkeyOneDisabledActionDoesNotBlockOtherCustomChord(t *testing.T) {
-	for _, kind := range []string{"regular", "fir"} {
-		t.Run(kind, func(t *testing.T) {
-			a, fake := newTrackedHotkeyTestApp(t)
-			a.state.AddHotkey, a.state.FIRHotkey = "Ctrl+Alt+Shift+Q", "off"
-			if kind == "fir" {
-				a.state.AddHotkey, a.state.FIRHotkey = "off", "Ctrl+Alt+Shift+Q"
-			}
-			a.publishTrackedAddHotkey()
-			state := a.GetState()
-			if !trackedAddHotkeyEnabled(state.ItemOptions) || (a.addHotkeyTarget.Load() != nil) != (kind == "regular") ||
-				(a.addHotkeyFIRTarget.Load() != nil) != (kind == "fir") || state.AddHotkeyReady != (kind == "regular") || state.FIRHotkeyReady != (kind == "fir") {
-				t.Fatalf("individual off setting disabled both actions or displayed the other ready badge: %+v", state)
-			}
-			if kind == "fir" {
-				a.requestTrackedAddHotkey()
-				a.requestTrackedAddFIRHotkey()
-			} else {
-				a.requestTrackedAddFIRHotkey()
-				a.requestTrackedAddHotkey()
-			}
-			runTrackedHotkeyTestWorker(t, a)
-			waitTrackedHotkeyIdle(t, a)
-			confirmedTrackedHotkeyState(t, a, fake, kind)
-			_, writes := trackedHotkeyAPICalls(fake)
-			row := trackedHotkeySessionKinds(t, a)
-			if len(writes) != 1 || (row.fir == 1) != (kind == "fir") || (row.regular == 1) != (kind == "regular") {
-				t.Fatalf("disabled action queued work or custom chord lost its quality: writes=%+v row=%+v", writes, row)
-			}
-		})
-	}
-}
-
-func TestTrackedHotkeyCaptureIsTransientAndInvalidatesQueuedTargets(t *testing.T) {
-	a, fake := newTrackedHotkeyTestApp(t)
-	// A teszt nem telepít natív hookot: a bindings objektum csak a pause/resume
-	// konfigurációt ellenőrzi, a többi művelet ugyanazt a public workert használja.
-	a.addHotkey = &trackedAddHotkey{statuses: make(chan struct{}, 1)}
-	a.addHotkey.SetKeys(a.state.AddHotkey, a.state.FIRHotkey)
-	settings, err := json.Marshal(a.state.ItemOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	settingsPath := filepath.Join(a.dir, "item-settings.json")
-	if err := os.WriteFile(settingsPath, settings, 0600); err != nil {
-		t.Fatal(err)
-	}
-	old := a.addHotkeyFIRTarget.Load()
-	a.requestTrackedAddFIRHotkey()
-	state := a.SetHotkeyCapture(true)
-	binding := a.addHotkey.bindings.Load()
-	if !state.HotkeyCapture || state.AddHotkeyReady || state.FIRHotkeyReady || a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil ||
-		binding == nil || binding.regular != 0 || binding.fir != 0 || a.canAddLocalForTest() {
-		t.Fatalf("capture did not pause both native and public stock actions: %+v bindings=%+v", state, binding)
-	}
-	a.AddTrackedItem(trackingItemUID)
-	a.AddTrackedItemFIR(trackingItemUID)
-	state = a.SetHotkeyCapture(false)
-	binding = a.addHotkey.bindings.Load()
-	if state.HotkeyCapture || !state.AddHotkeyReady || !state.FIRHotkeyReady || binding == nil || binding.regular != trackedAddHotkeyVK("F2") || binding.fir != trackedAddHotkeyVK("F1") ||
-		a.trackedAddHotkeyTargetCurrent(old) || a.addHotkeyFIRTarget.Load() == old {
-		t.Fatalf("ending capture changed configured shortcuts or revived an old queued target: %+v bindings=%+v", state, binding)
-	}
-	runTrackedHotkeyTestWorker(t, a)
-	waitTrackedHotkeyIdle(t, a)
-	loads, writes := trackedHotkeyAPICalls(fake)
-	after, err := os.ReadFile(settingsPath)
-	if err != nil || !bytes.Equal(settings, after) || loads != 0 || len(writes) != 0 {
-		t.Fatalf("capture changed persisted options or executed the old pending quality: reads=%d writes=%+v settings=%s err=%v", loads, writes, after, err)
-	}
-}
-
-func TestTrackedHotkeyPreservesBothDisabledChoices(t *testing.T) {
-	a, _ := newTrackedHotkeyTestApp(t)
-	a.state.AddHotkey = "off"
-	a.state.FIRHotkey = "off"
-	a.publishTrackedAddHotkey()
-	a.requestTrackedAddHotkey()
-	a.requestTrackedAddFIRHotkey()
-	if trackedAddHotkeyEnabled(a.state.ItemOptions) || a.addHotkeyTarget.Load() != nil ||
-		a.addHotkeyFIRTarget.Load() != nil || len(a.addHotkeyRequests) != 0 {
-		t.Fatal("the unified tracker overrode explicitly disabled shortcut settings")
 	}
 }
 
@@ -337,7 +242,7 @@ func TestTrackedHotkeyConcurrentTriggersDoNotQueueRepeatAdds(t *testing.T) {
 	}
 	release()
 	waitTrackedHotkeyIdle(t, a)
-	confirmedTrackedHotkeyState(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake)
 	loads, writes := trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("concurrent shortcut callbacks produced repeated stock changes: reads=%d writes=%+v", loads, writes)
@@ -364,7 +269,7 @@ func TestTrackedHotkeyConcurrentEligibleCallbacksQueueOneAction(t *testing.T) {
 	}
 	runTrackedHotkeyTestWorker(t, a)
 	waitTrackedHotkeyIdle(t, a)
-	confirmedTrackedHotkeyState(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake)
 	loads, writes = trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("concurrent eligible callbacks produced repeated stock changes: reads=%d writes=%+v", loads, writes)
@@ -385,9 +290,11 @@ func TestTrackedHotkeyQueuedTargetCannotFollowStateChanges(t *testing.T) {
 			a.state.Tracking.CharUID = "character-b"
 		}},
 		{"options revision changed", func(a *ItemWindowApp) { a.state.ItemOptions.revision++ }},
-		{"shortcut changed", func(a *ItemWindowApp) { a.state.AddHotkey = "Ctrl+F2" }},
+		{"shortcut changed", func(a *ItemWindowApp) {
+			a.state.AddHotkey = "Ctrl+F2"
+			a.state.ItemOptions.revision++
+		}},
 		{"shortcut disabled", func(a *ItemWindowApp) { a.state.AddHotkey = "Off" }},
-		{"other state emitted", func(a *ItemWindowApp) { a.state.Status = "New state" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, fake := newTrackedHotkeyTestApp(t)
@@ -429,7 +336,7 @@ func TestTrackedHotkeyFreshCompletionSkipsMarketWrite(t *testing.T) {
 	if loads != 1 || len(writes) != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.RequiredQuantity != 0 || state.Tracking.Adding {
 		t.Fatalf("fresh completion sent an obsolete increment: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
 	}
-	if a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+	if a.addHotkeyTarget.Load() != nil {
 		t.Fatal("completed requirement still allowed a shortcut")
 	}
 	assertNoTrackingTestStockAdded(t, a)
@@ -439,6 +346,7 @@ func TestTrackedHotkeyFreshAnyCoverageFromAnotherItemSkipsMarketWrite(t *testing
 	a, fake := newTrackedHotkeyTestApp(t)
 	const other = "other-group-candidate"
 	group := marketQuestGroupForTest("any-quest", "any-two", 2, false, trackingBSGID, other)
+	group.AvailableQuantity, group.RemainingQuantity = 2, 0
 	fake.snapshot.Groups = []market.TrackedGroup{group}
 	groupSource := market.TrackedSource{Type: "questGroup", QuestID: group.QuestID, RequirementID: group.RequirementID, Amount: 2}
 	fake.snapshot.Items = []market.TrackedItem{{ItemID: trackingBSGID, Sources: []market.TrackedSource{groupSource}}, {ItemID: other, AvailableQuantity: 2, Sources: []market.TrackedSource{groupSource}}}
@@ -447,10 +355,10 @@ func TestTrackedHotkeyFreshAnyCoverageFromAnotherItemSkipsMarketWrite(t *testing
 	waitTrackedHotkeyIdle(t, a)
 	loads, writes := trackedHotkeyAPICalls(fake)
 	state := a.GetState()
-	if loads != 1 || len(writes) != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed {
+	if loads != 1 || len(writes) != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.AddAllowed {
 		t.Fatalf("covered shared Market stock allowed overcollection: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
 	}
-	if a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+	if a.addHotkeyTarget.Load() != nil {
 		t.Fatal("covered Any retained a hotkey target")
 	}
 	assertNoTrackingTestStockAdded(t, a)
@@ -462,7 +370,7 @@ func TestTrackedHotkeyAutomaticScanningOffStillAllowsLoadedItem(t *testing.T) {
 	runTrackedHotkeyTestWorker(t, a)
 	a.requestTrackedAddHotkey()
 	waitTrackedHotkeyIdle(t, a)
-	confirmedTrackedHotkeyState(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake)
 	_, writes := trackedHotkeyAPICalls(fake)
 	if len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("manual search results must allow the shortcut with automatic scanning off: %+v", writes)
@@ -474,7 +382,7 @@ func TestTrackedAddButtonWorksWhenShortcutIsOff(t *testing.T) {
 	a.state.AddHotkey = "Off"
 	a.publishTrackedAddHotkey()
 	a.AddTrackedItem(trackingItemUID)
-	state := confirmedTrackedHotkeyState(t, a, fake, "regular")
+	state := confirmedTrackedHotkeyState(t, a, fake)
 	_, writes := trackedHotkeyAPICalls(fake)
 	if len(writes) != 1 || writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error != "" {
 		t.Fatalf("disabling the shortcut disabled the existing Add button: writes=%+v tracking=%+v", writes, state.Tracking)

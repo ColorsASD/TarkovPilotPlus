@@ -102,9 +102,108 @@ func TestMarketGroupsProjectSharedRequirementAndPreserveRawCounters(t *testing.T
 	if item.RequiredQuantity != 3 || len(item.Sources) != 1 || item.Sources[0].GroupID != "quest:quest:group" || item.Sources[0].Alternatives != 2 || item.Sources[0].GroupAmount != 3 || item.Sources[0].GroupRemainingQuantity != 1 || item.Sources[0].AllocatedQuantity != 2 || item.Sources[0].Origin != OriginMarket {
 		t.Fatalf("Market Any projection lost: %+v", item)
 	}
-	regular, fir, err := AddOptions(result, "cms")
-	if err != nil || regular || !fir {
-		t.Fatalf("wrong quality eligibility: %t %t %v", regular, fir, err)
+	allowed, err := AddAllowed(result, "cms")
+	if err != nil || !allowed {
+		t.Fatalf("wrong quality eligibility: %t %v", allowed, err)
+	}
+}
+
+func TestMarketGroupReportedProgressSurvivesCloneAndLocalAllocation(t *testing.T) {
+	tracked, quests, hideout := inputs()
+	group := marketGroup("aquarius", "water", 3, false, "water", "other-water")
+	group.AvailableQuantity, group.RemainingQuantity = 1, 2
+	tracked.Groups = []market.TrackedGroup{group}
+	tracked.Items = []market.TrackedItem{
+		{ItemID: "water", AvailableQuantity: 1, RequiredQuantity: 1, Sources: []market.TrackedSource{source("fixed-quest", 1, false)}},
+		{ItemID: "other-water", Sources: []market.TrackedSource{}},
+	}
+	merged, err := Merge(tracked, quests, hideout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range []Snapshot{Clone(merged), allocateForTest(t, merged)} {
+		for _, item := range snapshot.Items {
+			source := requireAllocationSource(t, item, "quest:aquarius:water")
+			if !source.MarketGroupProgressKnown || source.MarketGroupAvailableQuantity != 1 || source.RemainingRequiredQuantity != 3 {
+				t.Fatalf("raw API group progress was replaced by local allocation: %+v", source)
+			}
+		}
+	}
+	allocated := allocateForTest(t, merged)
+	for _, item := range allocated.Items {
+		source := requireAllocationSource(t, item, "quest:aquarius:water")
+		if !source.AllocationKnown || source.GroupRemainingQuantity != 3 || source.AllocatedQuantity != 0 {
+			t.Fatalf("reported API progress changed fixed-before-Any stock allocation: %+v", source)
+		}
+		assertAddAllowed(t, allocated, item.ItemID, true)
+	}
+	copy := Clone(allocated)
+	copy.Items[0].Sources[len(copy.Items[0].Sources)-1].MarketGroupAvailableQuantity = 0
+	if requireAllocationSource(t, allocated.Items[0], "quest:aquarius:water").MarketGroupAvailableQuantity != 1 {
+		t.Fatal("cloned group metadata aliases the confirmed source")
+	}
+	// Egy függő darab helyi szimulációja sem lehet új API-visszaigazolás.
+	allocated.Items[0].AvailableQuantity++
+	allocated.Items[0].MarketAvailableQuantity++
+	again := allocateForTest(t, allocated)
+	for _, item := range again.Items {
+		source := requireAllocationSource(t, item, "quest:aquarius:water")
+		if source.GroupRemainingQuantity != 2 || source.MarketGroupAvailableQuantity != 1 || !source.MarketGroupProgressKnown {
+			t.Fatalf("optimistic stock overwrote the confirmed API group progress: %+v", source)
+		}
+	}
+}
+
+func TestMarketGroupReportedZeroAndSurplusArePreservedExactly(t *testing.T) {
+	for _, available := range []int64{0, 3, MaxQuantity} {
+		tracked, quests, hideout := partialMarketGroupInputs(false)
+		tracked.Groups[0].AvailableQuantity = available
+		result := mergeAndAllocate(t, tracked, quests, hideout)
+		for _, item := range result.Items {
+			source := item.Sources[0]
+			if !source.MarketGroupProgressKnown || source.MarketGroupAvailableQuantity != available || source.RemainingRequiredQuantity != 2 || source.GroupRemainingQuantity != 1 {
+				t.Fatalf("raw API progress was capped, inferred or fed into allocation: %+v", source)
+			}
+		}
+	}
+}
+
+func TestInferredGroupDoesNotInventReportedMarketProgress(t *testing.T) {
+	source := allocationSource("inferred", 2, 3, false, OriginMarket)
+	result := allocateForTest(t, allocationSnapshot(allocationItem("a", 1, source), allocationItem("b", 0, source)))
+	for _, item := range result.Items {
+		source := item.Sources[0]
+		if source.MarketGroupProgressKnown || source.MarketGroupAvailableQuantity != 0 || source.GroupRemainingQuantity != 2 {
+			t.Fatalf("inferred group claimed server-reported progress: %+v", source)
+		}
+	}
+}
+
+func TestReportedMarketGroupProgressRejectsInvalidAndConflictingMetadata(t *testing.T) {
+	tracked, quests, hideout := partialMarketGroupInputs(false)
+	for _, available := range []int64{-1, MaxQuantity + 1} {
+		tracked.Groups[0].AvailableQuantity = available
+		if _, err := Merge(tracked, quests, hideout); err == nil {
+			t.Fatalf("invalid API group progress was accepted: available=%d required=2", available)
+		}
+	}
+	tracked.Groups[0].AvailableQuantity = 1
+	merged, err := Merge(tracked, quests, hideout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*Source){
+		func(s *Source) { s.MarketGroupAvailableQuantity = -1 },
+		func(s *Source) { s.MarketGroupAvailableQuantity = 3 },
+		func(s *Source) { s.GroupID = "" },
+		func(s *Source) { s.MarketGroupProgressKnown = false },
+		func(s *Source) { s.MarketGroupAvailableQuantity = 0 },
+	} {
+		candidate := Clone(merged)
+		change(&candidate.Items[0].Sources[0])
+		if _, err := Allocate(candidate); err == nil {
+			t.Fatal("invalid or conflicting reported progress passed snapshot validation")
+		}
 	}
 }
 func TestMarketPartialGroupProjectsOnlyTheOutstandingSharedRequirement(t *testing.T) {
@@ -154,7 +253,10 @@ func TestMarketPartialGroupCompletionAndQuestAliasCloseEveryCandidate(t *testing
 				if !source.Completed || source.Amount != 5 || source.GroupAmount != 5 || source.RemainingRequiredQuantity != 0 || source.AllocatedQuantity != 0 {
 					t.Fatalf("completion through %s lost or reactivated its source: %+v", completedBy, source)
 				}
-				assertAddOptions(t, result, item.ItemID, false, false)
+				if !source.MarketGroupProgressKnown || source.MarketGroupAvailableQuantity != 1 {
+					t.Fatalf("completion replaced reported API progress with local stock: %+v", source)
+				}
+				assertAddAllowed(t, result, item.ItemID, false)
 			}
 		})
 	}
@@ -174,15 +276,15 @@ func TestMarketGroupsShareStockWithoutCountingTheSameFiveTwice(t *testing.T) {
 	if allocated != 5 || missing != 3 {
 		t.Fatalf("five items covered more than five requirements: allocated=%d missing=%d", allocated, missing)
 	}
-	_, fir, err := AddOptions(result, "cms")
-	if err != nil || !fir {
-		t.Fatalf("open Any deficit was not collectable: %t %v", fir, err)
+	allowed, err := AddAllowed(result, "cms")
+	if err != nil || !allowed {
+		t.Fatalf("open Any deficit was not collectable: %t %v", allowed, err)
 	}
 	tracked.Items[0].AvailableQuantity = 8
 	result = mergeAndAllocate(t, tracked, quests, hideout)
-	regular, fir, err := AddOptions(result, "salewa")
-	if err != nil || regular || fir {
-		t.Fatalf("covered Market groups allowed overcollection: %t %t %v", regular, fir, err)
+	allowed, err = AddAllowed(result, "salewa")
+	if err != nil || allowed {
+		t.Fatalf("covered Market groups allowed overcollection: %t %v", allowed, err)
 	}
 }
 func TestMarketFixedRequirementReservesStockBeforeItsAnyGroup(t *testing.T) {
@@ -210,9 +312,9 @@ func TestMarketCompletedGroupsAndSourcesDoNotConsumeStock(t *testing.T) {
 			t.Fatalf("completed source stayed active: %+v", s)
 		}
 	}
-	regular, fir, err := AddOptions(result, "cms")
-	if err != nil || regular || fir {
-		t.Fatalf("completed group allowed Add: %t %t %v", regular, fir, err)
+	allowed, err := AddAllowed(result, "cms")
+	if err != nil || allowed {
+		t.Fatalf("completed group allowed Add: %t %v", allowed, err)
 	}
 }
 func TestMarketGroupCanSupplyMissingCandidateRowsAndRequirementLinks(t *testing.T) {

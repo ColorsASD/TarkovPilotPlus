@@ -78,7 +78,6 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 	fixedUnmet := make([]int64, len(out.Items))
 	fixedFIRAvailable := make([]int64, len(out.Items))
 	fixedRegularAvailable := make([]int64, len(out.Items))
-	remainingRegular := make([]int64, len(out.Items))
 	remainingQualifying := make([]int64, len(out.Items))
 	groupIDs := make([]string, 0, len(groups))
 	for id, group := range groups {
@@ -117,19 +116,15 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 				}
 			}
 		}
-		// A korábbi, típus nélküli készlet továbbra alkalmas kapacitás.
-		// Az új, ismert Regular darab csak nem-FiR követelményt fedezhet.
-		regular := item.MarketRegularQuantity
-		qualifying := item.AvailableQuantity - regular
-		firAssigned := min(qualifying, fixedFIR)
-		qualifying -= firAssigned
-		regularAssigned := min(regular, fixedRegular)
-		regular -= regularAssigned
-		qualifyingAssigned := min(qualifying, fixedRegular-regularAssigned)
-		qualifying -= qualifyingAssigned
-		fixedUnmet[itemIndex] = fixedFIR - firAssigned + fixedRegular - regularAssigned - qualifyingAssigned
-		fixedFIRAvailable[itemIndex], fixedRegularAvailable[itemIndex] = firAssigned, regularAssigned+qualifyingAssigned
-		remainingRegular[itemIndex], remainingQualifying[itemIndex] = regular, qualifying
+		// A Market kozos keszletebol osztjuk ki a kovetelmenysorokat.
+		remaining := item.AvailableQuantity
+		firAssigned := min(remaining, fixedFIR)
+		remaining -= firAssigned
+		regularAssigned := min(remaining, fixedRegular)
+		remaining -= regularAssigned
+		fixedUnmet[itemIndex] = fixedFIR - firAssigned + fixedRegular - regularAssigned
+		fixedFIRAvailable[itemIndex], fixedRegularAvailable[itemIndex] = firAssigned, regularAssigned
+		remainingQualifying[itemIndex] = remaining
 	}
 	itemIndexes := make([]int, 0, len(out.Items))
 	for i, item := range out.Items {
@@ -138,22 +133,18 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 		}
 	}
 	sort.Slice(itemIndexes, func(i, j int) bool { return out.Items[itemIndexes[i]].ItemID < out.Items[itemIndexes[j]].ItemID })
-	type buckets struct{ regular, qualifying int }
-	itemNodes := make(map[int]buckets, len(itemIndexes))
+	itemNodes := make(map[int]int, len(itemIndexes))
 	groupNodes := make(map[string]int, len(groupIDs))
 	for i, itemIndex := range itemIndexes {
-		itemNodes[itemIndex] = buckets{regular: i + 1, qualifying: len(itemIndexes) + i + 1}
+		itemNodes[itemIndex] = i + 1
 	}
 	for i, groupID := range groupIDs {
-		groupNodes[groupID] = 2*len(itemIndexes) + i + 1
+		groupNodes[groupID] = len(itemIndexes) + i + 1
 	}
-	sink := 2*len(itemIndexes) + len(groupIDs) + 1
+	sink := len(itemIndexes) + len(groupIDs) + 1
 	flow := newAllocationFlow(sink + 1)
 	for _, itemIndex := range itemIndexes {
-		flow.add(0, itemNodes[itemIndex].regular, remainingRegular[itemIndex])
-	}
-	for _, itemIndex := range itemIndexes {
-		flow.add(0, itemNodes[itemIndex].qualifying, remainingQualifying[itemIndex])
+		flow.add(0, itemNodes[itemIndex], remainingQualifying[itemIndex])
 	}
 	type assignment struct {
 		position allocationPosition
@@ -168,13 +159,9 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 		positions := append([]allocationPosition{}, group.positions...)
 		sort.Slice(positions, func(i, j int) bool { return out.Items[positions[i].item].ItemID < out.Items[positions[j].item].ItemID })
 		for _, position := range positions {
-			nodes := itemNodes[position.item]
-			if !group.fir {
-				edge := flow.add(nodes.regular, groupNodes[groupID], group.quantity)
-				assignments = append(assignments, assignment{position: position, node: nodes.regular, edge: edge, quantity: group.quantity})
-			}
-			edge := flow.add(nodes.qualifying, groupNodes[groupID], group.quantity)
-			assignments = append(assignments, assignment{position: position, node: nodes.qualifying, edge: edge, quantity: group.quantity})
+			node := itemNodes[position.item]
+			edge := flow.add(node, groupNodes[groupID], group.quantity)
+			assignments = append(assignments, assignment{position: position, node: node, edge: edge, quantity: group.quantity})
 		}
 		capacity := int64(0)
 		if group.fir {
@@ -249,8 +236,7 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 				}
 			}
 		}
-		typedStock := item.MarketRegularQuantity+item.MarketFIRQuantity > 0
-		if !safeRows[itemIndex] || (!anyKnown && !typedStock) {
+		if !safeRows[itemIndex] || !anyKnown {
 			continue
 		}
 		item.CollectionCalculated = true
@@ -276,6 +262,19 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 			quota += marketOpenAssigned + marketMissing + closedAssigned
 		}
 		item.CollectionMarketRequiredQuantity = min(item.MarketRequiredQuantity, quota)
+	}
+	for i := range out.Items {
+		if !safeRows[i] || !usesReportedMarketQuota(out.Items[i]) {
+			continue
+		}
+		quota, err := reportedMarketQuota(out, i)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		item := &out.Items[i]
+		item.CollectionCalculated = true
+		item.CollectionRequiredQuantity, item.CollectionMarketRequiredQuantity = quota, quota
+		item.CollectionRemainingQuantity = max(0, quota-item.AvailableQuantity)
 	}
 	return out, nil
 }

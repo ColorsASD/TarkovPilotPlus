@@ -10,15 +10,9 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
 )
 
-func addMarketKindForTest(t *testing.T, a *ItemWindowApp, uid, kind string) ItemState {
+func addMarketItemForTest(t *testing.T, a *ItemWindowApp, uid string) ItemState {
 	t.Helper()
-	if kind == "fir" {
-		a.AddTrackedItemFIR(uid)
-	} else if kind == "regular" {
-		a.AddTrackedItem(uid)
-	} else {
-		t.Fatalf("invalid test item quality %q", kind)
-	}
+	a.AddTrackedItem(uid)
 	waitPendingForTest(t, a)
 	return a.GetState()
 }
@@ -70,27 +64,4 @@ func (f *marketProgressReadFailureForTest) LoadHideout(ctx context.Context, key,
 		return market.HideoutSnapshot{}, market.ErrProgressUnavailable
 	}
 	return f.fakeCharacterProgress.LoadHideout(ctx, key, uid, language)
-}
-
-func (a *ItemWindowApp) recordLocalMarketAdd(key string, opts ItemOptions, item market.Item, kind string, before, after int64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.localCurrentLocked(key, opts) || after != before+1 || before < 0 || after > localprogress.MaxQuantity || (kind != "fir" && kind != "regular") {
-		return
-	}
-	if a.marketKinds == nil {
-		a.marketKinds = make(map[string]marketKindState)
-	}
-	id := marketKindKey(opts.CharacterUID, opts.Mode, item.BSGID)
-	known := a.marketKinds[id]
-	if known.stock != before {
-		known = marketKindState{}
-	}
-	known.stock = after
-	if kind == "fir" {
-		known.fir++
-	} else {
-		known.regular++
-	}
-	a.marketKinds[id] = known
 }

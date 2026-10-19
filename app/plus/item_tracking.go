@@ -40,8 +40,8 @@ type ItemTrackingState struct {
 	Storage                 string                        `json:"storage,omitempty"`
 	MarketAvailableQuantity int64                         `json:"marketAvailableQuantity"`
 	MarketRequiredQuantity  int64                         `json:"marketRequiredQuantity"`
-	AddRegularAllowed       bool                          `json:"addRegularAllowed"`
-	AddFIRAllowed           bool                          `json:"addFIRAllowed"`
+	AddAllowed              bool                          `json:"addAllowed"`
+	RemoveAllowed           bool                          `json:"removeAllowed"`
 	MarketTracked           bool                          `json:"marketTracked"`
 	AlternativeNotes        []string                      `json:"alternativeNotes,omitempty"`
 	AnyGroups               []ItemTrackingAnyGroup        `json:"anyGroups,omitempty"`
@@ -122,7 +122,6 @@ func (a *ItemWindowApp) clearTrackingLocked() {
 	a.state.Local = nil
 	a.localSnapshot = localprogress.Snapshot{}
 	a.confirmedProgress = localprogress.Snapshot{}
-	a.marketKinds = nil
 	a.localAt, a.charactersAt, a.trackedAt = time.Time{}, time.Time{}, time.Time{}
 	a.localRevision, a.trackedRevision = 0, 0
 	a.trackedSnapshot = market.TrackedSnapshot{}
@@ -191,7 +190,13 @@ func (a *ItemWindowApp) refreshTracking() {
 		a.state.CharactersLoading = true
 	}
 	if item.UID != "" {
-		a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, CharUID: opts.CharacterUID, Loading: true}
+		previous := a.state.Tracking
+		if previous != nil && previous.ItemUID == item.UID && previous.ItemID == item.BSGID && previous.CharUID == opts.CharacterUID {
+			a.state.Tracking = cloneTrackingState(previous)
+			a.state.Tracking.Loading = true
+		} else {
+			a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID, Loading: true}
+		}
 	}
 	a.mu.Unlock()
 	a.emit()
@@ -246,7 +251,12 @@ func (a *ItemWindowApp) refreshTracking() {
 		a.state.CharacterUID = opts.CharacterUID
 
 		a.state.Local = nil
+		a.localSnapshot = localprogress.Snapshot{}
+		a.confirmedProgress = localprogress.Snapshot{}
 		a.localAt = time.Time{}
+		if item.UID != "" {
+			a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID, Loading: true}
+		}
 		if a.dir != "" {
 			data, _ := json.MarshalIndent(a.state.ItemOptions, "", "    ")
 			_ = writePrivateFile(filepath.Join(a.dir, "item-settings.json"), data)
@@ -475,20 +485,17 @@ func (a *ItemWindowApp) trackingFailure(key string, opts ItemOptions, uid string
 // One explicit button click or shortcut press adds one to freshly read stock. A rejected revision
 // may be reconciled once. An uncertain write is only read back, never replayed.
 func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
-	return a.addTrackedItemKind(uid, nil, "regular")
-}
-
-func (a *ItemWindowApp) AddTrackedItemFIR(uid string) ItemState {
-	return a.addTrackedItemKind(uid, nil, "fir")
+	return a.addTrackedItem(uid, nil)
 }
 
 func (a *ItemWindowApp) addTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget) ItemState {
-	return a.addTrackedItemKind(uid, hotkeyTarget, "regular")
+	return a.reservePendingMarketAdd(uid, hotkeyTarget)
 }
 
-func (a *ItemWindowApp) addTrackedItemKind(uid string, hotkeyTarget *trackedAddHotkeyTarget, kind string) ItemState {
-	if kind != "regular" && kind != "fir" {
-		return a.GetState()
-	}
-	return a.reservePendingMarketAdd(uid, hotkeyTarget, kind)
+func (a *ItemWindowApp) RemoveTrackedItem(uid string) ItemState {
+	return a.removeTrackedItem(uid, nil)
+}
+
+func (a *ItemWindowApp) removeTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget) ItemState {
+	return a.reservePendingMarketChange(uid, hotkeyTarget, -1)
 }

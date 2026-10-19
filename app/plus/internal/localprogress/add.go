@@ -2,14 +2,13 @@ package localprogress
 
 import "math"
 
-// AddOptions a teljes követelménylista kiosztásával ellenőrzi, hogy egy új,
-// ismert típusú darab csökkentené-e a fennmaradó igényt. Az Any csoport hiányát
-// egyszer számolja; egy másik tárgy vagy cél számára felszabaduló készlet is
-// számít. A bemenet és a tárolt készlet nem változik.
-func AddOptions(snapshot Snapshot, itemID string) (regular, fir bool, err error) {
+// AddAllowed az API-csoportadatból számolt tárgykvótáig enged új darabot.
+// Bejelentett API-progressz nélküli csoportnál a teljes követelménylista
+// kiosztásával ellenőrzi a hiány csökkenését. A bemenet és a készlet nem változik.
+func AddAllowed(snapshot Snapshot, itemID string) (bool, error) {
 	allocated, err := Allocate(snapshot)
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
 	index := -1
 	for i, item := range allocated.Items {
@@ -17,58 +16,44 @@ func AddOptions(snapshot Snapshot, itemID string) (regular, fir bool, err error)
 			continue
 		}
 		if index != -1 {
-			return false, false, ErrAmbiguousItem
+			return false, ErrAmbiguousItem
 		}
 		index = i
 	}
 	if index == -1 {
-		return false, false, ErrItemNotFound
+		return false, ErrItemNotFound
 	}
 	item := allocated.Items[index]
 	if item.AvailableQuantity >= MaxQuantity || item.MarketAvailableQuantity >= MaxQuantity {
-		return false, false, nil
+		return false, nil
 	}
 	var rawTotal int64
 	for _, source := range item.Sources {
 		if active(source) {
 			if err := addQuantity(&rawTotal, source.RemainingRequiredQuantity); err != nil {
-				return false, false, err
+				return false, err
 			}
 		}
 	}
 	if len(item.Sources) != 0 && rawTotal != item.RequiredQuantity {
-		return false, false, ErrInvalidSnapshot
+		return false, ErrInvalidSnapshot
+	}
+	if usesReportedMarketQuota(item) {
+		return item.AvailableQuantity < item.CollectionRequiredQuantity, nil
 	}
 	before, err := collectionDeficit(allocated)
 	if err != nil || before == 0 {
-		return false, false, err
+		return false, err
 	}
-	check := func(kind string) (bool, error) {
-		candidate := Clone(allocated)
-		row := &candidate.Items[index]
-		row.AvailableQuantity++
-		// A szimuláció csak egy típusos kapacitást ad hozzá. A Market mezők
-		// használata nem módosítja a collected/used elszámolást, és nem dönti
-		// el, hogy a tényleges mentés melyik forrásba kerül.
-		row.MarketAvailableQuantity++
-		if kind == "fir" {
-			row.MarketFIRQuantity++
-		} else {
-			row.MarketRegularQuantity++
-		}
-		after, err := Allocate(candidate)
-		if err != nil {
-			return false, err
-		}
-		missing, err := collectionDeficit(after)
-		return missing < before, err
-	}
-	regular, err = check("regular")
+	candidate := Clone(allocated)
+	row := &candidate.Items[index]
+	row.AvailableQuantity++
+	after, err := Allocate(candidate)
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
-	fir, err = check("fir")
-	return regular, fir, err
+	missing, err := collectionDeficit(after)
+	return missing < before, err
 }
 
 // A megjelenítés tárgyanként megismétli az Any csoport hiányát. A mentési

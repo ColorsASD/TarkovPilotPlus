@@ -109,7 +109,7 @@ func alternativeNote(source localprogress.Source) string {
 	if source.Alternatives <= 1 || source.Completed || source.Canceled || source.Optional || source.RemainingRequiredQuantity <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("Any %d of %d eligible items", source.RemainingRequiredQuantity, source.Alternatives)
+	return fmt.Sprintf("Shared requirement: %d of %d eligible items", source.RemainingRequiredQuantity, source.Alternatives)
 }
 
 func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTrackingState {
@@ -164,7 +164,7 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 		}
 		simplifyLocalTrackingView(view, row, snapshot)
 		if !view.InventorySeparate && view.Error == "" {
-			view.AddRegularAllowed, view.AddFIRAllowed, _ = localprogress.AddOptions(snapshot, item.BSGID)
+			view.AddAllowed, _ = localprogress.AddAllowed(snapshot, item.BSGID)
 		}
 		break
 	}
@@ -248,7 +248,7 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 	}
 	valid := snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) && snapshot.Revision != ""
 	if valid {
-		snapshot = a.annotateMarketKindsLocked(snapshot)
+		snapshot, _ = localprogress.Allocate(snapshot)
 		a.confirmedProgress, a.localRevision = snapshot, opts.revision
 		a.rebuildPendingViewLocked()
 		a.state.Local = &LocalProgressState{UpdatedAt: time.Now(), Warning: warning}
@@ -258,7 +258,13 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 	} else {
 		a.state.Local = &LocalProgressState{}
 		if a.localItemCurrentLocked(item) {
-			a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID}
+			previous := a.state.Tracking
+			if previous != nil && previous.ItemUID == item.UID && previous.ItemID == item.BSGID && previous.CharUID == opts.CharacterUID {
+				a.state.Tracking = cloneTrackingState(previous)
+				a.state.Tracking.Loading = false
+			} else {
+				a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID}
+			}
 		}
 	}
 	if err != nil {
@@ -287,42 +293,6 @@ func (a *ItemWindowApp) RefreshLocalProgress() ItemState {
 	return a.GetState()
 }
 
-// A minőségjelölés csak a futó folyamat memóriájában él. A darabszámot mindig
-// a Market adja; külső változás vagy újraindítás után nincs saját készletadat.
-type marketKindState struct{ stock, regular, fir int64 }
-
-func marketKindKey(charUID, mode, itemID string) string {
-	return charUID + "\x00" + strings.ToUpper(mode) + "\x00" + itemID
-}
-
-func (a *ItemWindowApp) annotateMarketKindsLocked(snapshot localprogress.Snapshot) localprogress.Snapshot {
-	present := make(map[string]int)
-	for _, row := range snapshot.Items {
-		present[row.ItemID]++
-	}
-	prefix := marketKindKey(snapshot.CharUID, snapshot.GameMode, "")
-	for key := range a.marketKinds {
-		if strings.HasPrefix(key, prefix) && present[strings.TrimPrefix(key, prefix)] != 1 {
-			delete(a.marketKinds, key)
-		}
-	}
-	for i := range snapshot.Items {
-		row := &snapshot.Items[i]
-		key := marketKindKey(snapshot.CharUID, snapshot.GameMode, row.ItemID)
-		known, found := a.marketKinds[key]
-		row.MarketRegularQuantity, row.MarketFIRQuantity = 0, 0
-		if found && known.stock == row.MarketAvailableQuantity {
-			row.MarketRegularQuantity, row.MarketFIRQuantity = known.regular, known.fir
-		} else if found {
-			delete(a.marketKinds, key)
-		}
-	}
-	if allocated, err := localprogress.Allocate(snapshot); err == nil {
-		return allocated
-	}
-	return snapshot
-}
-
 // Teljesen új Market-válaszból építjük újra a követelményeket és az Any csoportokat.
 func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote market.TrackedSnapshot, status string) {
 	a.applyMergedMarketSnapshotLocked(item, remote, marketProgressOnly(remote), status)
@@ -330,7 +300,7 @@ func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote mar
 
 func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote market.TrackedSnapshot, merged localprogress.Snapshot, status string) {
 	a.reconcilePendingSnapshotLocked(remote)
-	snapshot := a.annotateMarketKindsLocked(localprogress.Clone(merged))
+	snapshot, _ := localprogress.Allocate(merged)
 	a.confirmedProgress, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
 	a.rebuildPendingViewLocked()
 	a.state.Local = &LocalProgressState{UpdatedAt: a.localAt}
@@ -346,14 +316,8 @@ func (a *ItemWindowApp) rebuildPendingViewLocked() {
 	snapshot := localprogress.Clone(a.confirmedProgress)
 	for i := range snapshot.Items {
 		row := &snapshot.Items[i]
-		regular, fir := a.pendingAddAmountsLocked(a.state.ItemOptions, row.ItemID)
-		if regular < 0 || fir < 0 || regular > localprogress.MaxQuantity-fir || regular+fir > localprogress.MaxQuantity-row.MarketAvailableQuantity {
-			continue
-		}
-		row.MarketAvailableQuantity += regular + fir
-		row.AvailableQuantity += regular + fir
-		row.MarketRegularQuantity += regular
-		row.MarketFIRQuantity += fir
+		pending := a.pendingAddAmountLocked(a.state.ItemOptions, row.ItemID)
+		row.AvailableQuantity = min(localprogress.MaxQuantity, max(0, row.MarketAvailableQuantity+pending))
 		row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
 	}
 	if allocated, err := localprogress.Allocate(snapshot); err == nil {

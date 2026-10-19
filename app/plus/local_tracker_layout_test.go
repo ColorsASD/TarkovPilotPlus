@@ -68,7 +68,7 @@ func medicalLayoutStates(t *testing.T) map[string]ItemState {
 	setMarketGroupRowsForTest(fake, fake.snapshot.Items,
 		marketQuestGroupForTest("quest-b", "regular-any", 1, false, layoutAugmentin, layoutSalewa),
 		marketQuestGroupForTest("quest-c", "fir-any", 1, true, layoutAugmentin, layoutSalewa))
-	a.recordLocalMarketAdd(a.apiKey, a.state.ItemOptions, market.Item{BSGID: layoutSalewa}, "fir", 0, 1)
+
 	states := map[string]ItemState{
 		"augmentin-open": refreshLayoutItem(t, a, layoutAugmentin, "Augmentin antibiotic pills"),
 		"salewa-open":    refreshLayoutItem(t, a, layoutSalewa, "Salewa first aid kit"),
@@ -132,13 +132,14 @@ func groupedLayoutStates(t *testing.T, differentCandidates bool) map[string]Item
 	setMarketGroupRowsForTest(fake, nil,
 		marketQuestGroupForTest("quest-b", "any-b", 3, false, layoutAugmentin, layoutSalewa),
 		marketQuestGroupForTest("quest-c", "any-c", 3, false, secondCandidates...))
+	fake.groupProgressByCommit = [][]int64{{1, 0}, {2, 0}, {3, 0}, {3, 1}, {3, 2}, {3, 3}}
 	states := map[string]ItemState{"zero": refreshLayoutItem(t, a, layoutAugmentin, "Augmentin antibiotic pills")}
 	if !differentCandidates {
 		for i := 0; i < 4; i++ {
-			states["partial"] = addMarketKindForTest(t, a, layoutAugmentin+"-uid", "regular")
+			states["partial"] = addMarketItemForTest(t, a, layoutAugmentin+"-uid")
 		}
 		for i := 0; i < 2; i++ {
-			states["full"] = addMarketKindForTest(t, a, layoutAugmentin+"-uid", "regular")
+			states["full"] = addMarketItemForTest(t, a, layoutAugmentin+"-uid")
 		}
 	}
 	return states
@@ -154,7 +155,7 @@ func TestLocalTrackerAggregatesOnlyIdenticalAnyEligibility(t *testing.T) {
 		if len(tracking.CompletedSources) != 0 {
 			t.Fatal("covering an Any group completed a quest")
 		}
-		if key == "full" && (tracking.RequiredQuantity != 0 || tracking.RemainingQuantity != 0 || tracking.AddRegularAllowed || tracking.AddFIRAllowed) {
+		if key == "full" && (tracking.RequiredQuantity != 6 || tracking.RemainingQuantity != 0 || tracking.AddAllowed) {
 			t.Fatalf("full Any display reopened collection: %+v", tracking)
 		}
 	}
@@ -181,12 +182,12 @@ func TestLocalTrackerFullFixedRequirementsKeepRatiosUntilQuestCompletion(t *test
 			refreshLayoutItem(t, a, trackingBSGID, "Tracked item")
 			var state ItemState
 			for i := 0; i < 10; i++ {
-				state = addMarketKindForTest(t, a, trackingBSGID+"-uid", kind)
+				state = addMarketItemForTest(t, a, trackingBSGID+"-uid")
 			}
 			if available, required := requirementStock(t, state, kind); available != 10 || required != 10 {
 				t.Fatalf("full fixed requirement lost its 10/10 ratio: %+v", state.Tracking)
 			}
-			if state.Tracking.RequiredQuantity != 10 || state.Tracking.RemainingQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed || len(state.Tracking.CompletedSources) != 0 {
+			if state.Tracking.RequiredQuantity != 10 || state.Tracking.RemainingQuantity != 0 || state.Tracking.AddAllowed || len(state.Tracking.CompletedSources) != 0 {
 				t.Fatalf("full stock changed the active requirement or allowed more collection: %+v", state.Tracking)
 			}
 			fake.quests.Quests[1].Completed, fake.quests.Quests[1].Status = true, "completed"

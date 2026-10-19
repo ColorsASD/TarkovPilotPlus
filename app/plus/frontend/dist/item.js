@@ -9,7 +9,7 @@
     let optionsRevision = 0;
     let optionsQueue = Promise.resolve();
     let localBusy = false;
-    let addingTracking = null;
+    let changingTracking = null;
     let trackingFailure = null;
     let keyVisible = false;
     let keyFromStorage = false;
@@ -23,13 +23,13 @@
     let shortcutCaptureRevision = 0;
     let shortcutCaptureQueue = Promise.resolve();
     const shortcutFields = [
-        { id: 'add-hotkey', property: 'addHotkey', fallback: 'F2', ready: 'addHotkeyReady', error: 'addHotkeyError' },
-        { id: 'fir-hotkey', property: 'firHotkey', fallback: 'F1', ready: 'firHotkeyReady', error: 'firHotkeyError' },
+        { id: 'add-hotkey', property: 'addHotkey', fallback: 'F1', ready: 'addHotkeyReady', error: 'addHotkeyError' },
+        { id: 'remove-hotkey', property: 'removeHotkey', fallback: 'F2', ready: 'removeHotkeyReady', error: 'removeHotkeyError' },
     ];
     let state = {
         enabled: true, automatic: true, language: 'en', mode: 'PVP', hasAPIKey: false,
-        addHotkey: 'F2', addHotkeyReady: false, addHotkeyError: '',
-        firHotkey: 'F1', firHotkeyReady: false, firHotkeyError: '', hotkeyCapture: false,
+        addHotkey: 'F1', addHotkeyReady: false, addHotkeyError: '', hotkeyCapture: false,
+        removeHotkey: 'F2', removeHotkeyReady: false, removeHotkeyError: '',
         busy: false, status: 'no_key', error: '', ocrLanguages: [], cachedAt: '', stale: false, item: null, scanDetails: null,
         characterUid: '', characters: [], charactersLoading: false, charactersError: '', tracking: null,
         local: null, pendingAdds: null,
@@ -44,7 +44,7 @@
     const isBusy = () => localBusy || !!state.busy;
     const safeText = (value) => typeof value === 'string' ? value.slice(0, 500) : '';
     const progressContext = () => JSON.stringify([state.characterUid, String(state.mode || '').toUpperCase(), optionsRevision]);
-    const normalizedHotkey = (value, fallback = 'F2') => {
+    const normalizedHotkey = (value, fallback = 'F1') => {
         if (typeof value !== 'string') return fallback;
         if (['off', 'disabled'].includes(value.trim().toLowerCase())) return 'off';
         const parts = value.trim().split('+');
@@ -111,8 +111,9 @@
     };
     const currentTracking = () => {
         const tracking = state.tracking;
-        return tracking && typeof tracking === 'object' && state.item &&
-            tracking.itemUid === state.item.uid && tracking.charUid === state.characterUid ? tracking : null;
+        return state.hasAPIKey && safeText(state.characterUid) && tracking && typeof tracking === 'object' && state.item &&
+            tracking.itemUid === state.item.uid && tracking.charUid === state.characterUid &&
+            (tracking.itemId === state.item.bsgId || !safeText(tracking.itemId) && tracking.loading && tracking.tracked !== true) ? tracking : null;
     };
     const sameTrackingTarget = (target) => !!target && !!state.item &&
         target.itemUid === state.item.uid && target.charUid === state.characterUid;
@@ -122,18 +123,21 @@
         return Array.isArray(tracking.variants) && tracking.variants.length ? tracking.variants.filter((variant) =>
             variant && typeof variant === 'object' && sameTrackingTarget(variant)) : [tracking];
     };
-    const canAddTracking = (tracking, kind = 'regular') => {
+    const canChangeTracking = (tracking, action) => {
         const current = currentTracking();
         if (state.hotkeyCapture || shortcutCapturePending || !state.local || state.local.loading || safeText(state.local.error)) return false;
         return (!!nativeApp() || preview) && !isBusy() && !safeText(state.error) && state.hasAPIKey && !!state.characterUid &&
             !!safeText(state.item && state.item.uid) &&
             !!safeText(state.item && state.item.bsgId) &&
             !!tracking && sameTrackingTarget(tracking) && tracking.itemId === state.item.bsgId && tracking.tracked === true &&
-            Number.isSafeInteger(tracking.requiredQuantity) && tracking.requiredQuantity > 0 && tracking.firInventorySeparate !== true &&
-            (kind === 'fir' ? tracking.addFIRAllowed === true : kind === 'regular' && tracking.addRegularAllowed === true) &&
+            tracking.firInventorySeparate !== true &&
+            (action === 'remove' ? Number.isSafeInteger(tracking.availableQuantity) && tracking.availableQuantity > 0 && tracking.removeAllowed === true :
+                Number.isSafeInteger(tracking.requiredQuantity) && tracking.requiredQuantity > 0 && tracking.addAllowed === true) &&
             !tracking.loading && !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
             pendingOptions.size === 0 && !(current && Array.isArray(current.variants) && current.variants.length > 1);
     };
+    const canAddTracking = (tracking) => canChangeTracking(tracking, 'add');
+    const canRemoveTracking = (tracking) => canChangeTracking(tracking, 'remove');
     const quantityText = (value) => Number.isInteger(value) && value >= 0 ? numberText(value) : '—';
     const itemsText = (value) => quantityText(value) + (value === 1 ? ' item' : ' items');
     const availableCharacters = () => (Array.isArray(state.characters) ? state.characters : []).filter((character) =>
@@ -175,11 +179,12 @@
     const renderTrackingCard = (panel, tracking, multipleVariants, variantLabel) => {
         const element = (name) => panel.querySelector('[data-tracked="' + name + '"]');
         const tracked = !!tracking && tracking.tracked === true;
-        const adding = sameTrackingTarget(addingTracking) || !!tracking && !!tracking.adding;
+        const changing = sameTrackingTarget(changingTracking) || !!tracking && !!tracking.adding;
         const failure = sameTrackingTarget(trackingFailure) ? trackingFailure.message : '';
         const error = failure || safeText(tracking && tracking.error);
-        const status = failure ? '' : adding ? 'Adding…' : tracking && tracking.loading ?
-            'Loading Tracked Items data…' : safeText(tracking && tracking.status);
+        const loading = !!tracking && (tracking.loading || !!state.local && state.local.loading);
+        const status = failure ? '' : changing ? changingTracking && changingTracking.action === 'remove' ? 'Removing…' : 'Updating stock…' : loading ?
+            tracked ? 'Refreshing Tracked Items data…' : 'Loading Tracked Items data…' : safeText(tracking && tracking.status);
         const requirements = tracked && Array.isArray(tracking.requirements) ? tracking.requirements.filter((requirement) =>
             requirement && (requirement.kind === 'fir' || requirement.kind === 'regular') &&
             Number.isInteger(requirement.requiredQuantity) && requirement.requiredQuantity >= 0).sort((a, b) =>
@@ -214,15 +219,17 @@
         const completedSources = tracked && Array.isArray(tracking.completedSources) ? tracking.completedSources.filter((source) =>
             source && typeof source === 'object' && !Array.isArray(source)) : [];
         const noActiveRequirement = noRequiredQuantity && !visibleRequirements.some((requirement) => requirement.requiredQuantity > 0) && !anyGroups.length;
-        panel.classList.toggle('hidden', noActiveRequirement && !error && !(tracking && tracking.loading) && !adding ||
-            !tracked && !error && !(tracking && tracking.loading) && !adding);
-        element('content').classList.toggle('hidden', !tracked || noActiveRequirement);
+        const hasStock = tracked && Number.isSafeInteger(tracking.availableQuantity) && tracking.availableQuantity > 0;
+        panel.classList.toggle('hidden', noActiveRequirement && !hasStock && !error && !(tracking && tracking.loading) && !changing ||
+            !tracked && !error && !(tracking && tracking.loading) && !changing);
+        element('content').classList.toggle('hidden', !tracked || noActiveRequirement && !hasStock);
         const variantName = multipleVariants ? variantLabel : '';
         element('variant-name').textContent = variantName;
         element('variant-name').classList.toggle('hidden', !variantName);
         panel.setAttribute('aria-label', variantName ? 'Items Tracker: ' + variantName : 'Items Tracker');
-        const anyRequirementsCovered = anyGroups.length > 0 && anyGroups.every((group) => group.availableQuantity === group.requiredQuantity);
-        const stockRequiredQuantity = noRequiredQuantity && anyRequirementsCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
+        // Shared rows report confirmed API progress, which can lag pending stock.
+        const collectionCovered = noRequiredQuantity && (anyGroups.length > 0 || hasStock);
+        const stockRequiredQuantity = collectionCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
         element('ratio').textContent = tracked ?
             quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
         element('ratio').setAttribute('aria-label', 'Available / required quantity');
@@ -241,10 +248,10 @@
             row.className = 'tracked-requirement-row';
             row.dataset.kind = 'any';
             const label = document.createElement('dt');
-            label.textContent = group.fir === true ? 'Any (FiR)' : 'Any';
+            label.textContent = group.fir === true ? 'Shared (FiR)' : 'Shared';
             const quantity = document.createElement('dd');
             quantity.textContent = quantityText(group.availableQuantity) + '/' + quantityText(group.requiredQuantity);
-            const genericLabel = group.fir === true ? 'Any eligible Found in Raid item' : 'Any eligible item';
+            const genericLabel = group.fir === true ? 'Shared Found in Raid requirement' : 'Shared requirement';
             const details = group.sources.map((source) => {
                 const questName = safeText(source.questName).trim();
                 const category = safeText(source.category).trim();
@@ -275,10 +282,12 @@
         element('completed-sources').classList.toggle('hidden', !completedSources.length);
         const add = element('add');
         add.disabled = !canAddTracking(tracking);
-        element('add-label').textContent = 'Add Regular item';
-        element('add-fir').disabled = !canAddTracking(tracking, 'fir');
         add.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
             'Add 1 item to ' + (separateInventory ? '' : 'shared ') + 'Tracked Items stock for the selected character';
+        const remove = element('remove');
+        remove.disabled = !canRemoveTracking(tracking);
+        remove.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
+            'Remove 1 item from shared Tracked Items stock for the selected character';
         element('status').textContent = status;
         element('status').classList.toggle('hidden', !status);
         element('error').textContent = error;
@@ -290,13 +299,13 @@
         const keys = new Set();
         const names = entries.map((tracking) => safeText(tracking.variantName).trim());
         entries.forEach((tracking, index) => {
-            const key = JSON.stringify([tracking.itemUid, tracking.charUid, tracking.variantName || '', index]);
+            const key = JSON.stringify([tracking.itemUid, tracking.itemId || '', tracking.charUid, String(state.mode || '').toUpperCase(), tracking.variantName || '', index]);
             keys.add(key);
             let panel = trackingCards.get(key);
             if (!panel) {
                 panel = $('tracked-panel-template').content.firstElementChild.cloneNode(true);
-                panel.querySelector('[data-tracked="add"]').addEventListener('click', () => addTrackedItem());
-                panel.querySelector('[data-tracked="add-fir"]').addEventListener('click', () => addTrackedItem('fir'));
+                panel.querySelector('[data-tracked="add"]').addEventListener('click', () => changeTrackedItem('add'));
+                panel.querySelector('[data-tracked="remove"]').addEventListener('click', () => changeTrackedItem('remove'));
                 trackingCards.set(key, panel);
             }
             const name = names[index];
@@ -386,13 +395,13 @@
         const entries = trackingEntries();
         [...$('tracked-panels').children].forEach((panel, index) => {
             panel.querySelector('[data-tracked="add"]').disabled = !canAddTracking(entries[index]);
-            panel.querySelector('[data-tracked="add-fir"]').disabled = !canAddTracking(entries[index], 'fir');
+            panel.querySelector('[data-tracked="remove"]').disabled = !canRemoveTracking(entries[index]);
             const badge = panel.querySelector('[data-tracked="add-hotkey"]');
             badge.textContent = hotkeys[0].value;
             badge.classList.toggle('hidden', !hotkeys[0].ready);
-            const firBadge = panel.querySelector('[data-tracked="add-fir-hotkey"]');
-            firBadge.textContent = hotkeys[1].value;
-            firBadge.classList.toggle('hidden', !hotkeys[1].ready);
+            const removeBadge = panel.querySelector('[data-tracked="remove-hotkey"]');
+            removeBadge.textContent = hotkeys[1].value;
+            removeBadge.classList.toggle('hidden', !hotkeys[1].ready);
         });
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
@@ -524,7 +533,7 @@
         haveMarketData: true, bannedOnFlea: false,
     };
     let previewState = {
-        ...state, hasAPIKey: true, addHotkey: 'F2', addHotkeyReady: true, firHotkey: 'F1', firHotkeyReady: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
+        ...state, hasAPIKey: true, addHotkey: 'F1', addHotkeyReady: true, removeHotkey: 'F2', removeHotkeyReady: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
         characterUid: 'preview-character', characters: [{ charUid: 'preview-character', name: 'Sample character', gameMode: 'PVP' }],
         tracking: { itemUid: sampleItem.uid, itemId: 'preview-tracked-item', charUid: 'preview-character',
             tracked: true, loading: false, adding: false, availableQuantity: 0, requiredQuantity: 7,
@@ -543,9 +552,8 @@
             price: 0, avg24hPrice: 0, traderPrice: 0, traderName: '', haveMarketData: false };
         previewState.tracking = { ...previewState.tracking, requirement: 'mixed',
             availableQuantity: previewCompletion ? 0 : 2, requiredQuantity: previewCompletion ? 7 : 8, remainingQuantity: previewCompletion ? 7 : 6,
-            previewFIRStock: 0, previewRegularStock: previewCompletion ? 0 : 2,
-            addRegularAllowed: true, addFIRAllowed: true,
-            requirements: [{ kind: 'fir', requiredQuantity: previewCompletion ? 2 : 5, availableQuantity: 0 },
+            addAllowed: true, removeAllowed: !previewCompletion, marketAvailableQuantity: previewCompletion ? 0 : 2,
+            requirements: [{ kind: 'fir', requiredQuantity: previewCompletion ? 2 : 5, availableQuantity: previewCompletion ? 0 : 2 },
                 { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: previewCompletion ? 0 : 2 }] };
         previewState.pendingAdds = { count: 0, running: false, status: '', error: '' };
         previewState.local = { loading: false, error: '', warning: '', updatedAt: '2026-10-11T21:30:00Z' };
@@ -557,27 +565,25 @@
         if (!preview) throw new Error('The app connection is unavailable.');
         if (method === 'RevealAPIKey') return previewState.hasAPIKey ? previewAPIKey : '';
         if (method === 'SetOptions') {
-            const addHotkey = normalizedHotkey(args[0].addHotkey, 'F2');
-            const firHotkey = normalizedHotkey(args[0].firHotkey, 'F1');
-            if (addHotkey !== 'off' && addHotkey === firHotkey) throw new Error('Duplicate shortcut.');
-            previewState = { ...previewState, ...args[0], addHotkey, firHotkey,
-                addHotkeyReady: addHotkey !== 'off' && !previewState.hotkeyCapture, firHotkeyReady: firHotkey !== 'off' && !previewState.hotkeyCapture,
-                addHotkeyError: '', firHotkeyError: '' };
+            const addHotkey = normalizedHotkey(args[0].addHotkey, 'F1');
+            const removeHotkey = normalizedHotkey(args[0].removeHotkey, 'F2');
+            if (addHotkey !== 'off' && addHotkey === removeHotkey) throw new Error('Duplicate shortcut.');
+            previewState = { ...previewState, ...args[0], addHotkey, removeHotkey,
+                addHotkeyReady: addHotkey !== 'off' && !previewState.hotkeyCapture, addHotkeyError: '',
+                removeHotkeyReady: removeHotkey !== 'off' && !previewState.hotkeyCapture, removeHotkeyError: '' };
         }
         if (method === 'SetHotkeyCapture') previewState = { ...previewState, hotkeyCapture: !!args[0],
-            addHotkeyReady: !args[0] && previewState.addHotkey !== 'off', firHotkeyReady: !args[0] && previewState.firHotkey !== 'off' };
+            addHotkeyReady: !args[0] && previewState.addHotkey !== 'off', removeHotkeyReady: !args[0] && previewState.removeHotkey !== 'off' };
         if (method === 'RefreshLocalProgress' && previewState.local) {
             const requiredQuantity = previewCompletion ? 4 : 5;
             const firRequired = previewCompletion ? 1 : 2;
-            const firStock = previewState.tracking.previewFIRStock || 0;
-            const regularStock = previewState.tracking.previewRegularStock || 0;
-            const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: Math.min(firStock, firRequired) },
-                { kind: 'regular', requiredQuantity: 3, availableQuantity: Math.min(3, regularStock + Math.max(0, firStock - firRequired)) }];
-            const addRegularAllowed = requirements[1].availableQuantity < requirements[1].requiredQuantity;
-            const addFIRAllowed = addRegularAllowed || requirements[0].availableQuantity < requirements[0].requiredQuantity;
+            const stock = previewState.tracking.marketAvailableQuantity;
+            const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: Math.min(stock, firRequired) },
+                { kind: 'regular', requiredQuantity: 3, availableQuantity: Math.min(3, stock) }];
+            const addAllowed = previewState.tracking.availableQuantity < requiredQuantity;
             previewState.tracking = { ...previewState.tracking, requiredQuantity,
                 remainingQuantity: Math.max(0, requiredQuantity - previewState.tracking.availableQuantity),
-                requirements, addRegularAllowed, addFIRAllowed,
+                requirements, addAllowed,
                 completedSources: [{ type: 'quest', quantity: 3, optional: false }] };
             previewState.local = { ...previewState.local, updatedAt: new Date().toISOString() };
         }
@@ -593,28 +599,28 @@
             const item = previewState.item || sampleItem;
             previewState = { ...previewState, item, status: 'Item recognized.' };
         }
-        if ((method === 'AddTrackedItem' || method === 'AddTrackedItemFIR') && previewState.tracking && !previewState.tracking.error &&
+        if ((method === 'AddTrackedItem' || method === 'RemoveTrackedItem') && previewState.tracking &&
+            (method === 'RemoveTrackedItem' ? previewState.tracking.removeAllowed : previewState.tracking.addAllowed) && !previewState.tracking.error &&
             !previewState.tracking.variants && args[0] === previewState.tracking.itemUid) {
             const tracking = previewState.tracking;
-            const availableQuantity = tracking.availableQuantity + 1;
-            const previewFIRStock = (tracking.previewFIRStock || 0) + (method === 'AddTrackedItemFIR' ? 1 : 0);
-            const previewRegularStock = (tracking.previewRegularStock || 0) + (method === 'AddTrackedItem' ? 1 : 0);
-            const firRequired = (tracking.requirements || []).filter((row) => row.kind === 'fir').reduce((sum, row) => sum + row.requiredQuantity, 0);
-            const requirements = (tracking.requirements || []).map((row) => ({ ...row,
-                availableQuantity: row.kind === 'fir' ? Math.min(previewFIRStock, firRequired) :
-                    Math.min(row.requiredQuantity, previewRegularStock + Math.max(0, previewFIRStock - firRequired)) }));
-            const addRegularAllowed = requirements.some((row) => row.kind === 'regular' && row.availableQuantity < row.requiredQuantity);
-            const addFIRAllowed = addRegularAllowed || requirements.some((row) => row.kind === 'fir' && row.availableQuantity < row.requiredQuantity);
+            const removing = method === 'RemoveTrackedItem';
+            const availableQuantity = Math.max(0, tracking.availableQuantity + (removing ? -1 : 1));
+            const addAllowed = availableQuantity < tracking.requiredQuantity;
             previewState = { ...previewState, tracking: { ...tracking, availableQuantity,
-                previewFIRStock, previewRegularStock, requirements, addRegularAllowed, addFIRAllowed,
+                addAllowed, removeAllowed: availableQuantity > 0,
                 remainingQuantity: Math.max(0, tracking.requiredQuantity - availableQuantity),
-                status: 'Added 1 item. Saving to Tarkov Market…' } };
+                status: (removing ? 'Removed' : 'Added') + ' 1 item. Saving to Tarkov Market…' } };
             const count = (previewState.pendingAdds && previewState.pendingAdds.count || 0) + 1;
             previewState.pendingAdds = { count, running: true, status: 'Saving to Tarkov Market…', error: '' };
             setTimeout(() => {
                 const count = Math.max(0, previewState.pendingAdds.count - 1);
                 previewState.pendingAdds = { count, running: count > 0, status: count > 0 ? 'Saving to Tarkov Market…' : '', error: '' };
-                if (!count && previewState.tracking) previewState.tracking = { ...previewState.tracking, status: 'Saved on Tarkov Market.' };
+                if (!count && previewState.tracking) {
+                    const stock = previewState.tracking.availableQuantity;
+                    previewState.tracking = { ...previewState.tracking, marketAvailableQuantity: stock,
+                        requirements: previewState.tracking.requirements.map((row) => ({ ...row, availableQuantity: Math.min(stock, row.requiredQuantity) })),
+                        status: 'Saved on Tarkov Market.' };
+                }
                 render(previewState);
             }, 1800);
         }
@@ -653,8 +659,8 @@
 
     const readOptions = () => ({
         enabled: true, automatic: $('scan-automatic').checked,
-        addHotkey: normalizedHotkey($('add-hotkey').value, 'F2'),
-        firHotkey: normalizedHotkey($('fir-hotkey').value, 'F1'),
+        addHotkey: normalizedHotkey($('add-hotkey').value, 'F1'),
+        removeHotkey: normalizedHotkey($('remove-hotkey').value, 'F2'),
         language: 'en', mode: $('game-mode').value, characterUid: $('tracked-character').value,
     });
     const saveOptions = (event) => {
@@ -732,7 +738,7 @@
         if (event.repeat || shortcutCapturePending || shortcutCaptureInput !== input) return;
         const other = shortcutFields.find((entry) => entry !== field);
         if (value === normalizedHotkey($(other.id).value, other.fallback)) {
-            shortcutErrors.set(field.id, 'Choose a different shortcut for each item type.');
+            shortcutErrors.set(field.id, 'Choose a different shortcut for each action.');
             updateControls();
             return;
         }
@@ -741,23 +747,23 @@
         saveOptions({ target: input });
     };
 
-    const addTrackedItem = async (kind = 'regular') => {
+    const changeTrackedItem = async (action) => {
         const tracking = currentTracking();
-        if (!canAddTracking(tracking, kind)) return;
+        if (!(action === 'remove' ? canRemoveTracking(tracking) : canAddTracking(tracking))) return;
         const target = { itemUid: state.item.uid, charUid: state.characterUid };
         const context = progressContext();
-        addingTracking = target;
+        changingTracking = { ...target, action };
         trackingFailure = null;
         localBusy = true;
         renderTracking();
         updateControls();
         try {
-            const result = await call(kind === 'fir' ? 'AddTrackedItemFIR' : 'AddTrackedItem', target.itemUid);
+            const result = await call(action === 'remove' ? 'RemoveTrackedItem' : 'AddTrackedItem', target.itemUid);
             if (sameTrackingTarget(target) && context === progressContext()) await refresh(result);
         } catch (_) {
-            if (sameTrackingTarget(target) && context === progressContext()) trackingFailure = { ...target, stateSequence: latestStateSequence, message: 'The item could not be added. Refresh progress before trying again.' };
+            if (sameTrackingTarget(target) && context === progressContext()) trackingFailure = { ...target, stateSequence: latestStateSequence, message: 'Stock could not be updated. Refresh progress before trying again.' };
         } finally {
-            addingTracking = null;
+            changingTracking = null;
             localBusy = false;
             renderTracking();
             updateControls();

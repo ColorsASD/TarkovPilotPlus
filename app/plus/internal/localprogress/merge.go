@@ -61,7 +61,7 @@ func Merge(tracked market.TrackedSnapshot, quests market.QuestSnapshot, hideout 
 	seenGroups := make(map[string]bool)
 	for _, group := range tracked.Groups {
 		key := "quest:" + group.QuestID + ":" + group.RequirementID
-		if !validID(group.QuestID) || !validID(group.RequirementID) || seenGroups[key] || !validQuantity(group.Amount) || group.Amount == 0 || !validQuantity(group.RequiredQuantity) || group.RequiredQuantity > group.Amount || len(group.ItemIDs) == 0 {
+		if !validID(group.QuestID) || !validID(group.RequirementID) || seenGroups[key] || !validQuantity(group.Amount) || group.Amount == 0 || !validQuantity(group.RequiredQuantity) || group.RequiredQuantity > group.Amount || !validQuantity(group.AvailableQuantity) || len(group.ItemIDs) == 0 {
 			return Snapshot{}, ErrInvalidSnapshot
 		}
 		seenGroups[key] = true
@@ -96,7 +96,7 @@ func Merge(tracked market.TrackedSnapshot, quests market.QuestSnapshot, hideout 
 					position = i
 				}
 			}
-			projected := Source{TrackedSource: market.TrackedSource{Type: "quest", QuestID: group.QuestID, RequirementID: group.RequirementID, Name: group.QuestName, GroupName: group.Name, Amount: group.Amount, RemainingRequiredQuantity: group.RequiredQuantity, FIR: group.FIR, Optional: group.Optional, Completed: group.Completed, Canceled: group.Canceled}, Origin: OriginMarket, GroupID: key, Alternatives: len(eligible), GroupAmount: group.Amount}
+			projected := Source{TrackedSource: market.TrackedSource{Type: "quest", QuestID: group.QuestID, RequirementID: group.RequirementID, Name: group.QuestName, GroupName: group.Name, Amount: group.Amount, RemainingRequiredQuantity: group.RequiredQuantity, FIR: group.FIR, Optional: group.Optional, Completed: group.Completed, Canceled: group.Canceled}, Origin: OriginMarket, GroupID: key, Alternatives: len(eligible), GroupAmount: group.Amount, MarketGroupProgressKnown: true, MarketGroupAvailableQuantity: group.AvailableQuantity}
 			if quest, exists := questIndex[group.QuestID]; exists {
 				closeQuestSource(&projected, quest)
 			}

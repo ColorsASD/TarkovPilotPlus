@@ -11,7 +11,7 @@ in the [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/READM
 - `item_tracking.go` — character selection, Items Tracker and inventory updates
 - `local_progress.go` — coherent Market quest/hideout progress loading and the existing Items Tracker view
 - `item_hotkey.go` — Add availability, immutable item/character targets and a worker shared with the Add button's stock operation
-- `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable Regular/FiR shortcuts, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
+- `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable Add item shortcut, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
 - `inspect_clicks_windows.go` — automatic scan trigger after a click
 - `paired_windows.go` — companion window startup, display and shutdown; a callback requests shutdown of the main application
 - `internal/market` — catalog, prices, characters, requirements and the documented inventory update operation
@@ -34,7 +34,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.2.0`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.2.1`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -45,7 +45,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.2.0`.
+version is `1.2.1`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -84,14 +84,14 @@ runtime. Keep the matching `ocr` directory and its license notices with the EXE.
 Every merge needs review. Separating the extension reduces conflicts but does
 not replace checking the upstream changes and the integration points.
 
-## Add shortcut
+## Stock shortcuts
 
-The Item Scanner installs its own Windows keyboard hook on a dedicated message
-thread. The defaults are F1 for Found in Raid and F2 for Regular. Settings can
-configure each shortcut independently or disable it. Shortcuts support Ctrl,
-Alt and Shift with F1-F12, A-Z, 0-9, Space, Insert, Delete, Home, End, PageUp and
+The Item Scanner installs Windows keyboard hooks on dedicated message
+threads. Add item defaults to F1 and Remove item to F2. Settings can change or disable
+each shortcut separately; the two actions require different shortcuts. They support Ctrl, Alt and Shift with F1-F12, A-Z, 0-9,
+Space, Insert, Delete, Home, End, PageUp and
 PageDown. Unmodified supported keys can also be selected. Modifier order is
-canonicalized to Ctrl+Alt+Shift; the two actions cannot share the same enabled chord.
+canonicalized to Ctrl+Alt+Shift.
 Closing either app window stops the companion process and its hook after the
 pending-update warning, when one is required. No keyboard
 hook is installed in the game process, and game memory is not accessed.
@@ -99,18 +99,18 @@ hook is installed in the game process, and game memory is not accessed.
 The configured shortcut's down, repeat and up events are consumed for
 normal Windows keyboard input while it is enabled, even when the
 tracker is unavailable. Other keys and modifier combinations continue normally.
-Holding the shortcut does not repeat Add. Injected input does not trigger stock
+Holding a shortcut does not repeat its action. Injected input does not trigger stock
 changes, and injected releases cannot reset a physical key hold.
 
 The keydown callback captures an immutable eligible item/character target with
 atomic operations and a nonblocking send. It does not run OCR, make API requests,
 call Wails or take application locks. The worker rejects stale targets and uses the same short in-memory reservation
-as the Add button. The displayed stock increases immediately. A separate Market
+as the corresponding button. The displayed stock changes immediately. A separate Market
 worker checks fresh stock and its revision, sends the update and verifies the
-result. Pending reservations count toward Add eligibility without blocking
-further eligible pieces while the network request runs.
-The Add button remains usable when the shortcut is disabled or
-its hook cannot start.
+result. Pending additions and removals count toward stock and Add eligibility without blocking
+further eligible changes while the network request runs.
+Both buttons remain usable when their shortcuts are disabled or
+their hooks cannot start.
 
 Windows hook consumption does not guarantee priority over every input path.
 Applications using direct input, protected system input or another input handler
@@ -126,10 +126,17 @@ matching character, game mode and revision before the combined snapshot is used.
 The snapshot remains in memory. Inspect changes can reuse this confirmed graph;
 Refresh progress reloads the selected character's current Market state.
 
-Add accepts only an eligible active Market requirement. The button and shortcut
-share one short reservation: the displayed quantity increases immediately and
-the pending piece participates in allocation, preventing overcollection. The
-Market worker saves these additions in the background using fresh stock and
+Refreshing an already loaded item keeps its panel and counters visible while
+the matching snapshot loads in the background. Stock actions pause during the
+refresh. A failed refresh retains the last known values with an error; switching
+items or profiles cannot reuse another target's displayed inventory.
+
+Add accepts only an eligible active Market requirement. Remove accepts a unique,
+supported shared-stock item with stock above zero, including items without active
+requirements. Each button and shortcut shares one short reservation: the displayed
+quantity changes immediately and pending changes participate in allocation,
+preventing overcollection and removal below zero. The
+Market worker saves these changes in order in the background using fresh stock and
 revision checks. Successful updates settle the reservation; definite rejections remove the
 rejected reservation and expose the error. Network outages retain pending pieces
 in memory. Uncertain writes are verified through GET before any retry, including
@@ -137,30 +144,46 @@ when Refresh progress resumes the pending work. Pending work is
 held only in memory, without operation journals or a disk queue. No operation
 is replayed after restart.
 
+A successful write acknowledgement proves the app's change independently of
+later stock changes from another client. A follow-up read with a later revision
+can settle that change even when the current stock differs from the submitted
+target; uncertain writes still require read-back verification without another
+PATCH. Shortcut targets retain their identity across unrelated state events,
+but item, character, settings and eligibility changes invalidate them. The
+worker preserves FIFO order separately for each API-key, character and game-mode
+profile. A blocked profile remains pending without preventing other profiles
+from saving, and each blocked head is attempted at most once per worker run.
+
 While the Market worker is saving, the scanner status and main Events log heading
 append the pending item count in parentheses, for example `(3 items waiting for API save)`. Ordinary
 Add actions remain available while prior saves are pending if another eligible
 requirement still needs a piece. Closing either window with unsaved work shows
 a native warning; confirming exit discards updates that have not reached Market.
 
-The Items Tracker card and its Found in Raid, Regular, Any (FiR) and Any rows
-remain visible when stock covers their requirements, for example 10/10. Add
-buttons and shortcuts stop when no eligible requirement needs another item.
+The Items Tracker card and its Found in Raid, Regular, Shared (FiR) and Shared rows
+remain visible when stock covers their requirements, for example 10/10. The
+Add item button and shortcut stop when no eligible requirement needs another item.
 Completing or canceling the associated goal removes its active requirement.
-Once all Any groups are covered and no other collection requirement remains,
+Once the collection target is covered and no other requirement remains,
 Stock displays the item's available quantity as a complete ratio, such as 2/2
-or 0/0, while Any can remain 8/8. This display convention changes neither Market
+or 0/0, while Shared can remain 8/8. This display convention changes neither Market
 stock nor Add eligibility.
 
-Mandatory requirements reserve suitable stock before shared Any groups;
-a deterministic maximum-flow allocation distributes the remaining pieces among
-overlapping groups. Each piece is allocated once. Any groups are summarized in
-one Any (FiR) row and one Any row without changing their individual goal
-identities, eligible items or allocations. Covered groups stay visible until
-their goals are completed. Quality eligibility follows the Market requirements;
-no local item-quality annotations are saved.
+Shared collection targets use the explicit API group progress and other eligible
+items. Other items' confirmed contribution is capped by reported group availability;
+their pending additions and removals also affect the target. The selected item's
+own stock is not subtracted from its target a second time. A deterministic
+maximum-flow calculation prevents another item's stock from being credited twice
+across overlapping groups. Legacy inferred groups retain their local allocation
+fallback. Groups are summarized in one Shared (FiR) row and one Shared row while
+preserving their individual identities and eligible items. Covered groups stay
+visible until their goals are completed. Shared rows report confirmed API group
+progress. Found in Raid and Regular use source requirements and confirmed shared
+API stock independently for each requirement type. Stock includes pending changes
+immediately; requirement rows update after confirmation. Stock actions change only
+the shared Market stock; the app does not assign or keep item-quality annotations.
 
-Any row tooltips preserve each group's quest, category and progress from the
+Shared row tooltips preserve each group's quest, category and progress from the
 [Tarkov Market API](https://tarkov-market.com/dev/api) `groups` and `questGroup` sources.
 
 The encrypted API key, scanner settings and item-price catalog cache are the

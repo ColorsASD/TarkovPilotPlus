@@ -130,9 +130,9 @@ func TestAllocatePrioritizesFIRAnyBeforeCompatibleRegularAny(t *testing.T) {
 	fir := allocationSource("z-fir", 2, 3, true, OriginMarket)
 	fixed := allocationSource("", 0, 3, false, OriginMarket)
 	augmentin := allocationItem("augmentin", 1, fixed, regular, fir)
-	augmentin.MarketRegularQuantity = 1
+
 	salewa := allocationItem("salewa", 2, regular, fir)
-	salewa.MarketFIRQuantity = 2
+
 	out := allocateForTest(t, allocationSnapshot(augmentin, salewa))
 	for _, item := range out.Items {
 		if requireAllocationSource(t, item, "a-regular").GroupRemainingQuantity != 3 || requireAllocationSource(t, item, "z-fir").GroupRemainingQuantity != 1 {
@@ -143,15 +143,15 @@ func TestAllocatePrioritizesFIRAnyBeforeCompatibleRegularAny(t *testing.T) {
 		t.Fatalf("fixed Regular or FiR Any stock was duplicated: %+v", out)
 	}
 	// A későbbi sima készlet a sima Anyt fedi; az első FiR kiosztás megmarad.
-	augmentin.AvailableQuantity, augmentin.MarketAvailableQuantity, augmentin.MarketRegularQuantity = 6, 6, 6
+	augmentin.AvailableQuantity, augmentin.MarketAvailableQuantity = 6, 6
 	out = allocateForTest(t, allocationSnapshot(augmentin, salewa))
-	if requireAllocationSource(t, requireItem(t, out, "augmentin"), "a-regular").GroupRemainingQuantity != 0 || requireAllocationSource(t, requireItem(t, out, "salewa"), "z-fir").GroupRemainingQuantity != 1 {
+	if requireAllocationSource(t, requireItem(t, out, "augmentin"), "a-regular").GroupRemainingQuantity != 1 || requireAllocationSource(t, requireItem(t, out, "salewa"), "z-fir").GroupRemainingQuantity != 0 {
 		t.Fatalf("Regular additions changed the remaining FiR need: %+v", out)
 	}
 	// A FiR igény feletti alkalmas készlet a nem-FiR Anyhoz is jó.
 	augmentin = allocationItem("augmentin", 0, regular, fir)
 	salewa = allocationItem("salewa", 4, regular, fir)
-	salewa.MarketFIRQuantity = 4
+
 	out = allocateForTest(t, allocationSnapshot(augmentin, salewa))
 	row := requireItem(t, out, "salewa")
 	if requireAllocationSource(t, row, "z-fir").GroupRemainingQuantity != 0 || requireAllocationSource(t, row, "a-regular").AllocatedQuantity != 1 || requireAllocationSource(t, row, "a-regular").GroupRemainingQuantity != 2 {
@@ -288,32 +288,11 @@ func TestAllocateUnknownMarketStockCoversAnyIncludingSeparateInventory(t *testin
 	}
 }
 
-func TestAllocateTypedRegularCannotCoverFIRAndFIRCanCoverRegular(t *testing.T) {
-	for _, firGroup := range []bool{false, true} {
-		t.Run(map[bool]string{false: "regular-group", true: "fir-group"}[firGroup], func(t *testing.T) {
-			group := allocationSource("any", 2, 3, firGroup, OriginMarket)
-			snapshot := allocationSnapshot(allocationItem("a", 2, group), allocationItem("b", 1, group))
-			snapshot.Items[0].MarketRegularQuantity = 2
-			snapshot.Items[1].MarketFIRQuantity = 1
-			out := allocateForTest(t, snapshot)
-			a, b := requireItem(t, out, "a"), requireItem(t, out, "b")
-			if firGroup {
-				if a.Sources[0].AllocatedQuantity != 0 || b.Sources[0].AllocatedQuantity != 1 || a.Sources[0].GroupRemainingQuantity != 2 || a.CollectionRequiredQuantity != 2 || a.CollectionRemainingQuantity != 2 || a.CollectionFIRAvailableQuantity != 0 || a.CollectionRegularAvailableQuantity != 0 || b.CollectionFIRAvailableQuantity != 1 {
-					t.Fatalf("Regular was used for FiR or counters invented quality: %+v", out)
-				}
-			} else if a.CollectionRequiredQuantity != 0 || b.CollectionRequiredQuantity != 0 || a.Sources[0].AllocatedQuantity+b.Sources[0].AllocatedQuantity != 3 {
-				t.Fatalf("FiR stock could not cover regular requirement: %+v", out)
-			}
-		})
-	}
-}
-
-func TestAllocateTypedOverlapReroutesQualifyingPieceToFIRGroup(t *testing.T) {
+func TestAllocateSharedOverlapReroutesStockToFIRGroup(t *testing.T) {
 	regular := allocationSource("g1", 2, 1, false, OriginMarket)
 	fir := allocationSource("g2", 2, 1, true, OriginMarket)
 	snapshot := allocationSnapshot(allocationItem("a", 1, regular, fir), allocationItem("b", 1, regular), allocationItem("c", 0, fir))
-	snapshot.Items[0].MarketFIRQuantity = 1
-	snapshot.Items[1].MarketRegularQuantity = 1
+
 	out := allocateForTest(t, snapshot)
 	if requireAllocationSource(t, requireItem(t, out, "a"), "g2").AllocatedQuantity != 1 || requireAllocationSource(t, requireItem(t, out, "b"), "g1").AllocatedQuantity != 1 {
 		t.Fatalf("qualifying stock was trapped in regular Any group: %+v", out)
@@ -322,31 +301,6 @@ func TestAllocateTypedOverlapReroutesQualifyingPieceToFIRGroup(t *testing.T) {
 		if item.CollectionRemainingQuantity != 0 {
 			t.Fatalf("typed max flow failed to cover both groups: %+v", out)
 		}
-	}
-}
-
-func TestAllocateFixedTypedCountersKeepActualTargetAndFIRFirst(t *testing.T) {
-	fir := allocationSource("", 0, 5, true, OriginMarket)
-	regular := allocationSource("", 0, 3, false, OriginMarket)
-	snapshot := allocationSnapshot(allocationItem("a", 3, regular, fir))
-	snapshot.Items[0].MarketAvailableQuantity = 3
-	snapshot.Items[0].MarketRegularQuantity, snapshot.Items[0].MarketFIRQuantity = 2, 1
-	out := allocateForTest(t, snapshot)
-	a := out.Items[0]
-	if !a.CollectionCalculated || a.CollectionRequiredQuantity != 8 || a.CollectionRemainingQuantity != 5 || a.CollectionFIRAvailableQuantity != 1 || a.CollectionRegularAvailableQuantity != 2 || a.CollectionMarketRequiredQuantity != 8 {
-		t.Fatalf("fixed FiR/Regular target or allocation is wrong: %+v", a)
-	}
-	for _, source := range a.Sources {
-		if source.AllocationKnown {
-			t.Fatal("fixed sources were marked as alternative assignments")
-		}
-	}
-	snapshot.Items[0].MarketAvailableQuantity = 8
-	snapshot.Items[0].MarketRegularQuantity, snapshot.Items[0].MarketFIRQuantity = 8, 0
-	snapshot.Items[0].AvailableQuantity = 8
-	a = allocateForTest(t, snapshot).Items[0]
-	if a.CollectionRequiredQuantity != 8 || a.CollectionRemainingQuantity != 5 || a.CollectionFIRAvailableQuantity != 0 || a.CollectionRegularAvailableQuantity != 3 {
-		t.Fatalf("unsuitable excess inflated true target or hid FiR missing: %+v", a)
 	}
 }
 
@@ -360,11 +314,10 @@ func TestAllocateLegacyCountersAreFilledWithoutDerivedQuantityChange(t *testing.
 	}
 }
 
-func TestAllocateFixedReservationPreservesTypedCapacityForAny(t *testing.T) {
+func TestAllocateFixedReservationPreservesSharedCapacityForAny(t *testing.T) {
 	regular := allocationSource("", 0, 1, false, OriginMarket)
 	firAny := allocationSource("any", 2, 1, true, OriginMarket)
 	snapshot := allocationSnapshot(allocationItem("a", 2, regular, firAny), allocationItem("b", 0, firAny))
-	snapshot.Items[0].MarketRegularQuantity, snapshot.Items[0].MarketFIRQuantity = 1, 1
 	out := allocateForTest(t, snapshot)
 	a := requireItem(t, out, "a")
 	if a.CollectionRequiredQuantity != 1 || a.CollectionRemainingQuantity != 0 || requireAllocationSource(t, a, "any").AllocatedQuantity != 1 || a.CollectionRegularAvailableQuantity != 1 || a.CollectionFIRAvailableQuantity != 0 {
@@ -379,15 +332,15 @@ func TestAllocateFixedReservationPreservesTypedCapacityForAny(t *testing.T) {
 	}
 }
 
-func TestAllocateQuantityBoundsAndInvalidTypedBreakdown(t *testing.T) {
+func TestAllocateQuantityBounds(t *testing.T) {
 	group := allocationSource("any", 2, MaxQuantity, true, OriginMarket)
 	snapshot := allocationSnapshot(allocationItem("a", MaxQuantity, group), allocationItem("b", 0, group))
-	snapshot.Items[0].MarketRegularQuantity = MaxQuantity
+
 	a := allocateForTest(t, snapshot).Items[0]
-	if a.CollectionRequiredQuantity != MaxQuantity || a.CollectionRemainingQuantity != MaxQuantity || a.Sources[0].AllocatedQuantity != 0 {
+	if a.CollectionRequiredQuantity != 0 || a.CollectionRemainingQuantity != 0 || a.Sources[0].AllocatedQuantity != MaxQuantity {
 		t.Fatalf("valid maximum count was overflowed or incorrectly allocated: %+v", a)
 	}
-	for _, invalid := range []string{"stock", "source", "group-amount", "typed-sum", "typed-negative", "source-sum"} {
+	for _, invalid := range []string{"stock", "source", "group-amount", "source-sum"} {
 		t.Run(invalid, func(t *testing.T) {
 			bad := Clone(snapshot)
 			switch invalid {
@@ -397,10 +350,7 @@ func TestAllocateQuantityBoundsAndInvalidTypedBreakdown(t *testing.T) {
 				bad.Items[0].Sources[0].Amount = MaxQuantity + 1
 			case "group-amount":
 				bad.Items[0].Sources[0].GroupAmount = MaxQuantity + 1
-			case "typed-sum":
-				bad.Items[0].MarketFIRQuantity = 1
-			case "typed-negative":
-				bad.Items[0].MarketRegularQuantity = -1
+
 			case "source-sum":
 				bad.Items[0].Sources = append(bad.Items[0].Sources, allocationSource("", 0, 1, false, OriginMarket))
 			}

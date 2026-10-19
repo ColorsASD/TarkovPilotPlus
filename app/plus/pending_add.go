@@ -18,7 +18,7 @@ type pendingMarketAdd struct {
 	Key            string
 	Opts           ItemOptions
 	Item           market.Item
-	Kind           string
+	Delta          int64
 	Stage          string
 	BeforeRevision string
 	Before         int64
@@ -27,6 +27,13 @@ type pendingMarketAdd struct {
 	WriteError     error
 	Progress       localprogress.Snapshot
 	Error          string
+}
+
+func pendingMarketDelta(entry pendingMarketAdd) int64 {
+	if entry.Delta == 0 {
+		return 1
+	}
+	return entry.Delta
 }
 
 type PendingAddState struct {
@@ -52,29 +59,33 @@ func (a *ItemWindowApp) GetPendingAddCount() int {
 	return a.pendingAddCountLocked()
 }
 
-func (a *ItemWindowApp) pendingAddAmountsLocked(opts ItemOptions, itemID string) (regular, fir int64) {
+func (a *ItemWindowApp) pendingAddAmountLocked(opts ItemOptions, itemID string) (count int64) {
 	for _, entry := range a.pendingAddQueue {
-		if entry.Key != a.apiKey || entry.Opts.CharacterUID != opts.CharacterUID || !strings.EqualFold(entry.Opts.Mode, opts.Mode) || entry.Item.BSGID != itemID {
-			continue
-		}
-		if entry.Kind == "fir" {
-			fir++
-		} else {
-			regular++
+		if entry.Key == a.apiKey && entry.Opts.CharacterUID == opts.CharacterUID && strings.EqualFold(entry.Opts.Mode, opts.Mode) && entry.Item.BSGID == itemID {
+			count += pendingMarketDelta(entry)
 		}
 	}
-	return
+	return count
 }
 
 func (a *ItemWindowApp) updatePendingAddStateLocked() {
-	status := "All added items are confirmed on Tarkov Market."
+	status := "All stock changes are confirmed on Tarkov Market."
 	if len(a.pendingAddQueue) > 0 {
 		status = "Waiting for Tarkov Market confirmation."
 		if a.pendingAddRunning {
-			status = "Saving added items to Tarkov Market…"
+			status = "Saving stock changes to Tarkov Market…"
 		}
 	}
-	a.state.PendingAdds = &PendingAddState{Count: len(a.pendingAddQueue), Running: a.pendingAddRunning, Status: status, Error: a.pendingAddError}
+	message := a.pendingAddError
+	if message == "" {
+		for _, entry := range a.pendingAddQueue {
+			if entry.Error != "" {
+				message = entry.Error
+				break
+			}
+		}
+	}
+	a.state.PendingAdds = &PendingAddState{Count: len(a.pendingAddQueue), Running: a.pendingAddRunning, Status: status, Error: message}
 }
 
 func (a *ItemWindowApp) startPendingAddWorkerLocked() {
@@ -88,32 +99,44 @@ func (a *ItemWindowApp) startPendingAddWorkerLocked() {
 
 // A foglalás kizárólag memóriát módosít. A gyűjtési korlát már a korábban
 // befogadott, még nem visszaigazolt darabokkal együtt számol.
-func (a *ItemWindowApp) reservePendingMarketAdd(uid string, target *trackedAddHotkeyTarget, kind string) ItemState {
+func (a *ItemWindowApp) reservePendingMarketAdd(uid string, target *trackedAddHotkeyTarget) ItemState {
+	return a.reservePendingMarketChange(uid, target, 1)
+}
+
+func (a *ItemWindowApp) reservePendingMarketChange(uid string, target *trackedAddHotkeyTarget, delta int64) ItemState {
 	a.mu.Lock()
 	opts := a.state.ItemOptions
-	if !a.canAddTrackedItemLocked() || a.state.Item.UID != uid || target != nil &&
-		(!a.trackedAddHotkeyTargetCurrent(target) || !a.state.AddHotkeyReady || !trackedAddHotkeyEnabled(opts) ||
+	eligible := delta == 1 && a.canAddTrackedItemLocked() || delta == -1 && a.canRemoveTrackedItemLocked()
+	shortcutReady := a.state.AddHotkeyReady && trackedAddHotkeyEnabled(opts)
+	if delta == -1 {
+		shortcutReady = a.state.RemoveHotkeyReady && trackedRemoveHotkeyEnabled(opts)
+	}
+	if !eligible || a.state.Item.UID != uid || target != nil &&
+		(!a.trackedAddHotkeyTargetCurrent(target) || !shortcutReady || target.Remove != (delta == -1) ||
 			target.UID != uid || target.ItemID != a.state.Item.BSGID || target.CharUID != opts.CharacterUID || target.Revision != opts.revision) {
 		a.mu.Unlock()
 		return a.GetState()
 	}
 	if len(a.pendingAddQueue) >= maxPendingMarketAdds {
-		a.pendingAddError = "Too many items are waiting for Tarkov Market. Wait for the pending additions to finish."
+		a.pendingAddError = "Too many stock changes are waiting for Tarkov Market. Wait for the pending saves to finish."
 		a.updatePendingAddStateLocked()
 		a.mu.Unlock()
 		a.emit()
 		return a.GetState()
 	}
-	if !a.allowTrackedItemKindLocked(a.state.Item.BSGID, kind) {
+	if delta > 0 && !a.allowTrackedItemLocked(a.state.Item.BSGID) || delta < 0 && !a.allowTrackedItemRemovalLocked(a.state.Item.BSGID) {
 		a.mu.Unlock()
 		a.emit()
 		return a.GetState()
 	}
 	a.pendingAddNextID++
-	a.pendingAddQueue = append(a.pendingAddQueue, pendingMarketAdd{ID: a.pendingAddNextID, Key: a.apiKey, Opts: opts, Item: *a.state.Item, Kind: kind, Stage: "queued"})
+	a.pendingAddQueue = append(a.pendingAddQueue, pendingMarketAdd{ID: a.pendingAddNextID, Key: a.apiKey, Opts: opts, Item: *a.state.Item, Delta: delta, Stage: "queued"})
 	a.pendingAddError = ""
 	a.rebuildPendingViewLocked()
 	a.state.Tracking.Status = "Added 1 item. Waiting for Tarkov Market confirmation."
+	if delta < 0 {
+		a.state.Tracking.Status = "Removed 1 item. Waiting for Tarkov Market confirmation."
+	}
 	a.startPendingAddWorkerLocked()
 	a.updatePendingAddStateLocked()
 	a.mu.Unlock()
@@ -157,25 +180,29 @@ func (a *ItemWindowApp) removePendingAddLocked(id uint64) bool {
 	return true
 }
 
-func (a *ItemWindowApp) recordPendingAddKindLocked(entry pendingMarketAdd) {
-	if entry.Key != a.apiKey {
-		return
+func observedPendingStock(entry pendingMarketAdd, remote market.TrackedSnapshot) (int64, bool) {
+	view := trackedView(entry.Item, remote)
+	if remote.FIRInventorySeparate || view.Error != "" || view.InventorySeparate || len(view.Variants) > 0 {
+		return 0, false
 	}
-	if a.marketKinds == nil {
-		a.marketKinds = make(map[string]marketKindState)
+	if view.Tracked {
+		return view.AvailableQuantity, true
 	}
-	id := marketKindKey(entry.Opts.CharacterUID, entry.Opts.Mode, entry.Item.BSGID)
-	known := a.marketKinds[id]
-	if known.stock != entry.Before {
-		known = marketKindState{}
+	removedLast := pendingMarketDelta(entry) < 0 && entry.Target == 0
+	laterAcknowledgedStock := pendingMarketWriteAcknowledged(entry) && remote.Revision != entry.ACK.Revision && remote.Revision != entry.BeforeRevision
+	if !removedLast && !laterAcknowledgedStock {
+		return 0, false
 	}
-	known.stock = entry.Target
-	if entry.Kind == "fir" {
-		known.fir++
-	} else {
-		known.regular++
+	// Explicit Market group members may have no raw item row at zero stock.
+	for _, group := range remote.Groups {
+		for _, id := range group.ItemIDs {
+			if id == entry.Item.BSGID {
+				row, unique := stockItem(marketProgressOnly(remote), id)
+				return 0, unique && row.MarketTracked && row.MarketAvailableQuantity == 0
+			}
+		}
 	}
-	a.marketKinds[id] = known
+	return 0, false
 }
 
 // Ezt a Market-frissítés a saját állapotzárja alatt, az új alap felépítése
@@ -187,13 +214,9 @@ func (a *ItemWindowApp) reconcilePendingSnapshotLocked(remote market.TrackedSnap
 			i++
 			continue
 		}
-		view := trackedView(entry.Item, remote)
-		if !view.Tracked || view.Error != "" || view.InventorySeparate || len(view.Variants) > 0 || view.AvailableQuantity != entry.Target {
+		if !pendingMarketChangeConfirmed(entry, remote) {
 			i++
 			continue
-		}
-		if entry.ACK.OK && entry.ACK.Changed && entry.ACK.Revision == remote.Revision {
-			a.recordPendingAddKindLocked(entry)
 		}
 		a.removePendingAddLocked(entry.ID)
 		if entry.Error != "" && a.pendingAddError == entry.Error {
@@ -216,12 +239,9 @@ func (a *ItemWindowApp) publishPendingRemoteLocked(entry pendingMarketAdd, remot
 	a.applyMergedMarketSnapshotLocked(item, remote, entry.Progress, status)
 }
 
-func (a *ItemWindowApp) finishPendingAdd(entry pendingMarketAdd, remote market.TrackedSnapshot, message string, failure error, ownConfirmed bool) {
+func (a *ItemWindowApp) finishPendingAdd(entry pendingMarketAdd, remote market.TrackedSnapshot, message string, failure error) {
 	a.mu.Lock()
 	if a.removePendingAddLocked(entry.ID) {
-		if ownConfirmed {
-			a.recordPendingAddKindLocked(entry)
-		}
 		if failure != nil {
 			a.pendingAddError = message
 		} else if entry.Error != "" && a.pendingAddError == entry.Error {
@@ -257,27 +277,21 @@ func (a *ItemWindowApp) blockPendingAdd(entry pendingMarketAdd, message string) 
 }
 
 func (a *ItemWindowApp) runPendingMarketAdds() {
+	attempted := make(map[uint64]struct{})
 	for {
 		a.mu.Lock()
-		if len(a.pendingAddQueue) == 0 || a.ctx == nil || a.ctx.Err() != nil {
+		entry, ready := nextPendingMarketAdd(a.pendingAddQueue, attempted)
+		if !ready || a.ctx == nil || a.ctx.Err() != nil {
 			a.pendingAddRunning = false
 			a.updatePendingAddStateLocked()
 			a.mu.Unlock()
 			a.emit()
 			return
 		}
-		entry := a.pendingAddQueue[0]
 		parent := a.ctx
+		attempted[entry.ID] = struct{}{}
 		a.mu.Unlock()
-		progressed := a.processPendingMarketAdd(parent, entry)
-		if !progressed {
-			a.mu.Lock()
-			a.pendingAddRunning = false
-			a.updatePendingAddStateLocked()
-			a.mu.Unlock()
-			a.emit()
-			return
-		}
+		a.processPendingMarketAdd(parent, entry)
 	}
 }
 
@@ -297,11 +311,11 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 	for attempt := 0; attempt < 2; attempt++ {
 		remote, readErr := a.tracker.LoadTracked(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
 		if readErr != nil {
-			a.blockPendingAdd(entry, "Tarkov Market could not be reached. The addition remains pending in memory; refresh progress to retry verification.")
+			a.blockPendingAdd(entry, "Tarkov Market could not be reached. The stock change remains pending in memory; refresh progress to retry verification.")
 			return false
 		}
 		if remote.CharUID != entry.Opts.CharacterUID || !strings.EqualFold(remote.GameMode, entry.Opts.Mode) || remote.Revision == "" || remote.Items == nil {
-			a.blockPendingAdd(entry, "Tarkov Market returned an incompatible progress snapshot. The addition is still pending.")
+			a.blockPendingAdd(entry, "Tarkov Market returned an incompatible progress snapshot. The stock change is still pending.")
 			return false
 		}
 		if entry.Stage == "sent" {
@@ -309,21 +323,27 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		}
 		snapshot, mergeErr := a.loadPendingProgress(ctx, entry, remote)
 		if mergeErr != nil {
-			a.blockPendingAdd(entry, "The current Market quest and hideout requirements could not be verified. The addition remains pending; refresh progress to check it.")
+			a.blockPendingAdd(entry, "The current Market quest and hideout requirements could not be verified. The stock change remains pending; refresh progress to check it.")
 			return false
 		}
 		entry.Progress = snapshot
 		a.mu.Lock()
-		snapshot = a.annotateMarketKindsLocked(snapshot)
 		a.publishPendingRemoteLocked(entry, remote, "")
 		a.mu.Unlock()
-		regular, fir, gateErr := localprogress.AddOptions(snapshot, entry.Item.BSGID)
 		row, unique := stockItem(snapshot, entry.Item.BSGID)
-		if gateErr != nil || !unique || snapshot.FIRInventorySeparate || !(entry.Kind == "fir" && fir || entry.Kind == "regular" && regular) || row.MarketAvailableQuantity >= localprogress.MaxQuantity {
-			a.finishPendingAdd(entry, remote, "The current Market requirements cannot use this item. Its pending addition was canceled.", market.ErrProgressConflict, false)
+		delta := pendingMarketDelta(entry)
+		allowed, gateErr := row.MarketAvailableQuantity > 0, error(nil)
+		message := "The current Market stock is empty. Its pending removal was canceled."
+		if delta > 0 {
+			allowed, gateErr = localprogress.AddAllowed(snapshot, entry.Item.BSGID)
+			allowed = allowed && row.MarketAvailableQuantity < localprogress.MaxQuantity
+			message = "The current Market requirements cannot use this item. Its pending addition was canceled."
+		}
+		if gateErr != nil || !unique || snapshot.FIRInventorySeparate || !allowed {
+			a.finishPendingAdd(entry, remote, message, market.ErrProgressConflict)
 			return true
 		}
-		entry.BeforeRevision, entry.Before, entry.Target = remote.Revision, row.MarketAvailableQuantity, row.MarketAvailableQuantity+1
+		entry.BeforeRevision, entry.Before, entry.Target = remote.Revision, row.MarketAvailableQuantity, row.MarketAvailableQuantity+delta
 		entry.Stage, entry.Error = "sent", ""
 		a.mu.Lock()
 		i = a.pendingAddIndexLocked(entry.ID)
@@ -345,8 +365,8 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 			continue
 		}
 		if writeErr != nil && !errors.Is(writeErr, market.ErrProgressWriteUncertain) {
-			message := fmt.Sprintf("Market did not save the increase. Requested stock: %d; current stock: %d. %s %s", entry.Target, entry.Before, trackingError(writeErr), progressWriteDiagnostic(result, writeErr, remote.Revision, "", nil)) + progressItemMismatch(entry.Item, remote)
-			a.finishPendingAdd(entry, remote, message, writeErr, false)
+			message := fmt.Sprintf("Market did not save the stock change. Requested stock: %d; current stock: %d. %s %s", entry.Target, entry.Before, trackingError(writeErr), progressWriteDiagnostic(result, writeErr, remote.Revision, "", nil)) + progressItemMismatch(entry.Item, remote)
+			a.finishPendingAdd(entry, remote, message, writeErr)
 			return true
 		}
 		entry.ACK = result
@@ -358,7 +378,7 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		a.mu.Unlock()
 		observed, readErr := a.tracker.LoadTracked(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
 		if readErr != nil {
-			a.blockPendingAdd(entry, "The Market add is awaiting verification. No automatic repeat was sent; refresh progress to check it. "+progressWriteDiagnostic(result, writeErr, remote.Revision, observed.Revision, readErr))
+			a.blockPendingAdd(entry, "The Market stock change is awaiting verification. No automatic repeat was sent; refresh progress to check it. "+progressWriteDiagnostic(result, writeErr, remote.Revision, observed.Revision, readErr))
 			return false
 		}
 		return a.verifyPendingMarketAdd(ctx, entry, observed)
@@ -390,28 +410,31 @@ func (a *ItemWindowApp) verifyPendingMarketAdd(ctx context.Context, entry pendin
 		return false
 	}
 	entry.Progress = progress
-	view := trackedView(entry.Item, remote)
+	quantity, known := observedPendingStock(entry, remote)
 	valid := remote.CharUID == entry.Opts.CharacterUID && strings.EqualFold(remote.GameMode, entry.Opts.Mode) && remote.Items != nil && remote.Revision != "" &&
-		view.Tracked && view.Error == "" && !view.InventorySeparate && len(view.Variants) == 0
+		known
 	if entry.ACK.OK && !entry.ACK.Changed && valid && remote.Revision == entry.BeforeRevision {
-		a.finishPendingAdd(entry, remote, "Tarkov Market reported no change. The pending addition was canceled.", market.ErrProgressWriteUncertain, false)
+		a.finishPendingAdd(entry, remote, "Tarkov Market reported no change. The pending stock change was canceled.", market.ErrProgressWriteUncertain)
 		return true
 	}
-	if valid && remote.Revision != entry.BeforeRevision && view.AvailableQuantity == entry.Target {
-		own := entry.ACK.OK && entry.ACK.Changed && entry.ACK.Revision == remote.Revision
+	if pendingMarketChangeConfirmed(entry, remote) {
+		own := pendingMarketWriteAcknowledged(entry)
 		message := "Tarkov Market stock verified."
 		if own {
 			message = "Added 1 item to Tracked Items stock."
+			if pendingMarketDelta(entry) < 0 {
+				message = "Removed 1 item from Tracked Items stock."
+			}
 			if !entry.ACK.NotificationDelivered {
 				message += " Web notification was not confirmed."
 			}
 		}
-		a.finishPendingAdd(entry, remote, message, nil, own)
+		a.finishPendingAdd(entry, remote, message, nil)
 		return true
 	}
-	message := fmt.Sprintf("The Market add is awaiting verification for %s. Requested stock: %d; current stock: unavailable. No repeated stock request was sent; refresh progress to check it.", diagnosticItemName(entry.Item.Name), entry.Target)
+	message := fmt.Sprintf("The Market stock change is awaiting verification for %s. Requested stock: %d; current stock: unavailable. No repeated stock request was sent; refresh progress to check it.", diagnosticItemName(entry.Item.Name), entry.Target)
 	if valid {
-		message = fmt.Sprintf("Market did not confirm the increase. Requested stock: %d; current stock: %d. No repeated stock request was sent; refresh progress to check it.", entry.Target, view.AvailableQuantity)
+		message = fmt.Sprintf("Market did not confirm the stock change. Requested stock: %d; current stock: %d. No repeated stock request was sent; refresh progress to check it.", entry.Target, quantity)
 	}
 	a.blockPendingAdd(entry, message+" "+progressWriteDiagnostic(entry.ACK, entry.WriteError, entry.BeforeRevision, remote.Revision, nil)+progressItemMismatch(entry.Item, remote))
 	return false

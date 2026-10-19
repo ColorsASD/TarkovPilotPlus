@@ -5,28 +5,47 @@ package plus
 type trackedAddHotkeyTarget struct {
 	UID, ItemID, CharUID string
 	Revision             uint64
-	Kind                 string
+	Remove               bool
+}
+
+// An unrelated state publication keeps the accepted keydown valid. Once a
+// target changes or is cleared, returning to its values creates a new target;
+// an activation captured before that transition must never become current again.
+func retainTrackedHotkeyTarget(current *trackedAddHotkeyTarget, next trackedAddHotkeyTarget) *trackedAddHotkeyTarget {
+	if current != nil && *current == next {
+		return current
+	}
+	return &next
 }
 
 func trackedAddHotkeyEnabled(opts ItemOptions) bool {
-	return trackedActionHotkeyEnabled(opts, "regular") || trackedActionHotkeyEnabled(opts, "fir")
+	return normalizeTrackedAddHotkey(opts.AddHotkey) != "off"
 }
 
-func trackedActionHotkeyEnabled(opts ItemOptions, kind string) bool {
-	if kind == "fir" {
-		return normalizeTrackedFIRHotkey(opts.FIRHotkey) != "off"
-	}
-	return normalizeTrackedAddHotkey(opts.AddHotkey) != "off"
+func trackedRemoveHotkeyEnabled(opts ItemOptions) bool {
+	return normalizeTrackedRemoveHotkey(opts.RemoveHotkey) != "off"
 }
 
 func (a *ItemWindowApp) trackedAddHotkeyTargetCurrent(target *trackedAddHotkeyTarget) bool {
 	if target == nil {
 		return false
 	}
-	if target.Kind == "fir" {
-		return trackedActionHotkeyEnabled(a.state.ItemOptions, "fir") && a.addHotkeyFIRTarget.Load() == target
+	if target.Remove {
+		return trackedRemoveHotkeyEnabled(a.state.ItemOptions) && a.removeHotkeyTarget.Load() == target
 	}
-	return (target.Kind == "" || target.Kind == "regular") && trackedActionHotkeyEnabled(a.state.ItemOptions, "regular") && a.addHotkeyTarget.Load() == target
+	return trackedAddHotkeyEnabled(a.state.ItemOptions) && a.addHotkeyTarget.Load() == target
+}
+
+func (a *ItemWindowApp) canRemoveTrackedItemLocked() bool {
+	if a.state.HotkeyCapture || a.pendingExitApproved() || a.state.Local == nil || a.state.Local.Loading || a.state.Local.Error != "" {
+		return false
+	}
+	t, item := a.state.Tracking, a.state.Item
+	return a.ctx != nil && a.ctx.Err() == nil && a.tracker != nil && a.apiKey != "" && a.state.HasAPIKey &&
+		!a.state.Busy && a.state.Error == "" && item != nil && item.UID != "" && item.BSGID != "" &&
+		a.state.CharacterUID != "" && t != nil && t.ItemUID == item.UID && t.ItemID == item.BSGID &&
+		t.CharUID == a.state.CharacterUID && t.AvailableQuantity > 0 && !t.InventorySeparate &&
+		len(t.Variants) == 0 && !t.Loading && !t.Adding && t.Error == ""
 }
 
 func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
@@ -48,26 +67,21 @@ func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
 func (a *ItemWindowApp) publishTrackedAddHotkey() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.state.AddHotkeyReady || !trackedAddHotkeyEnabled(a.state.ItemOptions) || !a.canAddTrackedItemLocked() {
-		a.addHotkeyTarget.Store(nil)
-		a.addHotkeyFIRTarget.Store(nil)
-		return
-	}
-	if trackedActionHotkeyEnabled(a.state.ItemOptions, "regular") && a.state.Tracking.AddRegularAllowed {
-		a.addHotkeyTarget.Store(&trackedAddHotkeyTarget{
+	if a.state.AddHotkeyReady && trackedAddHotkeyEnabled(a.state.ItemOptions) && a.canAddTrackedItemLocked() && a.state.Tracking.AddAllowed {
+		a.addHotkeyTarget.Store(retainTrackedHotkeyTarget(a.addHotkeyTarget.Load(), trackedAddHotkeyTarget{
 			UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
-			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision, Kind: "regular",
-		})
+			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision,
+		}))
 	} else {
 		a.addHotkeyTarget.Store(nil)
 	}
-	if trackedActionHotkeyEnabled(a.state.ItemOptions, "fir") && a.state.Tracking.AddFIRAllowed {
-		a.addHotkeyFIRTarget.Store(&trackedAddHotkeyTarget{
+	if a.state.RemoveHotkeyReady && trackedRemoveHotkeyEnabled(a.state.ItemOptions) && a.canRemoveTrackedItemLocked() && a.state.Tracking.RemoveAllowed {
+		a.removeHotkeyTarget.Store(retainTrackedHotkeyTarget(a.removeHotkeyTarget.Load(), trackedAddHotkeyTarget{
 			UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
-			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision, Kind: "fir",
-		})
+			CharUID: a.state.CharacterUID, Revision: a.state.ItemOptions.revision, Remove: true,
+		}))
 	} else {
-		a.addHotkeyFIRTarget.Store(nil)
+		a.removeHotkeyTarget.Store(nil)
 	}
 }
 
@@ -77,8 +91,8 @@ func (a *ItemWindowApp) requestTrackedAddHotkey() {
 	a.queueTrackedAddHotkey(a.addHotkeyTarget.Load())
 }
 
-func (a *ItemWindowApp) requestTrackedAddFIRHotkey() {
-	a.queueTrackedAddHotkey(a.addHotkeyFIRTarget.Load())
+func (a *ItemWindowApp) requestTrackedRemoveHotkey() {
+	a.queueTrackedAddHotkey(a.removeHotkeyTarget.Load())
 }
 
 func (a *ItemWindowApp) queueTrackedAddHotkey(target *trackedAddHotkeyTarget) {
@@ -97,12 +111,16 @@ func (a *ItemWindowApp) runTrackedAddHotkeys() {
 		select {
 		case <-a.ctx.Done():
 			a.addHotkeyTarget.Store(nil)
-			a.addHotkeyFIRTarget.Store(nil)
+			a.removeHotkeyTarget.Store(nil)
 			a.addHotkeyPending.Store(false)
 			return
 		case target := <-a.addHotkeyRequests:
 			if a.ctx.Err() == nil && target != nil {
-				a.addTrackedItemKind(target.UID, target, target.Kind)
+				if target.Remove {
+					a.removeTrackedItem(target.UID, target)
+				} else {
+					a.addTrackedItem(target.UID, target)
+				}
 			}
 			a.addHotkeyPending.Store(false)
 		}
@@ -113,13 +131,16 @@ func (a *ItemWindowApp) startTrackedAddHotkey() {
 	a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
 	go a.runTrackedAddHotkeys()
 	a.hotkeyConfigMu.Lock()
-	hotkey := newTrackedAddHotkey(a.ctx, a.requestTrackedAddHotkey, a.setTrackedAddHotkeyStatus, a.requestTrackedAddFIRHotkey)
+	hotkey := newTrackedAddHotkey(a.ctx, a.requestTrackedAddHotkey, a.setTrackedAddHotkeyStatus)
+	remove := newTrackedAddHotkey(a.ctx, a.requestTrackedRemoveHotkey, a.setTrackedRemoveHotkeyStatus)
 	a.mu.Lock()
 	a.addHotkey = hotkey
+	a.removeHotkey = remove
 	opts := a.state.ItemOptions
 	capture := a.state.HotkeyCapture
 	a.mu.Unlock()
 	configureTrackedHotkeyKeys(hotkey, opts, capture)
+	configureTrackedRemoveHotkeyKeys(remove, opts, capture)
 	a.hotkeyConfigMu.Unlock()
 }
 
@@ -128,19 +149,31 @@ func (a *ItemWindowApp) configureTrackedAddHotkey() {
 	defer a.hotkeyConfigMu.Unlock()
 	a.mu.Lock()
 	hotkey, opts := a.addHotkey, a.state.ItemOptions
+	remove := a.removeHotkey
 	capture := a.state.HotkeyCapture
 	a.mu.Unlock()
 	if hotkey != nil {
 		configureTrackedHotkeyKeys(hotkey, opts, capture)
 	}
+	if remove != nil {
+		configureTrackedRemoveHotkeyKeys(remove, opts, capture)
+	}
+}
+
+func configureTrackedRemoveHotkeyKeys(hotkey *trackedAddHotkey, opts ItemOptions, capture bool) {
+	if capture || normalizeTrackedRemoveHotkey(opts.RemoveHotkey) == normalizeTrackedAddHotkey(opts.AddHotkey) {
+		hotkey.SetKey("off")
+		return
+	}
+	hotkey.SetKey(normalizeTrackedRemoveHotkey(opts.RemoveHotkey))
 }
 
 func configureTrackedHotkeyKeys(hotkey *trackedAddHotkey, opts ItemOptions, capture ...bool) {
 	if len(capture) > 0 && capture[0] {
-		hotkey.SetKeys("off", "off")
+		hotkey.SetKey("off")
 		return
 	}
-	hotkey.SetKeys(normalizeTrackedAddHotkey(opts.AddHotkey), normalizeTrackedFIRHotkey(opts.FIRHotkey))
+	hotkey.SetKey(normalizeTrackedAddHotkey(opts.AddHotkey))
 }
 
 func (a *ItemWindowApp) SetHotkeyCapture(enabled bool) ItemState {
@@ -151,7 +184,7 @@ func (a *ItemWindowApp) SetHotkeyCapture(enabled bool) ItemState {
 	}
 	a.state.HotkeyCapture = enabled
 	a.addHotkeyTarget.Store(nil)
-	a.addHotkeyFIRTarget.Store(nil)
+	a.removeHotkeyTarget.Store(nil)
 	a.mu.Unlock()
 	a.configureTrackedAddHotkey()
 	a.emit()
@@ -166,17 +199,31 @@ func (a *ItemWindowApp) setTrackedAddHotkeyStatus(ready bool, message string) {
 	a.emit()
 }
 
+func (a *ItemWindowApp) setTrackedRemoveHotkeyStatus(ready bool, message string) {
+	a.mu.Lock()
+	a.state.RemoveHotkeyReady = ready && !a.state.HotkeyCapture && trackedRemoveHotkeyEnabled(a.state.ItemOptions) && a.ctx != nil && a.ctx.Err() == nil
+	a.state.RemoveHotkeyError = message
+	a.mu.Unlock()
+	a.emit()
+}
+
 func (a *ItemWindowApp) stopTrackedAddHotkey() {
 	a.hotkeyConfigMu.Lock()
 	defer a.hotkeyConfigMu.Unlock()
 	a.mu.Lock()
 	hotkey := a.addHotkey
+	remove := a.removeHotkey
 	a.addHotkey = nil
+	a.removeHotkey = nil
 	a.state.AddHotkeyReady = false
+	a.state.RemoveHotkeyReady = false
 	a.addHotkeyTarget.Store(nil)
-	a.addHotkeyFIRTarget.Store(nil)
+	a.removeHotkeyTarget.Store(nil)
 	a.mu.Unlock()
 	if hotkey != nil {
 		hotkey.Close()
+	}
+	if remove != nil {
+		remove.Close()
 	}
 }

@@ -16,7 +16,7 @@ func TestTrackedAddHotkeyNormalization(t *testing.T) {
 		}
 	}
 	for input, expected := range map[string]string{
-		"": "F2", "F0": "F2", "F13": "F2", "F01": "F2", "F+2": "F2",
+		"": "F1", "F0": "F1", "F13": "F1", "F01": "F1", "F+2": "F1",
 		"Ctrl+F2": "Ctrl+F2", "Space": "Space", " f8 ": "F8", " Off ": "off",
 	} {
 		if got := normalizeTrackedAddHotkey(input); got != expected {
@@ -41,11 +41,11 @@ func TestTrackedShortcutCanonicalChordsAndDefaults(t *testing.T) {
 		}
 	}
 	for _, input := range []string{"", "Ctrl", "Ctrl+", "+A", "Ctrl++A", "Ctrl+Ctrl+A", "Shift+Alt+Shift+F1", "Win+A", "A+Ctrl", "Ctrl+off", "F01", "F13", "F0", "AA", "Enter", "é", "Ctrl+A+B"} {
-		if _, _, valid := parseTrackedShortcut(input); valid || normalizeTrackedAddHotkey(input) != "F2" || normalizeTrackedFIRHotkey(input) != "F1" {
+		if _, _, valid := parseTrackedShortcut(input); valid || normalizeTrackedAddHotkey(input) != "F1" {
 			t.Errorf("invalid chord %q accepted or defaults reversed", input)
 		}
 	}
-	if normalizeTrackedFIRHotkey(" off ") != "off" || normalizeTrackedShortcut("bad", "shift+f4") != "Shift+F4" {
+	if normalizeTrackedAddHotkey(" off ") != "off" || normalizeTrackedShortcut("bad", "shift+f4") != "Shift+F4" {
 		t.Fatal("disabled or caller-provided fallback did not normalize")
 	}
 	for _, letter := range "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" {
@@ -56,9 +56,6 @@ func TestTrackedShortcutCanonicalChordsAndDefaults(t *testing.T) {
 	}
 	if trackedAddHotkeyVK("Ctrl+Alt+Shift+F12") != 0x7b {
 		t.Fatal("chord returned modifier bits as a Windows base key")
-	}
-	if !trackedHotkeyChordsEqual("Shift+Ctrl+A", " ctrl + shift + a ") || trackedHotkeyChordsEqual("Ctrl+A", "Alt+A") || trackedHotkeyChordsEqual("A", "Ctrl+A") || trackedHotkeyChordsEqual("off", "OFF") || trackedHotkeyChordsEqual("bad", "bad") {
-		t.Fatal("enabled exact chord duplicate comparison failed")
 	}
 }
 
