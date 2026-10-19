@@ -1,7 +1,6 @@
 package plus
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -72,32 +71,4 @@ func diagnosticItemName(value string) string {
 		characters = append(characters[:59], '…')
 	}
 	return string(characters)
-}
-
-func (a *ItemWindowApp) setTrackedWriteStatus(key string, opts ItemOptions, item market.Item, status string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.apiKey == key && a.state.ItemOptions.revision == opts.revision && a.state.CharacterUID == opts.CharacterUID &&
-		a.state.Item != nil && a.state.Item.UID == item.UID && a.state.Tracking != nil && a.state.Tracking.ItemUID == item.UID {
-		a.state.Tracking.Status = status
-	}
-}
-
-// A definite rejection a saját errors.Is kategóriáját is megtartja, miközben
-// a hand-in megjelenítése a biztonságos, kibővített szöveget használja.
-type progressWriteFeedbackError struct {
-	message string
-	cause   error
-}
-
-func (e *progressWriteFeedbackError) Error() string { return e.message }
-func (e *progressWriteFeedbackError) Unwrap() error { return e.cause }
-
-func controlledHandoverWriteError(err error, diagnostic string) error {
-	message := "Market did not save the requested stock change. The operation was saved; resume after checking stock."
-	switch {
-	case errors.Is(err, market.ErrRateLimited), errors.Is(err, market.ErrProgressConflict), errors.Is(err, market.ErrUnauthorized), errors.Is(err, market.ErrProgressForbidden), errors.Is(err, market.ErrAPIKeyRequired):
-		message = handoverError(err)
-	}
-	return &progressWriteFeedbackError{message: message + " " + diagnostic, cause: err}
 }

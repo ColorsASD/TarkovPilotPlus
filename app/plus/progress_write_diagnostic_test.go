@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
@@ -18,12 +18,12 @@ func (f diagnosticTransport) RoundTrip(request *http.Request) (*http.Response, e
 	return f(request)
 }
 
-func installDiagnosticResponse(t *testing.T, status int, body string) *int {
+func installDiagnosticResponse(t *testing.T, status int, body string) *atomic.Int32 {
 	t.Helper()
-	calls := new(int)
+	calls := new(atomic.Int32)
 	before := http.DefaultTransport
 	http.DefaultTransport = diagnosticTransport(func(request *http.Request) (*http.Response, error) {
-		*calls++
+		calls.Add(1)
 		if request.Method != http.MethodPatch || request.URL.Host != "api.tarkov-market.app" {
 			t.Fatal("diagnostic fixture tried a real or unexpected request")
 		}
@@ -37,12 +37,16 @@ func TestTrackedWriteFailureDiagnosticSurvivesToStateWithoutSecrets(t *testing.T
 	for _, tc := range []struct {
 		name, body, reason string
 		status             int
+		pending            int
 	}{
-		{"server", `{"error":"private-response-secret"}`, "http(HTTP 503)", 503},
-		{"missing changed", `{"ok":true,"revision":"private-ack-revision"}`, "missing_changed", 200},
-		{"null changed", `{"ok":true,"changed":null,"revision":"private-ack-revision"}`, "null_changed", 200},
-		{"invalid revision", `{"ok":true,"changed":true,"revision":"private unsafe revision"}`, "invalid_revision", 200},
-		{"changed mismatch", `{"ok":true,"changed":true,"revision":"private-ack-revision"}`, "none", 200},
+		{"forbidden", `{"error":"private-response-secret"}`, "http(HTTP 403)", 403, 0},
+		{"missing changed", `{"ok":true,"revision":"private-ack-revision"}`, "missing_changed", 200, 1},
+		{"null changed", `{"ok":true,"changed":null,"revision":"private-ack-revision"}`, "null_changed", 200, 1},
+		{"invalid revision", `{"ok":true,"changed":true,"revision":"private unsafe revision"}`, "invalid_revision", 200, 1},
+		{"changed mismatch", `{"ok":true,"changed":true,"revision":"private-ack-revision"}`, "none", 200, 1},
+		// Az 503 a kliens kozos keresi korlatjan backoffot allit be.
+		// Utolsokent mar nem varakoztatja masik fixture HTTP-kereset.
+		{"server", `{"error":"private-response-secret"}`, "http(HTTP 503)", 503, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, fake := newTrackingTestApp(t)
@@ -55,15 +59,17 @@ func TestTrackedWriteFailureDiagnosticSurvivesToStateWithoutSecrets(t *testing.T
 			fake.writeHook = func(write stockWrite) (market.ProgressWriteResult, error) {
 				return client.SetTrackedQuantity(context.Background(), "local-test-key", write.Character, write.Item, write.Revision, write.Quantity)
 			}
-			state := addMarketTrackedItemForTest(a, trackingItemUID, "fir")
+			a.AddTrackedItemFIR(trackingItemUID)
+			state := waitPendingForTest(t, a)
 			status := state.Tracking.Status
-			if *calls != 1 || len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error == "" ||
+			if calls.Load() != 1 || len(fake.writes) != 1 || state.Tracking.AvailableQuantity != 1+int64(tc.pending) || state.Tracking.MarketAvailableQuantity != 1 ||
+				state.PendingAdds == nil || state.PendingAdds.Count != tc.pending || state.PendingAdds.Running || state.PendingAdds.Error == "" || state.Tracking.Error != "" ||
 				!strings.Contains(status, "Requested stock: 2; current stock: 1") || !strings.Contains(status, "write="+tc.reason) ||
 				!strings.Contains(status, "Selected item: CMS surgical kit (3/3); tracked item: CMS surgical kit (1/3)") {
-				t.Fatalf("write cause did not reach the existing state: calls=%d writes=%+v tracking=%+v", *calls, fake.writes, state.Tracking)
+				t.Fatalf("write cause or pending reservation was lost: calls=%d writes=%+v tracking=%+v pending=%+v", calls.Load(), fake.writes, state.Tracking, state.PendingAdds)
 			}
 			for _, secret := range []string{"local-test-key", "character-a", "private-before-revision", "private-ack-revision", "private-response-secret", "private unsafe revision", "https://"} {
-				if strings.Contains(status+state.Tracking.Error, secret) {
+				if strings.Contains(status+state.Tracking.Error+state.PendingAdds.Error, secret) {
 					t.Fatalf("diagnostic exposed %q: %s", secret, status)
 				}
 			}
@@ -73,34 +79,12 @@ func TestTrackedWriteFailureDiagnosticSurvivesToStateWithoutSecrets(t *testing.T
 			if tc.name == "missing changed" && !strings.Contains(status, "ok=true; changed=unknown") {
 				t.Fatal("partial safe acknowledgment was lost")
 			}
-			addMarketTrackedItemForTest(a, trackingItemUID, "fir")
-			if *calls != 1 || len(fake.writes) != 1 {
-				t.Fatal("diagnostics allowed a repeated write without refresh")
+			a.RecheckPendingAdds()
+			state = waitPendingForTest(t, a)
+			if calls.Load() != 1 || len(fake.writes) != 1 || state.PendingAdds.Count != tc.pending {
+				t.Fatal("diagnostic recheck repeated the stock write or discarded the unresolved reservation")
 			}
 		})
-	}
-}
-
-func TestHandoverDefiniteFailureKeepsDiagnosticAndExistingCause(t *testing.T) {
-	for _, status := range []int{403, 429} {
-		a, fake, _ := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
-		addAndSyncCachedTest(t, a, trackingItemUID, "regular")
-		addAndSyncCachedTest(t, a, trackingItemUID, "fir")
-		calls := installDiagnosticResponse(t, status, `{"error":"private-response-secret"}`)
-		client := market.NewClient("")
-		fake.writeHook = func(write stockWrite) (market.ProgressWriteResult, error) {
-			return client.SetTrackedQuantity(context.Background(), "local-test-key", write.Character, write.Item, write.Revision, write.Quantity)
-		}
-		handoverDraftForTest(a, handoverRowForTest(trackingBSGID, 1, "regular"))
-		state := a.confirmHandoverLegacy()
-		requireHandoverPending(t, a, state)
-		if *calls != 1 || len(fake.writes) != 3 || !strings.Contains(state.Handover.Error, "write=http(HTTP ") || !strings.Contains(state.Handover.Error, "API: ok=unknown") || strings.Contains(state.Handover.Error, "private-response-secret") {
-			t.Fatalf("definite failure category discarded the safe detail: status=%d calls=%d error=%s", status, *calls, state.Handover.Error)
-		}
-		data, err := os.ReadFile(a.handoverPath("character-a", "PVP"))
-		if err != nil || strings.Contains(string(data), "API:") || strings.Contains(string(data), "http(HTTP") {
-			t.Fatal("transient diagnostics were persisted into the operation journal")
-		}
 	}
 }
 

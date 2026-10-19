@@ -119,7 +119,7 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 		}
 		// A korábbi, típus nélküli készlet továbbra alkalmas kapacitás.
 		// Az új, ismert Regular darab csak nem-FiR követelményt fedezhet.
-		regular := item.MarketRegularQuantity + item.LocalRegularQuantity + item.MarketFallbackRegularQuantity
+		regular := item.MarketRegularQuantity
 		qualifying := item.AvailableQuantity - regular
 		firAssigned := min(qualifying, fixedFIR)
 		qualifying -= firAssigned
@@ -249,7 +249,7 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 				}
 			}
 		}
-		typedStock := item.MarketRegularQuantity+item.MarketFIRQuantity+item.LocalRegularQuantity+item.LocalFIRQuantity+item.MarketFallbackRegularQuantity+item.MarketFallbackFIRQuantity > 0
+		typedStock := item.MarketRegularQuantity+item.MarketFIRQuantity > 0
 		if !safeRows[itemIndex] || (!anyKnown && !typedStock) {
 			continue
 		}

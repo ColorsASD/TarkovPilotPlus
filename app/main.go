@@ -86,7 +86,8 @@ func main() {
 			go systray.Run(onTrayReady(app), nil)
 		},
 		// on exit — auto-clean session screenshots (if enabled)
-		OnShutdown: app.shutdown,
+		OnShutdown:    app.shutdown,
+		OnBeforeClose: app.beforeClose,
 		Bind: []interface{}{
 			app,
 		},
@@ -175,10 +176,7 @@ func onTrayReady(app *App) func() {
 						app.companion.Show()
 					}
 				case <-mQuit.ClickedCh:
-					systray.Quit()
-					if app.ctx != nil {
-						wailsRuntime.Quit(app.ctx)
-					}
+					app.Quit()
 				}
 			}
 		}()

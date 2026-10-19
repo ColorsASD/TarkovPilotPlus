@@ -22,6 +22,7 @@ var (
 	ErrProgressRevisionRequired = errors.New("A valid progress revision is required for this change")
 	ErrProgressInvalidQuantity  = errors.New("Stock quantity must be an integer between 0 and 1000000000")
 	ErrProgressInvalidRequest   = errors.New("The Tarkov Market progress request data is invalid")
+	ErrProgressPayloadTooLarge  = errors.New("The Tarkov Market progress request payload is too large")
 	ErrInvalidProgress          = errors.New("The Tarkov Market progress response is invalid")
 	ErrProgressUnavailable      = errors.New("The Tarkov Market progress API is unavailable")
 	ErrProgressWriteUncertain   = errors.New("The stock change result is unknown; refresh stock before another change")
@@ -47,6 +48,9 @@ type Character struct {
 type TrackedSource struct {
 	Type                      string `json:"type"`
 	QuestID                   string `json:"questId,omitempty"`
+	RequirementID             string `json:"requirementId,omitempty"`
+	Name                      string `json:"name,omitempty"`
+	GroupName                 string `json:"groupName,omitempty"`
 	UpgradeKey                string `json:"upgradeKey,omitempty"`
 	Amount                    int64  `json:"amount"`
 	RemainingRequiredQuantity int64  `json:"remainingRequiredQuantity"`
@@ -54,6 +58,24 @@ type TrackedSource struct {
 	Optional                  bool   `json:"optional"`
 	Completed                 bool   `json:"completed"`
 	Canceled                  bool   `json:"canceled"`
+}
+
+// TrackedGroup a Market közös, alternatív tárgyakkal teljesíthető követelménye.
+// A RequiredQuantity az egész csoportra vonatkozik, nem minden jelöltre külön.
+type TrackedGroup struct {
+	QuestID           string   `json:"questId"`
+	QuestName         string   `json:"questName"`
+	RequirementID     string   `json:"requirementId"`
+	Name              string   `json:"name"`
+	Amount            int64    `json:"amount"`
+	FIR               bool     `json:"fir"`
+	Optional          bool     `json:"optional"`
+	Completed         bool     `json:"completed"`
+	Canceled          bool     `json:"canceled"`
+	ItemIDs           []string `json:"itemIds"`
+	RequiredQuantity  int64    `json:"requiredQuantity"`
+	AvailableQuantity int64    `json:"availableQuantity"`
+	RemainingQuantity int64    `json:"remainingQuantity"`
 }
 
 type TrackedItem struct {
@@ -70,11 +92,12 @@ type TrackedItem struct {
 }
 
 type TrackedSnapshot struct {
-	CharUID              string        `json:"charUid"`
-	GameMode             string        `json:"gameMode"`
-	Revision             string        `json:"revision"`
-	FIRInventorySeparate bool          `json:"firInventorySeparate"`
-	Items                []TrackedItem `json:"items"`
+	CharUID              string         `json:"charUid"`
+	GameMode             string         `json:"gameMode"`
+	Revision             string         `json:"revision"`
+	FIRInventorySeparate bool           `json:"firInventorySeparate"`
+	Items                []TrackedItem  `json:"items"`
+	Groups               []TrackedGroup `json:"groups,omitempty"`
 }
 
 type ProgressWriteResult struct {
@@ -138,6 +161,23 @@ func (c *Client) LoadTracked(ctx context.Context, apiKey, charUID, lang string) 
 			}
 		}
 		item.Icon = SafeImageURL(item.Icon)
+	}
+	groups := make(map[string]bool)
+	for _, group := range snapshot.Groups {
+		key := group.QuestID + "\x00" + group.RequirementID
+		if !validProgressID(group.QuestID) || !validProgressID(group.RequirementID) || groups[key] ||
+			group.Amount <= 0 || group.Amount > 1_000_000_000 || group.RequiredQuantity < 0 || group.RequiredQuantity > group.Amount ||
+			group.AvailableQuantity < 0 || group.AvailableQuantity > 1_000_000_000 || group.RemainingQuantity < 0 || group.RemainingQuantity > group.Amount || len(group.ItemIDs) == 0 {
+			return TrackedSnapshot{}, ErrInvalidProgress
+		}
+		groups[key] = true
+		members := make(map[string]bool)
+		for _, id := range group.ItemIDs {
+			if !validProgressID(id) || members[id] {
+				return TrackedSnapshot{}, ErrInvalidProgress
+			}
+			members[id] = true
+		}
 	}
 	// Egy BSG-azonosítóhoz külön változatok is tartozhatnak (például teli és
 	// üres tartály). Minden rekord saját készletét és forrásait őrizzük meg;
@@ -310,6 +350,8 @@ func (c *Client) apiRequest(ctx context.Context, apiKey, method, path string, qu
 		return nil, progressHTTPError(resp.StatusCode, ErrProgressRevisionRequired)
 	case http.StatusBadRequest:
 		return nil, progressHTTPError(resp.StatusCode, ErrProgressInvalidRequest)
+	case http.StatusRequestEntityTooLarge:
+		return nil, progressHTTPError(resp.StatusCode, ErrProgressPayloadTooLarge)
 	case http.StatusTooManyRequests:
 		delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		gate.backoff(delay)

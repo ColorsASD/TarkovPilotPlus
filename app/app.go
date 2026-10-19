@@ -57,9 +57,11 @@ type State struct {
 	// server connection state: nokey | checking | ok | badkey | offline
 	ConnState string `json:"connState"`
 
-	AutoStart bool     `json:"autoStart"`
-	AutoClean bool     `json:"autoClean"`
-	EventLog  []string `json:"eventLog"`
+	AutoStart            bool     `json:"autoStart"`
+	AutoClean            bool     `json:"autoClean"`
+	EventLog             []string `json:"eventLog"`
+	PendingItemAddsCount int      `json:"pendingItemAddsCount"`
+	PendingItemAddsError string   `json:"pendingItemAddsError,omitempty"`
 }
 
 type App struct {
@@ -83,6 +85,7 @@ type App struct {
 	questSyncMu sync.Mutex
 
 	companion *plus.Companion
+	quitGuard plus.PendingExitGuard
 }
 
 func NewApp() *App {
@@ -153,6 +156,7 @@ func (a *App) startup(ctx context.Context) {
 // shutdown is called by Wails on exit: if auto-clean is enabled,
 // delete the current session's screenshots (same as on map change)
 func (a *App) shutdown(ctx context.Context) {
+	systray.Quit()
 	a.companion.Stop()
 	if config.Get().AutoClean {
 		if n := a.screens.CleanSessionScreenshots(); n > 0 {
@@ -407,6 +411,10 @@ func (a *App) logEvent(msg string) {
 func (a *App) buildState() State {
 	cfg := config.Get()
 	st := a.currentAppStatus()
+	pendingCount, pendingError := 0, ""
+	if a.companion != nil {
+		pendingCount, pendingError = a.companion.PendingAddsStatus()
+	}
 
 	a.mu.Lock()
 	latest := a.latestVersion
@@ -434,9 +442,11 @@ func (a *App) buildState() State {
 		Pro:                 a.client.Pro(),
 		ConnState:           a.connState(),
 
-		AutoStart: isAutoStartEnabled(),
-		AutoClean: cfg.AutoClean,
-		EventLog:  eventLog,
+		AutoStart:            isAutoStartEnabled(),
+		AutoClean:            cfg.AutoClean,
+		EventLog:             eventLog,
+		PendingItemAddsCount: pendingCount,
+		PendingItemAddsError: pendingError,
 	}
 }
 
@@ -652,8 +662,16 @@ func (a *App) DoUpdate() State {
 
 // Quit — full exit: window, tray, process
 func (a *App) Quit() {
-	systray.Quit()
 	if a.ctx != nil {
 		wailsRuntime.Quit(a.ctx)
 	}
+}
+
+func (a *App) beforeClose(ctx context.Context) bool {
+	return a.quitGuard.BeforeClose(ctx, func(discard bool) (int, bool, error) {
+		if a.companion == nil {
+			return 0, true, nil
+		}
+		return a.companion.PrepareExit(discard)
+	})
 }

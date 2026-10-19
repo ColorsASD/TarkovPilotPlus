@@ -1,6 +1,5 @@
-// Package localprogress a Market követett igényeit egészíti ki a tarkov.dev
-// katalógusából. A Market készlete és a saját helyi készletrész külön forrás;
-// ugyanahhoz a tárgyhoz tartozó mennyiségük csak az élő nézetben adódik össze.
+// Package localprogress a Tarkov Market követelményeit és közös Any csoportjait
+// vetíti a gyűjtési nézetbe. A számítások nem végeznek mentést vagy API-hívást.
 package localprogress
 
 import (
@@ -14,23 +13,16 @@ import (
 
 const (
 	OriginMarket       = "tarkov-market"
-	OriginDev          = "tarkov.dev"
 	MaxQuantity  int64 = 1_000_000_000
 )
 
 var (
-	ErrInvalidSnapshot     = errors.New("A helyi előrehaladás pillanatképe hiányos vagy hibás")
-	ErrSnapshotMismatch    = errors.New("A karakter, a játékmód vagy a Market revíziója eltér a pillanatképekben")
-	ErrInvalidIdentity     = errors.New("A helyi előrehaladás karakter- vagy tárgyazonosítója hibás")
-	ErrInvalidQuantity     = errors.New("A helyi készlet mennyisége 0 és 1000000000 közötti egész lehet")
-	ErrItemNotFound        = errors.New("A tárgy nem szerepel a helyi követési listában")
-	ErrMarketItem          = errors.New("A tárgy a Tarkov Market követési listájában szerepel; készletét a Marketen kell módosítani")
-	ErrAmbiguousItem       = errors.New("Azonos tárgyazonosítóhoz több készletváltozat tartozik; a helyi hozzáadás nem egyértelmű")
-	ErrSeparateInventory   = errors.New("A külön Found in Raid készlet helyi módosítása nem támogatott")
-	ErrCorruptStore        = errors.New("A helyi előrehaladás fájlja hibás; a mentett adatok nem lettek felülírva")
-	ErrStoreTooLarge       = errors.New("A helyi előrehaladás fájlja túllépi a megengedett méretet")
-	ErrHandoverConflict    = errors.New("Ehhez a leadási művelethez már eltérő elszámolás tartozik")
-	ErrHandoverUnavailable = errors.New("A kiválasztott típusból nincs elegendő felhasználható helyi készlet")
+	ErrInvalidSnapshot  = errors.New("A Market előrehaladás pillanatképe hiányos vagy hibás")
+	ErrSnapshotMismatch = errors.New("A karakter, a játékmód vagy a Market revíziója eltér a pillanatképekben")
+	ErrInvalidIdentity  = errors.New("A Market előrehaladás karakter- vagy tárgyazonosítója hibás")
+	ErrInvalidQuantity  = errors.New("A Market készlet mennyisége 0 és 1000000000 közötti egész lehet")
+	ErrItemNotFound     = errors.New("A tárgy nem szerepel a Market követési listában")
+	ErrAmbiguousItem    = errors.New("Azonos tárgyazonosítóhoz több készletváltozat tartozik; a hozzáadás nem egyértelmű")
 )
 
 type Source struct {
@@ -49,23 +41,8 @@ type Item struct {
 	MarketTracked                      bool     `json:"marketTracked"`
 	MarketRequiredQuantity             int64    `json:"marketRequiredQuantity"`
 	MarketAvailableQuantity            int64    `json:"marketAvailableQuantity"`
-	LocalAvailableQuantity             int64    `json:"localAvailableQuantity"`
 	MarketRegularQuantity              int64    `json:"marketRegularQuantity"`
 	MarketFIRQuantity                  int64    `json:"marketFIRQuantity"`
-	MarketFallbackAvailableQuantity    int64    `json:"marketFallbackAvailableQuantity"`
-	MarketFallbackRegularQuantity      int64    `json:"marketFallbackRegularQuantity"`
-	MarketFallbackFIRQuantity          int64    `json:"marketFallbackFIRQuantity"`
-	MarketFallbackUsedQuantity         int64    `json:"marketFallbackUsedQuantity"`
-	MarketFallbackUsedRegularQuantity  int64    `json:"marketFallbackUsedRegularQuantity"`
-	MarketFallbackUsedFIRQuantity      int64    `json:"marketFallbackUsedFIRQuantity"`
-	LocalRegularQuantity               int64    `json:"localRegularQuantity"`
-	LocalFIRQuantity                   int64    `json:"localFIRQuantity"`
-	LocalCollectedQuantity             int64    `json:"localCollectedQuantity"`
-	LocalCollectedRegularQuantity      int64    `json:"localCollectedRegularQuantity"`
-	LocalCollectedFIRQuantity          int64    `json:"localCollectedFIRQuantity"`
-	LocalUsedQuantity                  int64    `json:"localUsedQuantity"`
-	LocalUsedRegularQuantity           int64    `json:"localUsedRegularQuantity"`
-	LocalUsedFIRQuantity               int64    `json:"localUsedFIRQuantity"`
 	Name                               string   `json:"name"`
 	ShortName                          string   `json:"shortName"`
 	Slots                              float64  `json:"slots"`
@@ -81,9 +58,6 @@ type Item struct {
 	CollectionFIRAvailableQuantity     int64    `json:"collectionFIRAvailableQuantity"`
 	CollectionRegularAvailableQuantity int64    `json:"collectionRegularAvailableQuantity"`
 	Sources                            []Source `json:"sources"`
-	// Csak memóriában tartjuk: a Merge által normalizált és lezárt
-	// források mellett az eredeti Market-követelmény változását is észleljük.
-	MarketRawSources []market.TrackedSource `json:"-"`
 }
 
 type Snapshot struct {
@@ -99,9 +73,6 @@ func Clone(snapshot Snapshot) Snapshot {
 	snapshot.Items = append([]Item{}, snapshot.Items...)
 	for i := range snapshot.Items {
 		snapshot.Items[i].Sources = append([]Source{}, snapshot.Items[i].Sources...)
-		if snapshot.Items[i].MarketRawSources != nil {
-			snapshot.Items[i].MarketRawSources = append([]market.TrackedSource{}, snapshot.Items[i].MarketRawSources...)
-		}
 	}
 	return snapshot
 }
@@ -149,25 +120,14 @@ func validateSnapshot(snapshot Snapshot) error {
 		if !validQuantity(item.RequiredQuantity) || !validQuantity(item.SpentQuantity) || !validQuantity(item.AvailableQuantity) || !validQuantity(item.RemainingQuantity) {
 			return ErrInvalidQuantity
 		}
-		if !validQuantity(item.MarketRequiredQuantity) || !validQuantity(item.MarketAvailableQuantity) || !validQuantity(item.LocalAvailableQuantity) {
+		if !validQuantity(item.MarketRequiredQuantity) || !validQuantity(item.MarketAvailableQuantity) {
 			return ErrInvalidQuantity
 		}
-		if !validQuantity(item.MarketRegularQuantity) || !validQuantity(item.MarketFIRQuantity) || !validQuantity(item.LocalRegularQuantity) || !validQuantity(item.LocalFIRQuantity) {
+		if !validQuantity(item.MarketRegularQuantity) || !validQuantity(item.MarketFIRQuantity) {
 			return ErrInvalidQuantity
 		}
-		if err := validateMarketFallbackItem(item); err != nil {
-			return err
-		}
-		if item.MarketRegularQuantity > item.MarketAvailableQuantity-item.MarketFIRQuantity || item.LocalRegularQuantity > item.LocalAvailableQuantity-item.LocalFIRQuantity || item.MarketRegularQuantity+item.MarketFIRQuantity+item.LocalRegularQuantity+item.LocalFIRQuantity+item.MarketFallbackRegularQuantity+item.MarketFallbackFIRQuantity > item.AvailableQuantity {
+		if item.MarketRegularQuantity > item.MarketAvailableQuantity-item.MarketFIRQuantity || item.MarketRegularQuantity+item.MarketFIRQuantity > item.AvailableQuantity {
 			return ErrInvalidQuantity
-		}
-		if !validQuantity(item.LocalCollectedQuantity) || !validQuantity(item.LocalCollectedRegularQuantity) || !validQuantity(item.LocalCollectedFIRQuantity) || !validQuantity(item.LocalUsedQuantity) || !validQuantity(item.LocalUsedRegularQuantity) || !validQuantity(item.LocalUsedFIRQuantity) {
-			return ErrInvalidQuantity
-		}
-		if item.LocalCollectedQuantity > 0 || item.LocalCollectedRegularQuantity > 0 || item.LocalCollectedFIRQuantity > 0 || item.LocalUsedQuantity > 0 || item.LocalUsedRegularQuantity > 0 || item.LocalUsedFIRQuantity > 0 {
-			if item.LocalCollectedRegularQuantity > item.LocalCollectedQuantity-item.LocalCollectedFIRQuantity || item.LocalUsedRegularQuantity > item.LocalUsedQuantity-item.LocalUsedFIRQuantity || item.LocalUsedRegularQuantity > item.LocalCollectedRegularQuantity || item.LocalUsedFIRQuantity > item.LocalCollectedFIRQuantity || item.LocalUsedQuantity-item.LocalUsedRegularQuantity-item.LocalUsedFIRQuantity > item.LocalCollectedQuantity-item.LocalCollectedRegularQuantity-item.LocalCollectedFIRQuantity || item.LocalAvailableQuantity != item.LocalCollectedQuantity-item.LocalUsedQuantity || item.LocalRegularQuantity != item.LocalCollectedRegularQuantity-item.LocalUsedRegularQuantity || item.LocalFIRQuantity != item.LocalCollectedFIRQuantity-item.LocalUsedFIRQuantity {
-				return ErrInvalidQuantity
-			}
 		}
 		for _, source := range item.Sources {
 			if source.QuestID != "" && !validID(source.QuestID) || source.UpgradeKey != "" && !validUpgradeKey(source.UpgradeKey) {
@@ -176,7 +136,7 @@ func validateSnapshot(snapshot Snapshot) error {
 			if !validQuantity(source.Amount) || !validQuantity(source.RemainingRequiredQuantity) || !validQuantity(source.GroupAmount) {
 				return ErrInvalidQuantity
 			}
-			if source.Origin != OriginMarket && source.Origin != OriginDev {
+			if source.Origin != OriginMarket {
 				return ErrInvalidSnapshot
 			}
 			if source.Alternatives < 0 || source.Alternatives > 100_000 || (source.Alternatives > 1 && source.GroupID == "") {
@@ -189,6 +149,14 @@ func validateSnapshot(snapshot Snapshot) error {
 
 func active(source Source) bool {
 	return !source.Completed && !source.Canceled && !source.Optional
+}
+
+func countRows(snapshot Snapshot) map[string]int {
+	counts := make(map[string]int)
+	for _, item := range snapshot.Items {
+		counts[item.ItemID]++
+	}
+	return counts
 }
 
 // A források fennmaradó követelménye és a tényleges készlet külön adat.

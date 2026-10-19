@@ -40,7 +40,7 @@ func TestItemStateSequenceKeepsDecreasedStockAsNewerState(t *testing.T) {
 	app.mu.Unlock()
 	after := app.GetState()
 	if before.Tracking.AvailableQuantity != 2 || after.Tracking.AvailableQuantity != 0 || after.StateSequence <= before.StateSequence {
-		t.Fatalf("a reset or hand in must remain a newer snapshot without altering the old one: before=%+v after=%+v", before, after)
+		t.Fatalf("a stock change must remain a newer snapshot without altering the old one: before=%+v after=%+v", before, after)
 	}
 	data, err := json.Marshal(after)
 	if err != nil {

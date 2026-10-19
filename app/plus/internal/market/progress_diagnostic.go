@@ -63,6 +63,8 @@ func ProgressWriteFailure(err error) ProgressWriteFailureInfo {
 		reason = "invalid_response"
 	case errors.Is(err, ErrResponseTooBig):
 		reason = "response_too_large"
+	case errors.Is(err, ErrProgressPayloadTooLarge):
+		reason = "payload_too_large"
 	case errors.Is(err, ErrProgressInvalidQuantity), errors.Is(err, ErrProgressInvalidRequest), errors.Is(err, ErrProgressRevisionRequired):
 		reason = "invalid_request"
 	}

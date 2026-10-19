@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
-	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 )
 
 func requirementStock(t *testing.T, state ItemState, kind string) (int64, int64) {
@@ -19,31 +18,34 @@ func requirementStock(t *testing.T, state ItemState, kind string) (int64, int64)
 }
 
 func TestLocalTypedStockUsesMarketQuotaAndSeparateQualityMetadata(t *testing.T) {
-	a, fake, dir := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
-	dev := a.devRequirements.(*fakeRequirements)
-	dev.catalog.Tasks[1].Objectives[0].FoundInRaid = true
+	a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
+	for i := range fake.snapshot.Items[0].Sources {
+		if fake.snapshot.Items[0].Sources[i].QuestID == "quest-b" {
+			fake.snapshot.Items[0].Sources[i].FIR = true
+		}
+	}
 	a.localAt = time.Time{}
 	a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
-	addAndSyncCachedTest(t, a, trackingItemUID, "regular")
-	state := addAndSyncCachedTest(t, a, trackingItemUID, "regular")
+	addMarketKindForTest(t, a, trackingItemUID, "regular")
+	state := addMarketKindForTest(t, a, trackingItemUID, "regular")
 	if available, required := requirementStock(t, state, "regular"); available != 2 || required != 3 {
-		t.Fatalf("F1 did not show Regular 2/3: %+v", state.Tracking)
+		t.Fatalf("Regular Add did not show Regular 2/3: %+v", state.Tracking)
 	}
 	if available, required := requirementStock(t, state, "fir"); available != 0 || required != 5 {
-		t.Fatalf("F1 incorrectly covered FiR: %+v", state.Tracking)
+		t.Fatalf("Regular Add incorrectly covered FiR: %+v", state.Tracking)
 	}
-	state = addAndSyncCachedTest(t, a, trackingItemUID, "fir")
+	state = addMarketKindForTest(t, a, trackingItemUID, "fir")
 	if len(fake.writes) != 3 || fake.writes[2].Quantity != 3 || state.Tracking.AvailableQuantity != 3 {
-		t.Fatalf("F2 did not increase the same Market stock: writes=%+v state=%+v", fake.writes, state.Tracking)
+		t.Fatalf("FiR Add did not increase the same Market stock: writes=%+v state=%+v", fake.writes, state.Tracking)
 	}
 	if available, required := requirementStock(t, state, "fir"); available != 1 || required != 5 {
-		t.Fatalf("F2 did not show FiR 1/5: %+v", state.Tracking)
+		t.Fatalf("FiR Add did not show FiR 1/5: %+v", state.Tracking)
 	}
 	for i := 0; i < 5; i++ {
-		state = addAndSyncCachedTest(t, a, trackingItemUID, "fir")
+		state = addMarketKindForTest(t, a, trackingItemUID, "fir")
 	}
-	if len(fake.writes) != 3 || state.Tracking.AvailableQuantity != 8 || state.Tracking.RequiredQuantity != 8 || state.Tracking.RemainingQuantity != 0 {
-		t.Fatalf("typed local remainder changed Market quota or missed FiR overflow: writes=%+v state=%+v", fake.writes, state.Tracking)
+	if len(fake.writes) != 8 || state.Tracking.AvailableQuantity != 8 || state.Tracking.RequiredQuantity != 8 || state.Tracking.RemainingQuantity != 0 {
+		t.Fatalf("Market additions missed FiR overflow: writes=%+v state=%+v", fake.writes, state.Tracking)
 	}
 	if available, required := requirementStock(t, state, "fir"); available != 5 || required != 5 {
 		t.Fatalf("FiR requirement not met exactly: %+v", state.Tracking)
@@ -51,15 +53,11 @@ func TestLocalTypedStockUsesMarketQuotaAndSeparateQualityMetadata(t *testing.T) 
 	if available, required := requirementStock(t, state, "regular"); available != 3 || required != 3 {
 		t.Fatalf("FiR overflow did not cover the last Regular requirement once: %+v", state.Tracking)
 	}
-	assertLocalStockFileOnly(t, dir, trackingBSGID, 5)
-	saved, err := a.localStore.Load("character-a", "PVP")
-	if err != nil || len(saved.Items) != 1 {
-		t.Fatalf("typed local metadata could not be loaded: %+v %v", saved, err)
+	row := memoryMarketStockForTest(t, a, trackingBSGID)
+	if row.MarketRegularQuantity != 2 || row.MarketFIRQuantity != 6 || row.MarketAvailableQuantity != 8 {
+		t.Fatalf("confirmed Market types were duplicated or lost in memory: %+v", row)
 	}
-	row := saved.Items[0]
-	if row.MarketRegularQuantity != 2 || row.MarketFIRQuantity != 1 || row.LocalFIRQuantity != 5 || row.LocalRegularQuantity != 0 || row.MarketAvailableQuantity != 0 {
-		t.Fatalf("Market type annotations doubled or replaced the separate local count: %+v", row)
-	}
+	assertNoMarketStockFilesForTest(t, a.dir)
 	a.localAt = time.Time{}
 	a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 	if state = a.GetState(); state.Tracking.AvailableQuantity != 8 || state.Tracking.RemainingQuantity != 0 {
@@ -70,23 +68,21 @@ func TestLocalTypedStockUsesMarketQuotaAndSeparateQualityMetadata(t *testing.T) 
 func TestLocalAnyQualitySharesProgressAndStopsAlternativeCollection(t *testing.T) {
 	for _, fir := range []bool{false, true} {
 		t.Run(map[bool]string{false: "regular", true: "fir"}[fir], func(t *testing.T) {
-			a, fake := newDevOnlyTestApp(t)
+			a, fake := newLocalTestApp(t)
 			const second = "591aef7986f774139d495f03"
-			a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{{ID: "quest-b", Objectives: []tarkovdev.Objective{
-				{ID: "any-three", Type: "giveItem", Count: 3, FoundInRaid: fir, ItemIDs: []string{trackingBSGID, second}},
-			}}}, Hideout: []tarkovdev.Station{}}}
+			setMarketGroupRowsForTest(fake, nil, marketQuestGroupForTest("quest-b", "any-three", 3, fir, trackingBSGID, second))
 			a.localAt = time.Time{}
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 			if fir {
-				addAndSyncCachedTest(t, a, trackingItemUID, "fir")
+				addMarketKindForTest(t, a, trackingItemUID, "fir")
 			} else {
-				addAndSyncCachedTest(t, a, trackingItemUID, "regular")
+				addMarketKindForTest(t, a, trackingItemUID, "regular")
 			}
 			a.state.Item = &market.Item{UID: "second-item", BSGID: second, Name: "Second item"}
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
-			state := addAndSyncCachedTest(t, a, "second-item", "fir")
+			state := addMarketKindForTest(t, a, "second-item", "fir")
 			want := int64(2)
-			if len(fake.writes) != 0 || len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != want || state.Tracking.AnyGroups[0].RequiredQuantity != 3 {
+			if len(fake.writes) != 2 || len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != want || state.Tracking.AnyGroups[0].RequiredQuantity != 3 {
 				t.Fatalf("Any progress did not share typed candidate stock: %+v", state.Tracking)
 			}
 			a.state.Item = &market.Item{UID: trackingItemUID, BSGID: trackingBSGID, Name: "First item"}
@@ -95,15 +91,15 @@ func TestLocalAnyQualitySharesProgressAndStopsAlternativeCollection(t *testing.T
 				t.Fatalf("first candidate did not reflect the shared deficit: %+v", state.Tracking)
 			}
 			for i := want; i < 3; i++ {
-				state = addAndSyncCachedTest(t, a, trackingItemUID, "fir")
+				state = addMarketKindForTest(t, a, trackingItemUID, "fir")
 			}
 			if state.Tracking.RequiredQuantity != 0 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 1 ||
 				state.Tracking.AnyGroups[0].AvailableQuantity != 3 || state.Tracking.AnyGroups[0].RequiredQuantity != 3 || state.Tracking.AnyGroups[0].FIR != fir ||
-				a.canAddLocalForTest() || len(state.Local.QuestItems) != 0 {
+				a.canAddLocalForTest() {
 				t.Fatalf("covered Any lost its full ratio or kept requesting alternatives: %+v", state)
 			}
 			before := state.Tracking.AvailableQuantity
-			state = addAndSyncCachedTest(t, a, trackingItemUID, "regular")
+			state = addMarketKindForTest(t, a, trackingItemUID, "regular")
 			if state.Tracking.AvailableQuantity != before {
 				t.Fatal("covered Any accepted another item")
 			}
@@ -127,23 +123,20 @@ func TestLocalAnyQualitySharesProgressAndStopsAlternativeCollection(t *testing.T
 }
 
 func TestLocalMarketReadbackDecreaseReconcilesQualityBeforeValidation(t *testing.T) {
-	a, fake, _ := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
-	addAndSyncCachedTest(t, a, trackingItemUID, "fir")
-	addAndSyncCachedTest(t, a, trackingItemUID, "fir")
+	a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
+	addMarketKindForTest(t, a, trackingItemUID, "fir")
+	addMarketKindForTest(t, a, trackingItemUID, "fir")
 	if a.localSnapshot.Items[0].MarketFIRQuantity != 2 {
 		t.Fatal("confirmed Market FiR annotations were not established")
 	}
 	fake.snapshot.Items[0].AvailableQuantity = 1
 	fake.snapshot.Revision = "external-decrease"
-	a.applyTracking(a.apiKey, a.state.ItemOptions, *a.state.Item, fake.snapshot, time.Now(), "")
+	setTrackingTestSnapshot(t, a, fake.snapshot)
 	state := a.GetState()
-	if state.Local.StockError || state.Local.Error != "" || state.Tracking.AvailableQuantity != 1 || a.localSnapshot.Items[0].MarketFIRQuantity != 0 {
+	if state.Local.Error != "" || state.Tracking.AvailableQuantity != 1 || a.localSnapshot.Items[0].MarketFIRQuantity != 0 {
 		t.Fatalf("stale quality prevented safe live stock reconciliation: %+v snapshot=%+v", state, a.localSnapshot)
 	}
-	saved, err := a.localStore.Load("character-a", "PVP")
-	if err != nil || len(saved.Items) != 1 || saved.Items[0].MarketFIRQuantity != 0 {
-		t.Fatalf("stale Market type survived external decrease: %+v err=%v", saved, err)
-	}
+	assertNoMarketStockFilesForTest(t, a.dir)
 }
 
 func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
@@ -152,18 +145,17 @@ func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
 			const augmentin = "augmentin-item"
 			const salewa = "salewa-item"
 			const ifak = "ifak-item"
-			a, fake, _ := newSupplementedLocalTestApp(t, "augmentin-uid", augmentin)
+			a, fake, _ := newMarketQuotaTestApp(t, "augmentin-uid", augmentin)
 			fake.quests.Quests = append(fake.quests.Quests, market.Quest{QuestID: "quest-c", Status: "available"})
-			a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{
-				{ID: "quest-a", Objectives: []tarkovdev.Objective{{ID: "fixed", Type: "giveItem", Count: 3, ItemIDs: []string{augmentin}}}},
-				{ID: "quest-b", Objectives: []tarkovdev.Objective{{ID: "any", Type: "giveItem", Count: 3, ItemIDs: []string{augmentin, salewa, ifak}}}},
-				{ID: "quest-c", Objectives: []tarkovdev.Objective{{ID: "any", Type: "giveItem", Count: 3, ItemIDs: []string{augmentin, salewa, ifak}}}},
-			}, Hideout: []tarkovdev.Station{}}}
+			setMarketGroupRowsForTest(fake, []market.TrackedItem{{ItemID: augmentin, RequiredQuantity: 3, RemainingQuantity: 3,
+				Sources: []market.TrackedSource{{Type: "quest", QuestID: "quest-a", Amount: 3, RemainingRequiredQuantity: 3}},
+			}}, marketQuestGroupForTest("quest-b", "any", 3, false, augmentin, salewa, ifak),
+				marketQuestGroupForTest("quest-c", "any", 3, false, augmentin, salewa, ifak))
 			a.localAt = time.Time{}
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 			var state ItemState
 			for i := 0; i < 3; i++ {
-				state = addAndSyncCachedTest(t, a, "augmentin-uid", "regular")
+				state = addMarketKindForTest(t, a, "augmentin-uid", "regular")
 			}
 			if len(fake.writes) != 3 || len(state.Tracking.AnyGroups) != 1 {
 				t.Fatalf("fixed quota or combined Any display lost: writes=%+v state=%+v", fake.writes, state.Tracking)
@@ -181,7 +173,7 @@ func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
 				a.state.Item = &market.Item{UID: item.uid, BSGID: item.id, Name: item.id}
 				a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 				for i := 0; i < 3; i++ {
-					state = addAndSyncCachedTest(t, a, item.uid, "regular")
+					state = addMarketKindForTest(t, a, item.uid, "regular")
 				}
 				if index == 0 && (len(state.Tracking.AnyGroups) != 1 || state.Tracking.AnyGroups[0].AvailableQuantity != 3 || state.Tracking.AnyGroups[0].RequiredQuantity != 6) {
 					t.Fatalf("three extras incorrectly covered both Any groups: %+v", state.Tracking)
@@ -191,7 +183,7 @@ func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
 			for _, row := range a.localSnapshot.Items {
 				stock += row.AvailableQuantity
 			}
-			if stock != 9 || len(fake.writes) != 3 || len(state.Tracking.AnyGroups) != 1 ||
+			if stock != 9 || len(fake.writes) != 9 || len(state.Tracking.AnyGroups) != 1 ||
 				state.Tracking.AnyGroups[0].AvailableQuantity != 6 || state.Tracking.AnyGroups[0].RequiredQuantity != 6 {
 				t.Fatalf("nine pieces did not cover exactly the three goals: stock=%d writes=%+v state=%+v", stock, fake.writes, state.Tracking)
 			}
@@ -199,7 +191,7 @@ func TestLocalThreeQuestsReserveFixedAndCoverTwoAnyGroupsOnce(t *testing.T) {
 			a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
 			state = a.GetState()
 			if state.Tracking.RequiredQuantity != 3 || state.Tracking.RemainingQuantity != 0 || len(state.Tracking.AnyGroups) != 1 ||
-				state.Tracking.AnyGroups[0].AvailableQuantity != 6 || state.Tracking.AnyGroups[0].RequiredQuantity != 6 || len(state.Local.QuestItems) != 1 {
+				state.Tracking.AnyGroups[0].AvailableQuantity != 6 || state.Tracking.AnyGroups[0].RequiredQuantity != 6 {
 				t.Fatalf("covered alternatives lost their ratio or changed the fixed requirement: %+v", state)
 			}
 		})

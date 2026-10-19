@@ -82,7 +82,6 @@
         </section>
         </template>
 
-        <button id="btn-handover" class="hidden" type="button" disabled>Hand in Items</button>
 
         <section class="scan-status" aria-label="Scan status">
             <div class="status-line"><span id="status-dot" class="status-dot" aria-hidden="true"></span>
@@ -161,50 +160,6 @@
                 <p id="characters-note" class="hint hidden"></p>
                 <button id="btn-refresh-local" type="button">Refresh progress</button>
                 <p id="local-progress-status" class="hint hidden" role="status" aria-live="polite"></p>
-                <section id="progress-sync-panel" class="progress-sync-panel" aria-labelledby="progress-sync-title">
-                    <h3 id="progress-sync-title">Pending uploads</h3>
-                    <dl class="stock-editor-summary">
-                        <div><dt>Operations</dt><dd id="progress-sync-count">—</dd></div>
-                        <div><dt>Items</dt><dd id="progress-sync-items">—</dd></div>
-                    </dl>
-                    <p id="progress-sync-status" class="hint hidden" role="status" aria-live="polite"></p>
-                    <p id="progress-sync-error" class="hint error hidden" role="alert"></p>
-                    <ul id="progress-sync-operations" class="progress-sync-operations hidden" aria-label="Pending upload items"></ul>
-                </section>
-                <div class="local-backup-panel" aria-label="Items Tracker backup">
-                    <div class="local-backup-toolbar">
-                        <button id="btn-import-local" type="button" disabled>Import</button>
-                        <button id="btn-export-local" type="button" disabled>Export</button>
-                    </div>
-                    <p id="local-backup-status" class="hint hidden" role="status" aria-live="polite"></p>
-                    <p id="local-backup-error" class="hint error hidden" role="alert"></p>
-                </div>
-                <details id="stock-editor" class="stock-editor-panel">
-                    <summary>Items Tracker</summary>
-                    <div class="stock-editor-content">
-                        <label for="stock-editor-search" class="sr-only">Search tracked items</label>
-                        <input id="stock-editor-search" type="search" placeholder="Search items…"
-                            autocomplete="off" spellcheck="false" maxlength="200" />
-                        <div class="stock-editor-toolbar">
-                            <button id="btn-refresh-stock-editor" type="button" disabled>Refresh</button>
-                            <button id="btn-retry-market-upload" class="hidden" type="button" disabled>Retry saved upload</button>
-                        </div>
-                        <p id="market-upload-retry-hint" class="hint hidden">Retry the saved Market upload without adding another item.</p>
-                        <button id="btn-discard-stock-editor" class="subtle-button hidden" type="button" disabled>Discard pending edit</button>
-                        <p id="stock-editor-pending-hint" class="hint hidden">Check Market stock before discarding an unverified edit.</p>
-                        <p class="hint">Stock corrections do not record a hand-in.</p>
-                        <p class="hint">Item shortcuts are paused while this list is open.</p>
-                        <p id="stock-editor-status" class="hint hidden" role="status" aria-live="polite"></p>
-                        <p id="stock-editor-warning" class="hint hidden" role="status" aria-live="polite"></p>
-                        <p id="stock-editor-error" class="hint error hidden" role="alert"></p>
-                        <p id="stock-editor-empty" class="hint hidden">No items found.</p>
-                        <table id="stock-editor-table" class="stock-editor-table" aria-label="Items Tracker stock">
-                            <colgroup><col class="stock-editor-item-column" /><col /><col /><col class="stock-editor-edit-column" /></colgroup>
-                            <thead><tr><th scope="col">Item</th><th scope="col">Stock</th><th scope="col">Used</th><th scope="col">Edit</th></tr></thead>
-                            <tbody id="stock-editor-rows"></tbody>
-                        </table>
-                    </div>
-                </details>
                 <div class="api-key-section">
                     <label for="api-key">Tarkov Market API key</label>
                     <div class="api-key-field">
@@ -240,7 +195,7 @@
                     This does not require an open Inspect window or Automatic scanning.</p>
                 <p>Flea Market shows Best price and 24-hour average price. Trader shows the best trader price.
                     The price per slot appears in parentheses. Trader prices use the trader's own currency.</p>
-                <p>Items Tracker appears when the selected character still has an active mandatory requirement for the item.
+                <p>Items Tracker uses only Tarkov Market progress and appears when the selected character still has an active mandatory requirement for the item.
                     Filled requirements remain visible, for example 10/10, until the associated goal is completed.
                     Add buttons and shortcuts stop adding when no eligible requirement needs another item.</p>
                 <p>Stock always shows available stock / required quantity, for example 2/5.
@@ -248,7 +203,10 @@
                     Found in Raid and Regular requirements appear on separate rows, but share the same stock.</p>
                 <p>Click Add Found in Raid item or press F1, or click Add Regular item or press F2, to add one item of that type to the selected character's stock.
                     The shortcuts work while the game is in the foreground, but only when the loaded item's button is available.
-                    Each physical press adds at most one item; holding the key does not repeat.</p>
+                    Each physical press adds at most one item; holding the key does not repeat.
+                    Stock changes immediately while the update is sent to Tarkov Market in the background.
+                    The status log shows how many items are waiting for the API save. A rejected update restores the confirmed stock. Network errors keep pending items in memory; uncertain saves are checked before retrying.
+                    Pending updates are kept only while the app runs; closing with unsaved items shows a warning.</p>
                 <p>F1 and F2 are the defaults. Set each shortcut separately in Settings, or use Disable to release it.
                     While enabled, the keys are reserved globally for normal Windows keyboard input even when no item can be added.
                     Apps that use direct keyboard input may still receive the keys.</p>
@@ -259,36 +217,6 @@
                 <p>Closing either app window closes both windows.</p>
             </div>
         </details>
-        <dialog id="handover-dialog" class="handover-dialog" aria-labelledby="handover-title">
-            <form id="handover-form" class="handover-form">
-                <h2 id="handover-title">Hand in Items</h2>
-                <div class="search-panel" aria-label="Hand-in item search">
-                    <div class="search-form">
-                        <label for="handover-search-name" class="sr-only">Item name</label>
-                        <input id="handover-search-name" type="search" placeholder="Item name…"
-                            autocomplete="off" spellcheck="false" maxlength="200" />
-                        <button id="btn-handover-search" type="button" disabled>Search</button>
-                    </div>
-                    <button id="btn-handover-scan" class="scan-button" type="button" disabled
-                        title="Read the open Inspect window title in 3 seconds">
-                        <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6 3H3v3M12 3h3v3M3 12v3h3M15 12v3h-3M6 9h6" /></svg>
-                        <span>Scan now</span>
-                    </button>
-                    <label class="check-row" title="Check the open Inspect window after a left-click">
-                        <input id="handover-automatic" type="checkbox" />
-                        <span>Automatic scanning</span>
-                    </label>
-                </div>
-                <p id="handover-empty" class="hint">Open an item's Inspect window to add it.</p>
-                <ul id="handover-items" class="handover-items" aria-label="Items to hand in"></ul>
-                <p id="handover-status" class="handover-status hidden" role="status" aria-live="polite"></p>
-                <p id="handover-error" class="handover-error hidden" role="alert"></p>
-                <div class="handover-actions">
-                    <button id="btn-handover-cancel" class="subtle-button" type="button">Cancel</button>
-                    <button id="btn-handover-confirm" type="submit" disabled>Confirm hand-in</button>
-                </div>
-            </form>
-        </dialog>
     </main>
     <script src="item.js"></script>
 </body>

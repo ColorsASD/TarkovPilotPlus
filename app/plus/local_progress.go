@@ -4,18 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
-	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 )
-
-type requirementsAPI interface {
-	Load(context.Context, string) (tarkovdev.Catalog, error)
-}
 
 type characterProgressAPI interface {
 	LoadQuests(context.Context, string, string, string) (market.QuestSnapshot, error)
@@ -36,52 +30,25 @@ func localProgressFailure(stage string, err error) error {
 func localProgressErrorText(err error) string {
 	var failure *localProgressLoadError
 	if !errors.As(err, &failure) {
-		return "Local Progress is unavailable. Refresh progress again."
+		return "Market progress is unavailable. Refresh progress again."
 	}
 	switch failure.stage {
 	case "tracked items", "quests", "hideout":
-		return "Local Progress: Tarkov Market " + failure.stage + " could not be loaded. " + trackingError(err)
+		return "Tarkov Market " + failure.stage + " could not be loaded. " + trackingError(err)
 	case "synchronization":
-		return "Market progress changed during refresh. Refresh Local Progress again."
-	case "tarkov.dev":
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "Local Progress: tarkov.dev requirements timed out. Refresh progress again."
-		}
-		return "Local Progress: tarkov.dev requirements could not be loaded. Check the connection and refresh progress again."
+		return "Market progress changed during refresh. Refresh progress again."
 	case "merge":
-		return "Local Progress: the Market and tarkov.dev requirements could not be matched. Market progress is shown separately."
-	case "save":
-		if errors.Is(err, localprogress.ErrCorruptStore) || errors.Is(err, localprogress.ErrStoreTooLarge) {
-			return "Local Progress: the local stock file is invalid. The existing file was kept; local additions are disabled."
-		}
-		return "Local Progress: local stock could not be saved. The existing file was kept; local additions are disabled."
+		return "Tarkov Market requirements could not be loaded consistently. Refresh progress again."
+
 	}
-	return "Local Progress is unavailable. Refresh progress again."
+	return "Market progress is unavailable. Refresh progress again."
 }
 
 type LocalProgressState struct {
-	Loading      bool                `json:"loading"`
-	Error        string              `json:"error"`
-	StockError   bool                `json:"stockError"`
-	Warning      string              `json:"warning"`
-	UpdatedAt    time.Time           `json:"updatedAt"`
-	QuestItems   []LocalProgressItem `json:"questItems"`
-	HideoutItems []LocalProgressItem `json:"hideoutItems"`
-}
-
-type LocalProgressItem struct {
-	ItemID                  string   `json:"itemId"`
-	Name                    string   `json:"name"`
-	Type                    string   `json:"type"`
-	RequiredQuantity        int64    `json:"requiredQuantity"`
-	FIR                     int64    `json:"fir"`
-	Regular                 int64    `json:"regular"`
-	Completed               int64    `json:"completed"`
-	AvailableQuantity       int64    `json:"availableQuantity"`
-	AlternativeNotes        []string `json:"alternativeNotes,omitempty"`
-	Storage                 string   `json:"storage"`
-	MarketAvailableQuantity int64    `json:"marketAvailableQuantity"`
-	LocalAvailableQuantity  int64    `json:"localAvailableQuantity"`
+	Loading   bool      `json:"loading"`
+	Error     string    `json:"error"`
+	Warning   string    `json:"warning"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 func cloneLocalProgressState(state *LocalProgressState) *LocalProgressState {
@@ -89,14 +56,6 @@ func cloneLocalProgressState(state *LocalProgressState) *LocalProgressState {
 		return nil
 	}
 	copy := *state
-	copy.QuestItems = append([]LocalProgressItem(nil), state.QuestItems...)
-	copy.HideoutItems = append([]LocalProgressItem(nil), state.HideoutItems...)
-	for i := range copy.QuestItems {
-		copy.QuestItems[i].AlternativeNotes = append([]string(nil), copy.QuestItems[i].AlternativeNotes...)
-	}
-	for i := range copy.HideoutItems {
-		copy.HideoutItems[i].AlternativeNotes = append([]string(nil), copy.HideoutItems[i].AlternativeNotes...)
-	}
 	return &copy
 }
 
@@ -123,9 +82,14 @@ func localMarketSnapshot(snapshot localprogress.Snapshot) market.TrackedSnapshot
 	return result
 }
 
-// Sikertelen kiegészítés mellett a külön Market forrás továbbra is látható.
-// Ez a pillanatkép nem kerül a helyi készletfájlba.
+// A teljes számítás kizárólag a Market válaszából készül, memóriában.
 func marketProgressOnly(snapshot market.TrackedSnapshot) localprogress.Snapshot {
+	merged, err := localprogress.Merge(snapshot,
+		market.QuestSnapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision, Quests: []market.Quest{}},
+		market.HideoutSnapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision, Modules: []market.HideoutUpgrade{}})
+	if err == nil {
+		return merged
+	}
 	result := localprogress.Snapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision,
 		FIRInventorySeparate: snapshot.FIRInventorySeparate, Items: []localprogress.Item{}}
 	for _, item := range snapshot.Items {
@@ -133,7 +97,6 @@ func marketProgressOnly(snapshot market.TrackedSnapshot) localprogress.Snapshot 
 			RequiredQuantity: item.RequiredQuantity, SpentQuantity: item.SpentQuantity, AvailableQuantity: item.AvailableQuantity,
 			RemainingQuantity: item.RemainingQuantity, MarketTracked: true, MarketRequiredQuantity: item.RequiredQuantity,
 			MarketAvailableQuantity: item.AvailableQuantity, Sources: []localprogress.Source{}}
-		row.MarketRawSources = append([]market.TrackedSource{}, item.Sources...)
 		for _, source := range item.Sources {
 			row.Sources = append(row.Sources, localprogress.Source{TrackedSource: source, Origin: localprogress.OriginMarket})
 		}
@@ -149,43 +112,17 @@ func alternativeNote(source localprogress.Source) string {
 	return fmt.Sprintf("Any %d of %d eligible items", source.RemainingRequiredQuantity, source.Alternatives)
 }
 
-func hasActiveLocalRequirement(item localprogress.Item) bool {
-	for _, source := range item.Sources {
-		if source.Origin == localprogress.OriginDev && !source.Completed && !source.Canceled && !source.Optional && source.RemainingRequiredQuantity > 0 {
-			if source.AllocationKnown && source.Alternatives > 1 && source.GroupRemainingQuantity <= 0 {
-				continue
-			}
-			return true
-		}
-	}
-	return false
-}
-
-func localStockDestination(item localprogress.Item) string {
-	quota := item.MarketRequiredQuantity
-	if item.CollectionCalculated {
-		quota = item.CollectionMarketRequiredQuantity
-	}
-	if item.MarketTracked && (item.MarketAvailableQuantity+item.MarketFallbackAvailableQuantity < quota || !hasActiveLocalRequirement(item)) {
-		return "market"
-	}
-	return "local"
-}
-
 func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTrackingState {
 	if allocated, err := localprogress.Allocate(snapshot); err == nil {
 		snapshot = allocated
 	}
 	view := trackedView(item, localMarketSnapshot(snapshot))
-	view.Local = true
-	view.Storage = "local"
+	view.Storage = "market"
 	for _, row := range snapshot.Items {
 		if row.ItemID == item.BSGID {
-			view.Storage = localStockDestination(row)
+			view.Storage = "market"
 			view.MarketAvailableQuantity = row.MarketAvailableQuantity
-			view.LocalAvailableQuantity = row.LocalAvailableQuantity
 			view.MarketRequiredQuantity = row.MarketRequiredQuantity
-			view.HasLocalRequirements = hasActiveLocalRequirement(row)
 			view.MarketTracked = row.MarketTracked
 			for i := range view.Requirements {
 				if view.Requirements[i].Kind == "fir" {
@@ -199,16 +136,11 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 	}
 	if len(view.Variants) != 0 {
 		for _, variant := range view.Variants {
-			variant.Local, variant.Storage = true, view.Storage
+			variant.Storage = view.Storage
 		}
 		return view
 	}
-	if view.Storage == "local" && view.InventorySeparate {
-		// A Market külön FiR készlete csak a Market soraira vonatkozik.
-		// A saját helyi forrás továbbra is egy közös készlet.
-		view.InventorySeparate = false
-		view.Error = ""
-	}
+
 	notes := make(map[string]bool)
 	for _, row := range snapshot.Items {
 		if row.ItemID != item.BSGID {
@@ -239,77 +171,26 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 	return view
 }
 
-func localLists(snapshot localprogress.Snapshot, at time.Time, warning string) *LocalProgressState {
-	if allocated, err := localprogress.Allocate(snapshot); err == nil {
-		snapshot = allocated
-	}
-	state := &LocalProgressState{UpdatedAt: at, Warning: warning, QuestItems: []LocalProgressItem{}, HideoutItems: []LocalProgressItem{}}
-	for _, item := range snapshot.Items {
-		for _, kind := range []string{"quest", "hideout"} {
-			row := LocalProgressItem{ItemID: item.ItemID, Name: item.Name, Type: kind, AvailableQuantity: item.AvailableQuantity, Storage: localStockDestination(item),
-				MarketAvailableQuantity: item.MarketAvailableQuantity, LocalAvailableQuantity: item.LocalAvailableQuantity}
-			groups := make(map[string]bool)
-			for _, source := range item.Sources {
-				if completedSourceType(source.TrackedSource) != kind || source.Canceled || source.Optional {
-					continue
-				}
-				if source.Completed {
-					row.Completed += source.Amount
-					continue
-				}
-				count := source.RemainingRequiredQuantity
-				if source.AllocationKnown && source.Alternatives > 1 {
-					count = 0
-					if source.GroupRemainingQuantity > 0 {
-						count = source.AllocatedQuantity + source.GroupRemainingQuantity
-					}
-				}
-				row.RequiredQuantity += count
-				if source.FIR {
-					row.FIR += count
-				} else {
-					row.Regular += count
-				}
-				if note := alternativeNote(source); note != "" && !groups[source.GroupID] {
-					groups[source.GroupID] = true
-					row.AlternativeNotes = append(row.AlternativeNotes, note)
-				}
-			}
-			if row.RequiredQuantity <= 0 {
-				continue
-			}
-			if kind == "quest" {
-				state.QuestItems = append(state.QuestItems, row)
-			} else {
-				state.HideoutItems = append(state.HideoutItems, row)
-			}
-		}
-	}
-	less := func(rows []LocalProgressItem) {
-		sort.SliceStable(rows, func(i, j int) bool { return strings.ToLower(rows[i].Name) < strings.ToLower(rows[j].Name) })
-	}
-	less(state.QuestItems)
-	less(state.HideoutItems)
-	return state
-}
-
-// A három Market-válasz ugyanahhoz a revízióhoz tartozzon: egy közben kipipált
-// küldetés nem kerülhet be régi állapottal az új tárgylistába.
 func (a *ItemWindowApp) loadLocalSources(ctx context.Context, key string, opts ItemOptions) (localprogress.Snapshot, string, error) {
-	progress, ok := a.tracker.(characterProgressAPI)
-	if !ok || a.devRequirements == nil || a.localStore == nil {
-		return localprogress.Snapshot{}, "", errors.New("local progress unavailable")
-	}
+	progress, hasProgress := a.tracker.(characterProgressAPI)
 	var latest market.TrackedSnapshot
 	for attempt := 0; attempt < 2; attempt++ {
 		tracked, err := a.tracker.LoadTracked(ctx, key, opts.CharacterUID, opts.Language)
 		if err != nil {
 			return localprogress.Snapshot{}, "", localProgressFailure("tracked items", err)
 		}
-		if tracked.CharUID != opts.CharacterUID || !strings.EqualFold(tracked.GameMode, opts.Mode) {
+		if tracked.CharUID != opts.CharacterUID || !strings.EqualFold(tracked.GameMode, opts.Mode) || tracked.Revision == "" || tracked.Items == nil {
 			return localprogress.Snapshot{}, "", localProgressFailure("tracked items", market.ErrProgressNotFound)
 		}
 		latest = tracked
+		a.mu.Lock()
+		if a.localCurrentLocked(key, opts) {
+			a.reconcilePendingSnapshotLocked(tracked)
+		}
+		a.mu.Unlock()
+		if !hasProgress {
+			return marketProgressOnly(tracked), "", nil
+		}
 		quests, err := progress.LoadQuests(ctx, key, opts.CharacterUID, opts.Language)
 		if err != nil {
 			return marketProgressOnly(tracked), "", localProgressFailure("quests", err)
@@ -321,45 +202,21 @@ func (a *ItemWindowApp) loadLocalSources(ctx context.Context, key string, opts I
 		if tracked.Revision != quests.Revision || tracked.Revision != hideout.Revision {
 			continue
 		}
-		dev, err := a.devRequirements.Load(ctx, opts.Mode)
-		if err != nil && (!dev.Stale || len(dev.Tasks) == 0 || len(dev.Hideout) == 0) {
-			return marketProgressOnly(tracked), "", localProgressFailure("tarkov.dev", err)
-		}
-		if dev.Tasks == nil || dev.Hideout == nil {
-			return marketProgressOnly(tracked), "", localProgressFailure("tarkov.dev", errors.New("incomplete requirements catalog"))
-		}
-		merged, err := localprogress.Merge(tracked, quests, hideout, dev)
+		merged, err := localprogress.Merge(tracked, quests, hideout)
 		if err != nil {
 			return marketProgressOnly(tracked), "", localProgressFailure("merge", err)
 		}
-		warning := ""
-		if dev.Stale {
-			warning = "Using cached tarkov.dev requirements; refresh when the service is available."
-		}
-		if a.client != nil {
-			catalog, loadErr := a.client.Load(ctx, key, opts.Mode, opts.Language)
-			if loadErr == nil {
-				metadata := make(map[string]market.Item)
-				for _, item := range catalog.Items {
-					if _, exists := metadata[item.BSGID]; !exists {
-						metadata[item.BSGID] = item
-					}
-				}
-				for i := range merged.Items {
-					row := &merged.Items[i]
-					if item, exists := metadata[row.ItemID]; exists && (row.Name == "" || row.Name == row.ItemID) {
-						row.Name, row.ShortName, row.Icon, row.Slots = item.Name, item.ShortName, item.Icon, item.Slots
-					}
-				}
-			}
-		}
-		return merged, warning, nil
+		return merged, "", nil
 	}
 	return marketProgressOnly(latest), "", localProgressFailure("synchronization", market.ErrProgressConflict)
 }
 
 func (a *ItemWindowApp) localCurrentLocked(key string, opts ItemOptions) bool {
 	return a.apiKey == key && a.state.ItemOptions.revision == opts.revision && a.state.CharacterUID == opts.CharacterUID
+}
+
+func (a *ItemWindowApp) localItemCurrentLocked(item market.Item) bool {
+	return item.UID != "" && a.state.Item != nil && a.state.Item.UID == item.UID && a.state.Item.BSGID == item.BSGID
 }
 
 func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, opts ItemOptions, item market.Item) error {
@@ -372,7 +229,7 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 		strings.EqualFold(a.localSnapshot.GameMode, opts.Mode) && !a.localAt.IsZero() && time.Since(a.localAt) < 5*time.Second
 	if fresh {
 		if a.localItemCurrentLocked(item) {
-			a.state.Tracking = localTrackedView(item, a.localSnapshot)
+			a.state.Tracking = a.pendingTrackedViewLocked(item)
 		}
 		a.mu.Unlock()
 		a.emit()
@@ -381,325 +238,137 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 	a.state.Local = &LocalProgressState{Loading: true}
 	a.mu.Unlock()
 	a.emit()
+	a.marketNetworkMu.Lock()
+	defer a.marketNetworkMu.Unlock()
 	snapshot, warning, err := a.loadLocalSources(ctx, key, opts)
-	if err == nil {
-		err = a.rememberProgressSources(key, opts, snapshot, warning)
-	}
 	a.mu.Lock()
-	if !a.localCurrentLocked(key, opts) {
+	if ctx.Err() != nil || !a.localCurrentLocked(key, opts) {
 		a.mu.Unlock()
 		return context.Canceled
 	}
-	if err == nil && (snapshot.CharUID != opts.CharacterUID || !strings.EqualFold(snapshot.GameMode, opts.Mode)) {
-		err = localProgressFailure("tracked items", market.ErrProgressNotFound)
-	}
-	if err == nil {
-		applied, saveErr := a.applyProgressStock(snapshot)
-		if saveErr == nil {
-			snapshot = applied
-		} else {
-			err = localProgressFailure("save", saveErr)
+	valid := snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) && snapshot.Revision != ""
+	if valid {
+		snapshot = a.annotateMarketKindsLocked(snapshot)
+		a.confirmedProgress, a.localRevision = snapshot, opts.revision
+		a.rebuildPendingViewLocked()
+		a.state.Local = &LocalProgressState{UpdatedAt: time.Now(), Warning: warning}
+		if a.localItemCurrentLocked(item) {
+			a.state.Tracking = a.pendingTrackedViewLocked(item)
+		}
+	} else {
+		a.state.Local = &LocalProgressState{}
+		if a.localItemCurrentLocked(item) {
+			a.state.Tracking = &ItemTrackingState{ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID}
 		}
 	}
 	if err != nil {
-		if temporaryMarketReadFailure(err) && a.localRevision == opts.revision && a.localSnapshot.CharUID == opts.CharacterUID &&
-			strings.EqualFold(a.localSnapshot.GameMode, opts.Mode) && a.localSnapshot.Revision != "" {
-			a.state.Local = localLists(a.localSnapshot, time.Now(), "Market is unavailable. Showing the last confirmed requirements; additions are saved locally.")
-			if a.localItemCurrentLocked(item) {
-				a.state.Tracking = localTrackedView(item, a.localSnapshot)
-				a.state.Tracking.Status = "Market is unavailable. Added items will be kept locally for verified upload."
-			}
-			a.localAt = time.Time{}
-			a.mu.Unlock()
-			a.emit()
-			return err
-		}
 		message := localProgressErrorText(err)
-		var failure *localProgressLoadError
-		stockError := errors.As(err, &failure) && failure.stage == "save"
-		a.state.Local = &LocalProgressState{Error: message, StockError: stockError}
-		// A helyi fájl hibája nem írja felül a külön Market forrást.
-		// Sikeres forrásbetöltés után annak élő nézete továbbra is használható.
-		if snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) {
-			a.localSnapshot = snapshot
-			a.state.Local = localLists(snapshot, time.Now(), warning)
-			a.state.Local.Error = message
-			a.state.Local.StockError = stockError
-		}
-		if a.localItemCurrentLocked(item) {
-			view := localTrackedView(item, a.localSnapshot)
-			if snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) {
-				a.state.Tracking = view
-			} else {
-				a.state.Tracking = &ItemTrackingState{Local: true, ItemUID: item.UID, ItemID: item.BSGID, CharUID: opts.CharacterUID, Error: trackingError(err)}
-			}
-		}
+		a.state.Local.Error = message
 		a.localAt = time.Time{}
-		a.mu.Unlock()
-		a.emit()
-		return err
-	}
-	a.localSnapshot, a.localRevision, a.localAt = snapshot, opts.revision, time.Now()
-	a.state.Local = localLists(snapshot, a.localAt, warning)
-	if a.localItemCurrentLocked(item) {
-		a.state.Tracking = localTrackedView(item, snapshot)
+		if a.localItemCurrentLocked(item) && a.state.Tracking != nil {
+			a.state.Tracking.Error = message
+		}
+	} else {
+		a.localAt = time.Now()
 	}
 	a.mu.Unlock()
 	a.emit()
-	return nil
-}
-
-func (a *ItemWindowApp) localItemCurrentLocked(item market.Item) bool {
-	return item.UID != "" && a.state.Item != nil && a.state.Item.UID == item.UID && a.state.Item.BSGID == item.BSGID
+	return err
 }
 
 func (a *ItemWindowApp) RefreshLocalProgress() ItemState {
 	a.mu.Lock()
-	a.progressRefreshRequested = true
-	if a.state.ProgressSync == nil {
-		a.state.ProgressSync = &ItemProgressSyncState{}
-	}
-	a.state.ProgressSync.Status = "Progress refresh queued. Pending uploads have been kept."
-	if a.localSnapshot.CharUID != a.state.CharacterUID || a.localSnapshot.Revision == "" {
-		a.state.Local = &LocalProgressState{Loading: true}
-	}
+	a.localAt, a.trackedAt = time.Time{}, time.Time{}
+	a.state.Local = &LocalProgressState{Loading: true}
 	a.mu.Unlock()
 	a.emit()
-	a.queueProgressWork()
+	a.requestTracking()
+	go a.RecheckPendingAdds()
 	return a.GetState()
 }
 
-// A Market saját igényéig az API készlete nő; a további dev-követelményhez
-// tartozó készlet ugyanahhoz a tárgyhoz, külön helyi forrásként kerül mentésre.
-func (a *ItemWindowApp) addLocalTrackedItem(uid string, target *trackedAddHotkeyTarget) ItemState {
-	return a.addLocalTrackedItemKind(uid, target, "regular")
+// A minőségjelölés csak a futó folyamat memóriájában él. A darabszámot mindig
+// a Market adja; külső változás vagy újraindítás után nincs saját készletadat.
+type marketKindState struct{ stock, regular, fir int64 }
+
+func marketKindKey(charUID, mode, itemID string) string {
+	return charUID + "\x00" + strings.ToUpper(mode) + "\x00" + itemID
 }
 
-func (a *ItemWindowApp) addLocalTrackedItemKind(uid string, target *trackedAddHotkeyTarget, kind string) ItemState {
-	a.mu.Lock()
-	key, opts := a.apiKey, a.state.ItemOptions
-	if !a.canAddTrackedItemLocked() || a.state.Item.UID != uid || (target != nil &&
-		(!a.trackedAddHotkeyTargetCurrent(target) || !a.state.AddHotkeyReady || !trackedAddHotkeyEnabled(opts) ||
-			target.UID != uid || target.ItemID != a.state.Item.BSGID || target.CharUID != opts.CharacterUID || target.Revision != opts.revision)) {
-		a.mu.Unlock()
-		return a.GetState()
+func (a *ItemWindowApp) annotateMarketKindsLocked(snapshot localprogress.Snapshot) localprogress.Snapshot {
+	present := make(map[string]int)
+	for _, row := range snapshot.Items {
+		present[row.ItemID]++
 	}
-	item := *a.state.Item
-	if a.state.Tracking.Local && !a.allowTrackedItemKindLocked(item.BSGID, kind) {
-		a.mu.Unlock()
-		a.emit()
-		return a.GetState()
-	}
-	a.state.Tracking.Adding = true
-	a.localAt = time.Time{}
-	ctx, cancel := context.WithTimeout(a.ctx, 40*time.Second)
-	a.trackingWriteCancel = cancel
-	a.mu.Unlock()
-	a.emit()
-	defer func() {
-		cancel()
-		a.mu.Lock()
-		a.trackingWriteCancel = nil
-		a.mu.Unlock()
-	}()
-	refreshErr := a.refreshLocalProgress(ctx, key, opts, item)
-	if temporaryMarketReadFailure(refreshErr) {
-		a.mu.Lock()
-		row, unique := stockEditorItem(a.localSnapshot, item.BSGID)
-		marketDestination := unique && localStockDestination(row) == "market"
-		a.mu.Unlock()
-		if marketDestination && a.saveMarketFallbackAdd(key, opts, item, kind, "Market is unavailable. Saved locally for verified upload when Market recovers.") {
-			a.emit()
-			return a.GetState()
+	prefix := marketKindKey(snapshot.CharUID, snapshot.GameMode, "")
+	for key := range a.marketKinds {
+		if strings.HasPrefix(key, prefix) && present[strings.TrimPrefix(key, prefix)] != 1 {
+			delete(a.marketKinds, key)
 		}
-	}
-	a.mu.Lock()
-	if !a.localCurrentLocked(key, opts) || !a.canAddTrackedItemLocked() || a.state.Item == nil || a.state.Item.UID != uid {
-		a.mu.Unlock()
-		return a.GetState()
-	}
-	if a.state.Tracking.Storage == "market" {
-		a.mu.Unlock()
-		return a.addMarketTrackedItemKind(uid, target, &opts, kind)
-	}
-	if ctx.Err() == nil {
-		a.commitLocalStockKindLocked(opts, item, kind)
-	}
-	a.mu.Unlock()
-	a.emit()
-	return a.GetState()
-}
-
-func (a *ItemWindowApp) commitLocalStockLocked(opts ItemOptions, item market.Item) {
-	a.commitLocalStockKindLocked(opts, item, "regular")
-}
-
-func (a *ItemWindowApp) commitLocalStockKindLocked(opts ItemOptions, item market.Item, kind string) {
-	if a.state.Local == nil || a.state.Local.Error != "" || a.state.Tracking == nil ||
-		a.state.Tracking.Storage != "local" || !a.state.Tracking.Tracked || a.state.Tracking.RequiredQuantity <= 0 ||
-		!a.state.Tracking.HasLocalRequirements || len(a.state.Tracking.Variants) > 0 || a.state.Tracking.Error != "" ||
-		a.state.Tracking.AvailableQuantity >= localprogress.MaxQuantity {
-		if a.state.Tracking != nil {
-			a.state.Tracking.Adding = false
-		}
-		return
-	}
-	if !a.allowTrackedItemKindLocked(item.BSGID, kind) {
-		return
-	}
-	a.state.Tracking.Adding = false
-	snapshot, err := a.localStore.AddKind(opts.CharacterUID, strings.ToUpper(opts.Mode), item.BSGID, kind)
-	if err != nil {
-		a.state.Tracking.Error = trackingError(err)
-	} else {
-		snapshot = mergeLocalStock(a.localSnapshot, snapshot)
-		a.localSnapshot = snapshot
-		warning := a.state.Local.Warning
-		a.state.Local = localLists(snapshot, a.localAt, warning)
-		a.state.Tracking = localTrackedView(item, snapshot)
-		a.state.Tracking.Status = "Added 1 item to Tracked Items stock."
-	}
-}
-
-// A PATCH előtti friss Market revízióhoz a kiegészített igénylista is tartozzon.
-// Közben lezárt célra nem írunk régi dev követelmény alapján készletet.
-func (a *ItemWindowApp) ensureLocalMarketRevision(ctx context.Context, key string, opts ItemOptions, item market.Item, revision string) string {
-	a.mu.Lock()
-	refresh := a.localSnapshot.Revision != revision
-	if refresh {
-		a.localAt = time.Time{}
-	}
-	a.mu.Unlock()
-	if refresh {
-		a.refreshLocalProgress(ctx, key, opts, item)
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if ctx.Err() != nil || !a.localCurrentLocked(key, opts) || !a.localItemCurrentLocked(item) || a.state.Local == nil ||
-		a.localSnapshot.Revision != revision || a.state.Tracking == nil || !a.state.Tracking.Tracked || a.state.Tracking.RequiredQuantity <= 0 ||
-		a.state.Tracking.Error != "" || len(a.state.Tracking.Variants) > 0 || a.state.Tracking.InventorySeparate || a.state.Tracking.AvailableQuantity >= localprogress.MaxQuantity ||
-		a.state.Local.Error != "" {
-		if a.localItemCurrentLocked(item) && a.state.Tracking != nil {
-			a.state.Tracking.Adding = false
-			if a.state.Local != nil && a.state.Local.Error == "" && a.localSnapshot.Revision != revision {
-				a.state.Tracking.Error = trackingError(market.ErrProgressConflict)
-			}
-		}
-		return ""
-	}
-	a.state.Tracking.Adding = true
-	return a.state.Tracking.Storage
-}
-
-// A visszaigazolt Market készlet az egyesített nézetben is azonnal megjelenik.
-// A dev-only készlethez nem nyúlunk; új revíziónál a következő betöltés újra
-// ellenőrzi a küldetések és fejlesztések állapotát.
-func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote market.TrackedSnapshot, status string) {
-	snapshot := localprogress.Clone(a.localSnapshot)
-	if snapshot.CharUID != remote.CharUID || !strings.EqualFold(snapshot.GameMode, remote.GameMode) {
-		return
-	}
-	byID := make(map[string][]market.TrackedItem)
-	for _, row := range remote.Items {
-		byID[row.ItemID] = append(byID[row.ItemID], row)
 	}
 	for i := range snapshot.Items {
 		row := &snapshot.Items[i]
-		if !row.MarketTracked {
+		key := marketKindKey(snapshot.CharUID, snapshot.GameMode, row.ItemID)
+		known, found := a.marketKinds[key]
+		row.MarketRegularQuantity, row.MarketFIRQuantity = 0, 0
+		if found && known.stock == row.MarketAvailableQuantity {
+			row.MarketRegularQuantity, row.MarketFIRQuantity = known.regular, known.fir
+		} else if found {
+			delete(a.marketKinds, key)
+		}
+	}
+	if allocated, err := localprogress.Allocate(snapshot); err == nil {
+		return allocated
+	}
+	return snapshot
+}
+
+// Teljesen új Market-válaszból építjük újra a követelményeket és az Any csoportokat.
+func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote market.TrackedSnapshot, status string) {
+	a.applyMergedMarketSnapshotLocked(item, remote, marketProgressOnly(remote), status)
+}
+
+func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote market.TrackedSnapshot, merged localprogress.Snapshot, status string) {
+	a.reconcilePendingSnapshotLocked(remote)
+	snapshot := a.annotateMarketKindsLocked(localprogress.Clone(merged))
+	a.confirmedProgress, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
+	a.rebuildPendingViewLocked()
+	a.state.Local = &LocalProgressState{UpdatedAt: a.localAt}
+	if a.localItemCurrentLocked(item) {
+		a.state.Tracking = a.pendingTrackedViewLocked(item)
+		a.state.Tracking.Status = status
+	}
+}
+
+// A kijelzett keszlet tartalmazza a memoriaban lefoglalt, meg nem nyugtazott
+// darabokat is. A confirmedProgress mindig csak a Market keszlete marad.
+func (a *ItemWindowApp) rebuildPendingViewLocked() {
+	snapshot := localprogress.Clone(a.confirmedProgress)
+	for i := range snapshot.Items {
+		row := &snapshot.Items[i]
+		regular, fir := a.pendingAddAmountsLocked(a.state.ItemOptions, row.ItemID)
+		if regular < 0 || fir < 0 || regular > localprogress.MaxQuantity-fir || regular+fir > localprogress.MaxQuantity-row.MarketAvailableQuantity {
 			continue
 		}
-		// Az előző nézet jelölései nem validálhatók az új nyers mennyiséggel.
-		// A Store a saját lenyomat alapján tölti vissza vagy törli őket.
-		row.MarketRegularQuantity, row.MarketFIRQuantity = 0, 0
-		matches := byID[row.ItemID]
-		if len(matches) == 1 {
-			row.MarketAvailableQuantity = matches[0].AvailableQuantity
-			row.MarketRequiredQuantity = matches[0].RequiredQuantity
-			row.AvailableQuantity = row.MarketAvailableQuantity + row.LocalAvailableQuantity
-			row.SpentQuantity = matches[0].SpentQuantity
-			row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
-		}
+		row.MarketAvailableQuantity += regular + fir
+		row.AvailableQuantity += regular + fir
+		row.MarketRegularQuantity += regular
+		row.MarketFIRQuantity += fir
+		row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
 	}
-	if a.localStore != nil {
-		if applied, err := a.applyProgressStock(snapshot); err == nil {
-			snapshot = applied
-		} else {
-			if a.state.Local == nil {
-				a.state.Local = &LocalProgressState{}
-			}
-			a.state.Local.Error = localProgressErrorText(localProgressFailure("save", err))
-			a.state.Local.StockError = true
-		}
+	if allocated, err := localprogress.Allocate(snapshot); err == nil {
+		snapshot = allocated
 	}
-	a.localAt = time.Time{}
 	a.localSnapshot = snapshot
-	warning, localError, stockError := "", "", false
-	if a.state.Local != nil {
-		warning = a.state.Local.Warning
-		localError = a.state.Local.Error
-		stockError = a.state.Local.StockError
+	if a.state.Item != nil && snapshot.CharUID == a.state.CharacterUID && strings.EqualFold(snapshot.GameMode, a.state.Mode) {
+		a.state.Tracking = a.pendingTrackedViewLocked(*a.state.Item)
 	}
-	a.state.Local = localLists(snapshot, time.Now(), warning)
-	a.state.Local.Error = localError
-	a.state.Local.StockError = stockError
-	a.state.Tracking = localTrackedView(item, snapshot)
-	remoteView := trackedView(item, remote)
-	if len(remoteView.Variants) > 0 {
-		// Egyetlen Market-sort nem helyettesíthetünk találomra két változattal.
-		// A friss, csak olvasható változatnézet megmarad a teljes újraolvasásig.
-		remoteView.Local = true
-		remoteView.Storage = "market"
-		a.state.Tracking = remoteView
-	}
-	if a.state.Tracking.Storage == "market" {
-		a.state.Tracking.Error = remoteView.Error
-	}
-	a.state.Tracking.Status = status
 }
 
-// A helyi készlet saját forrás. Csak a megjelenítés élő pillanatképébe illesztjük,
-// a Market sorokat és a küldetésállapotot a helyi fájl nem tartalmazza.
-func mergeLocalStock(live, stock localprogress.Snapshot) localprogress.Snapshot {
-	result := localprogress.Clone(live)
-	if result.CharUID != stock.CharUID || result.GameMode != stock.GameMode {
-		return result
+func (a *ItemWindowApp) pendingTrackedViewLocked(item market.Item) *ItemTrackingState {
+	view := localTrackedView(item, a.localSnapshot)
+	if row, found := stockItem(a.confirmedProgress, item.BSGID); found {
+		view.MarketAvailableQuantity = row.MarketAvailableQuantity
 	}
-	byID := make(map[string]localprogress.Item)
-	for _, row := range stock.Items {
-		byID[row.ItemID] = row
-	}
-	for i := range result.Items {
-		row := &result.Items[i]
-		if saved, exists := byID[row.ItemID]; exists {
-			quantity := saved.LocalAvailableQuantity
-			row.LocalAvailableQuantity = quantity
-			row.LocalRegularQuantity, row.LocalFIRQuantity = saved.LocalRegularQuantity, saved.LocalFIRQuantity
-			row.LocalCollectedQuantity, row.LocalCollectedRegularQuantity, row.LocalCollectedFIRQuantity = saved.LocalCollectedQuantity, saved.LocalCollectedRegularQuantity, saved.LocalCollectedFIRQuantity
-			row.LocalUsedQuantity, row.LocalUsedRegularQuantity, row.LocalUsedFIRQuantity = saved.LocalUsedQuantity, saved.LocalUsedRegularQuantity, saved.LocalUsedFIRQuantity
-			row.MarketRegularQuantity, row.MarketFIRQuantity = saved.MarketRegularQuantity, saved.MarketFIRQuantity
-			row.AvailableQuantity = row.MarketAvailableQuantity + quantity + row.MarketFallbackAvailableQuantity
-			row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
-		}
-	}
-	return result
-}
-
-// Csak a sikeres PATCH után jegyezzük meg az általunk hozzáadott darab típusát.
-// A Market készlet darabszáma továbbra is kizárólag az API-ból származik.
-func (a *ItemWindowApp) recordLocalMarketAdd(key string, opts ItemOptions, item market.Item, kind string, before, after int64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.localCurrentLocked(key, opts) || a.localStore == nil {
-		return
-	}
-	stock, err := a.localStore.RecordMarketAdd(opts.CharacterUID, strings.ToUpper(opts.Mode), item.BSGID, kind, before, after)
-	if err != nil {
-		if a.state.Local == nil {
-			a.state.Local = &LocalProgressState{}
-		}
-		a.state.Local.Error = localProgressErrorText(localProgressFailure("save", err))
-		a.state.Local.StockError = true
-		return
-	}
-	a.localSnapshot = mergeLocalStock(a.localSnapshot, stock)
+	return view
 }

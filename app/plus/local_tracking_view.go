@@ -10,6 +10,7 @@ import (
 
 type localTrackingDisplayGroup struct {
 	id, kind                 string
+	questName, category      string
 	fir, completed, optional bool
 	count, amount, remaining int64
 	allocated                int64
@@ -27,6 +28,7 @@ type localTrackingDisplayKey struct {
 type localTrackingDisplayBucket struct {
 	key                 localTrackingDisplayKey
 	ids                 []string
+	sources             []ItemTrackingAnySource
 	available, required int64
 }
 
@@ -86,6 +88,10 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 					buckets[key] = bucket
 				}
 				bucket.ids = append(bucket.ids, group.id)
+				bucket.sources = append(bucket.sources, ItemTrackingAnySource{
+					GroupID: group.id, QuestName: group.questName, Category: group.category,
+					AvailableQuantity: group.count - group.remaining, RequiredQuantity: group.count,
+				})
 				bucket.required += group.count
 				bucket.available += group.count - group.remaining
 				seenActive[group.id] = true
@@ -134,12 +140,13 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 	})
 	for _, bucket := range ordered {
 		sort.Strings(bucket.ids)
+		sort.SliceStable(bucket.sources, func(i, j int) bool { return bucket.sources[i].GroupID < bucket.sources[j].GroupID })
 		id := bucket.ids[0]
 		if len(bucket.ids) > 1 {
 			encoded, _ := json.Marshal(bucket.ids)
 			id = "groups:" + string(encoded)
 		}
-		view.AnyGroups = append(view.AnyGroups, ItemTrackingAnyGroup{GroupID: id, FIR: bucket.key.fir, RequiredQuantity: bucket.required, AvailableQuantity: bucket.available})
+		view.AnyGroups = append(view.AnyGroups, ItemTrackingAnyGroup{GroupID: id, FIR: bucket.key.fir, RequiredQuantity: bucket.required, AvailableQuantity: bucket.available, Sources: bucket.sources})
 	}
 }
 
@@ -158,6 +165,7 @@ func localTrackingDisplayGroups(snapshot localprogress.Snapshot, rows map[string
 			group := groups[source.GroupID]
 			if group == nil {
 				group = &localTrackingDisplayGroup{id: source.GroupID, kind: kind, fir: source.FIR, completed: source.Completed, optional: source.Optional,
+					questName: strings.TrimSpace(source.Name), category: strings.TrimSpace(source.GroupName),
 					count: source.RemainingRequiredQuantity, amount: amount, remaining: source.GroupRemainingQuantity,
 					alternatives: source.Alternatives, members: make(map[string]bool), valid: true}
 				groups[source.GroupID] = group

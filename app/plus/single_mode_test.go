@@ -2,7 +2,6 @@ package plus
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,13 +9,12 @@ import (
 	"time"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
-	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 )
 
 func TestSingleModeLegacyLocalProgressOptionCannotChangeRouting(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy-false", true: "legacy-true"}[legacy], func(t *testing.T) {
-			a, fake, dir := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
+			a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
 			encoded, err := json.Marshal(a.state.ItemOptions)
 			if err != nil {
 				t.Fatal(err)
@@ -37,14 +35,18 @@ func TestSingleModeLegacyLocalProgressOptionCannotChangeRouting(t *testing.T) {
 			a.SetOptions(options)
 			a.refreshTracking()
 			for i := 0; i < 4; i++ {
-				addAndSyncCachedTest(t, a, trackingItemUID, "regular")
+				addMarketKindForTest(t, a, trackingItemUID, "regular")
 			}
 			state := a.GetState()
-			if !state.LocalProgress || state.Local == nil || state.Local.Error != "" || state.Tracking.RequiredQuantity != 8 ||
-				state.Tracking.AvailableQuantity != 4 || len(fake.writes) != 3 || handoverStockForTest(t, a, trackingBSGID).LocalAvailableQuantity != 1 {
+			if state.Local == nil || state.Local.Error != "" || state.Tracking.RequiredQuantity != 8 ||
+				state.Tracking.AvailableQuantity != 4 || len(fake.writes) != 4 || state.Tracking.Storage != "market" {
 				t.Fatalf("legacy mode flag selected a separate source path: state=%+v writes=%+v", state, fake.writes)
 			}
-			assertLocalStockFileOnly(t, dir, trackingBSGID, 1)
+			row := memoryMarketStockForTest(t, a, trackingBSGID)
+			if row.MarketAvailableQuantity != 4 || row.MarketRegularQuantity != 4 {
+				t.Fatalf("legacy mode flag changed confirmed Market quantities: %+v", row)
+			}
+			assertNoMarketStockFilesForTest(t, a.dir)
 			persisted, err := os.ReadFile(filepath.Join(a.dir, "item-settings.json"))
 			if err != nil || strings.Contains(string(persisted), "localProgress") {
 				t.Fatalf("removed mode option was still persisted: %s %v", persisted, err)
@@ -54,40 +56,44 @@ func TestSingleModeLegacyLocalProgressOptionCannotChangeRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stateFields map[string]json.RawMessage
-			if err := json.Unmarshal(stateJSON, &stateFields); err != nil || string(stateFields["localProgress"]) != "true" {
-				t.Fatalf("compatibility state is not derived true: %s %v", stateJSON, err)
+			if err := json.Unmarshal(stateJSON, &stateFields); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := stateFields["localProgress"]; exists {
+				t.Fatalf("removed mode flag survived in frontend state: %s", stateJSON)
 			}
 		})
 	}
 }
 
-func TestSingleModeReadOnlyCompatibilityFlagDoesNotGateActions(t *testing.T) {
-	a, fake := newDevOnlyTestApp(t)
-	a.state.LocalProgress = false
-	state := a.AddTrackedItemFIR(trackingItemUID)
-	if !state.LocalProgress || state.Tracking.AvailableQuantity != 1 || len(fake.writes) != 0 || handoverStockForTest(t, a, trackingBSGID).LocalFIRQuantity != 1 {
-		t.Fatalf("compatibility display flag still controlled the source path: %+v", state)
-	}
-	a.state.Item, a.state.Tracking = nil, nil
-	state = a.OpenHandover()
-	if !state.LocalProgress || state.Handover == nil || !state.Handover.Open || state.Handover.Error != "" || len(state.Handover.Items) != 0 {
-		t.Fatalf("compatibility flag blocked an unseeded hand-in: %+v", state.Handover)
+func TestSingleModeTrackedOnlyMarketClientCanSaveStock(t *testing.T) {
+	for _, kind := range []string{"regular", "fir"} {
+		t.Run(kind, func(t *testing.T) {
+			a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
+			a.tracker = fake.fakeTrackingAPI
+			a.localAt = time.Time{}
+			if err := a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item); err != nil {
+				t.Fatal(err)
+			}
+			state := addMarketKindForTest(t, a, trackingItemUID, kind)
+			if state.Local == nil || state.Local.Error != "" || state.Tracking.Error != "" || state.Tracking.AvailableQuantity != 1 || len(fake.writes) != 1 {
+				t.Fatalf("complete tracked-only Market response could not be saved: state=%+v writes=%+v", state, fake.writes)
+			}
+			assertNoMarketStockFilesForTest(t, a.dir)
+		})
 	}
 }
 
-func TestSingleModeEverySourceIsMandatoryBeforeEitherStockCanChange(t *testing.T) {
+func TestSingleModeMarketSourcesAreMandatoryBeforeStockChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*ItemWindowApp, *fakeCharacterProgress)
 	}{
-		{name: "dev-client-missing", change: func(a *ItemWindowApp, _ *fakeCharacterProgress) { a.devRequirements = nil }},
-		{name: "local-store-missing", change: func(a *ItemWindowApp, _ *fakeCharacterProgress) { a.localStore = nil }},
-		{name: "quest-hideout-endpoints-missing", change: func(a *ItemWindowApp, f *fakeCharacterProgress) { a.tracker = f.fakeTrackingAPI }},
-		{name: "dev-service-error", change: func(a *ItemWindowApp, _ *fakeCharacterProgress) {
-			a.devRequirements = &fakeRequirements{err: errors.New("private-source-sentinel")}
+		{name: "quests-unavailable", change: func(a *ItemWindowApp, f *fakeCharacterProgress) {
+			a.tracker = &marketProgressReadFailureForTest{fakeCharacterProgress: f, stage: "quests"}
 		}},
-		{name: "invalid-zero-catalog", change: func(a *ItemWindowApp, _ *fakeCharacterProgress) {
-			a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{}}
+		{name: "hideout-unavailable", change: func(a *ItemWindowApp, f *fakeCharacterProgress) {
+			a.tracker = &marketProgressReadFailureForTest{fakeCharacterProgress: f, stage: "hideout"}
 		}},
 		{name: "market-service-error-without-current-snapshot", change: func(a *ItemWindowApp, f *fakeCharacterProgress) {
 			a.localRevision++
@@ -98,31 +104,20 @@ func TestSingleModeEverySourceIsMandatoryBeforeEitherStockCanChange(t *testing.T
 	} {
 		for _, kind := range []string{"regular", "fir"} {
 			t.Run(tc.name+"-"+kind, func(t *testing.T) {
-				a, fake, _ := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
-				store := a.localStore
+				a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
 				tc.change(a, fake)
-				// Kezdeti, még nem ellenőrzött források mellett nincs helyi írás.
-				// A már validált meleg cache hálózati hiba mellett használható marad.
+				// Ellenőrzött Market-forrás nélkül nincs készletmódosítás.
 				a.localRevision++
 				a.localAt = time.Time{}
 				a.refreshLocalProgress(a.ctx, a.apiKey, a.state.ItemOptions, *a.state.Item)
-				if kind == "fir" {
-					a.AddTrackedItemFIR(trackingItemUID)
-				} else {
-					a.AddTrackedItem(trackingItemUID)
-				}
-				stock, err := store.Load("character-a", "PVP")
+				addMarketKindForTest(t, a, trackingItemUID, kind)
 				state := a.GetState()
-				if err != nil || len(fake.writes) != 0 || fake.snapshot.Items[0].AvailableQuantity != 0 {
-					t.Fatalf("missing mandatory source fell back to a Market write: writes=%+v stock=%+v err=%v", fake.writes, stock, err)
+				if len(fake.writes) != 0 || fake.snapshot.Items[0].AvailableQuantity != 0 {
+					t.Fatalf("unavailable Market source allowed a stock write: writes=%+v", fake.writes)
 				}
-				for _, row := range stock.Items {
-					if row.LocalCollectedQuantity != 0 || row.LocalAvailableQuantity != 0 || row.MarketRegularQuantity != 0 || row.MarketFIRQuantity != 0 {
-						t.Fatalf("missing mandatory source changed local stock or Market annotations: %+v", row)
-					}
-				}
-				if state.Local == nil || state.Local.Error == "" || a.canAddLocalForTest() || strings.Contains(state.Local.Error, "private-source-sentinel") {
-					t.Fatalf("source failure was invisible, leaked internal text, or left Add available: %+v", state.Local)
+				assertNoMarketStockFilesForTest(t, a.dir)
+				if state.Local == nil || state.Local.Error == "" || a.canAddLocalForTest() {
+					t.Fatalf("source failure was invisible or left Add available: %+v", state.Local)
 				}
 			})
 		}
@@ -130,14 +125,15 @@ func TestSingleModeEverySourceIsMandatoryBeforeEitherStockCanChange(t *testing.T
 }
 
 func TestSingleModeLoadsQuestAndHideoutWithoutCurrentItem(t *testing.T) {
-	a, fake, _ := newSupplementedLocalTestApp(t, trackingItemUID, trackingBSGID)
+	a, fake, _ := newMarketQuotaTestApp(t, trackingItemUID, trackingBSGID)
 	questReads, hideoutReads := fake.questReads, fake.hideoutReads
 	a.state.Item, a.state.Tracking = nil, nil
 	a.localAt = time.Time{}
 	a.refreshTracking()
 	state := a.GetState()
+	row := memoryMarketStockForTest(t, a, trackingBSGID)
 	if fake.questReads != questReads+1 || fake.hideoutReads != hideoutReads+1 || state.Item != nil || state.Tracking != nil ||
-		state.Local == nil || state.Local.Error != "" || len(state.Local.QuestItems) != 1 || state.Local.QuestItems[0].RequiredQuantity != 8 {
+		state.Local == nil || state.Local.Error != "" || row.RequiredQuantity != 8 || row.MarketRequiredQuantity != 8 || len(row.Sources) != 2 {
 		t.Fatalf("source loading still depended on a current item or a mode switch: %+v reads=%d/%d", state, fake.questReads, fake.hideoutReads)
 	}
 }

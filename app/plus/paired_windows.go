@@ -19,11 +19,15 @@ var pairedShowWindow = pairedUser32.NewProc("ShowWindow")
 var pairedWindowText = pairedUser32.NewProc("GetWindowTextW")
 
 type Companion struct {
-	mu       sync.Mutex
-	command  *exec.Cmd
-	done     chan struct{}
-	stopping bool
-	onExit   func()
+	mu                  sync.Mutex
+	command             *exec.Cmd
+	done                chan struct{}
+	stopping            bool
+	onExit              func()
+	pendingCount        int
+	pendingError        string
+	pendingProbeAt      time.Time
+	pendingProbeRunning bool
 }
 
 func NewCompanion(onExit func()) *Companion {

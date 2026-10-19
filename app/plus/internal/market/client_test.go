@@ -285,7 +285,7 @@ func TestSafeURLValidation(t *testing.T) {
 			t.Errorf("documented item page rejected: %q", raw)
 		}
 	}
-	for _, raw := range []string{"https://tarkov.dev/item/ledx", "https://tarkov-market.com/login", "https://tarkov-market.com/evil/item/ledx", "https://tarkov-market.com/item/", "https://tarkov-market.com.evil.example/item/ledx"} {
+	for _, raw := range []string{"https://example.com/item/ledx", "https://tarkov-market.com/login", "https://tarkov-market.com/evil/item/ledx", "https://tarkov-market.com/item/", "https://tarkov-market.com.evil.example/item/ledx"} {
 		if SafeItemURL(raw) != "" {
 			t.Errorf("unsafe item URL accepted: %q", raw)
 		}

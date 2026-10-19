@@ -17,7 +17,6 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/scanner"
-	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -46,37 +45,27 @@ type ItemOptions struct {
 
 type ItemState struct {
 	ItemOptions
-	StateSequence                      uint64                 `json:"stateSequence"`
-	HasAPIKey                          bool                   `json:"hasAPIKey"`
-	Busy                               bool                   `json:"busy"`
-	Status                             string                 `json:"status"`
-	Error                              string                 `json:"error"`
-	OCRLanguages                       []string               `json:"ocrLanguages"`
-	CachedAt                           string                 `json:"cachedAt"`
-	Stale                              bool                   `json:"stale"`
-	Item                               *market.Item           `json:"item"`
-	ScanDetails                        *ItemScanDetails       `json:"scanDetails"`
-	Characters                         []market.Character     `json:"characters"`
-	CharactersLoading                  bool                   `json:"charactersLoading"`
-	CharactersError                    string                 `json:"charactersError"`
-	Tracking                           *ItemTrackingState     `json:"tracking"`
-	Local                              *LocalProgressState    `json:"local"`
-	LocalProgress                      bool                   `json:"localProgress"`
-	Handover                           *ItemHandoverState     `json:"handover"`
-	StockEditor                        *ItemStockEditorState  `json:"stockEditor"`
-	LocalBackup                        *ItemLocalBackupState  `json:"localBackup"`
-	MarketFallbackPending              bool                   `json:"marketFallbackPending"`
-	MarketFallbackItemID               string                 `json:"marketFallbackItemId"`
-	MarketFallbackInvalid              bool                   `json:"marketFallbackInvalid"`
-	MarketFallbackAppendAllowed        bool                   `json:"marketFallbackAppendAllowed"`
-	MarketFallbackItemIDs              []string               `json:"marketFallbackItemIds"`
-	MarketFallbackAppendAllowedItemIDs []string               `json:"marketFallbackAppendAllowedItemIds"`
-	ProgressSync                       *ItemProgressSyncState `json:"progressSync"`
-	AddHotkeyReady                     bool                   `json:"addHotkeyReady"`
-	AddHotkeyError                     string                 `json:"addHotkeyError"`
-	FIRHotkeyReady                     bool                   `json:"firHotkeyReady"`
-	FIRHotkeyError                     string                 `json:"firHotkeyError"`
-	HotkeyCapture                      bool                   `json:"hotkeyCapture"`
+	StateSequence     uint64              `json:"stateSequence"`
+	HasAPIKey         bool                `json:"hasAPIKey"`
+	Busy              bool                `json:"busy"`
+	Status            string              `json:"status"`
+	Error             string              `json:"error"`
+	OCRLanguages      []string            `json:"ocrLanguages"`
+	CachedAt          string              `json:"cachedAt"`
+	Stale             bool                `json:"stale"`
+	Item              *market.Item        `json:"item"`
+	ScanDetails       *ItemScanDetails    `json:"scanDetails"`
+	Characters        []market.Character  `json:"characters"`
+	CharactersLoading bool                `json:"charactersLoading"`
+	CharactersError   string              `json:"charactersError"`
+	Tracking          *ItemTrackingState  `json:"tracking"`
+	Local             *LocalProgressState `json:"local"`
+	PendingAdds       *PendingAddState    `json:"pendingAdds"`
+	AddHotkeyReady    bool                `json:"addHotkeyReady"`
+	AddHotkeyError    string              `json:"addHotkeyError"`
+	FIRHotkeyReady    bool                `json:"firHotkeyReady"`
+	FIRHotkeyError    string              `json:"firHotkeyError"`
+	HotkeyCapture     bool                `json:"hotkeyCapture"`
 }
 
 type ItemScanDetails struct {
@@ -94,55 +83,43 @@ type itemNameScanner interface {
 // ItemWindowApp a második ablak saját folyamatában fut. Az API-kulcs nincs
 // a felület állapotában; csak a külön megjelenítési kérés adja vissza.
 type ItemWindowApp struct {
-	mu                       sync.Mutex
-	scanMu                   sync.Mutex
-	trackingMu               sync.Mutex
-	progressNetworkMu        sync.Mutex
-	progressWorkRequests     chan struct{}
-	progressRefreshRequested bool
-	progressBaseSnapshot     localprogress.Snapshot
-	progressBaseRevision     uint64
-	progressBaseWarning      string
-	progressBaseAt           time.Time
-	progressUnsafeItems      map[string]string
-	hotkeyConfigMu           sync.Mutex
-	addHotkey                *trackedAddHotkey
-	addHotkeyRequests        chan *trackedAddHotkeyTarget
-	addHotkeyTarget          atomic.Pointer[trackedAddHotkeyTarget]
-	addHotkeyFIRTarget       atomic.Pointer[trackedAddHotkeyTarget]
-	addHotkeyPending         atomic.Bool
-	trackingWriteCancel      context.CancelFunc
-	progressWriteCancel      context.CancelFunc
-	catalogRefreshPending    atomic.Bool
-	tracker                  trackingAPI
-	trackingRequests         chan struct{}
-	charactersAt             time.Time
-	charactersRevision       uint64
-	trackedSnapshot          market.TrackedSnapshot
-	trackedAt                time.Time
-	trackedRevision          uint64
-	devRequirements          requirementsAPI
-	localStore               *localprogress.Store
-	fallbackStoreMu          sync.Mutex
-	fallbackStore            *localprogress.Store
-	fallbackSyncAt           map[string]time.Time
-	localSnapshot            localprogress.Snapshot
-	localAt                  time.Time
-	localRevision            uint64
-	handover                 *handoverTransaction
-	handoverGeneration       uint64
-	stockEditorGeneration    uint64
-	stockEditorSnapshot      localprogress.Snapshot
-	stockEditorRevision      uint64
-	state                    ItemState
-	stateSequence            uint64
-	apiKey                   string
-	dir                      string
-	client                   *market.Client
-	ocr                      itemNameScanner
-	wailsCtx                 context.Context
-	ctx                      context.Context
-	cancel                   context.CancelFunc
+	mu                    sync.Mutex
+	scanMu                sync.Mutex
+	trackingMu            sync.Mutex
+	marketNetworkMu       sync.Mutex
+	hotkeyConfigMu        sync.Mutex
+	addHotkey             *trackedAddHotkey
+	addHotkeyRequests     chan *trackedAddHotkeyTarget
+	addHotkeyTarget       atomic.Pointer[trackedAddHotkeyTarget]
+	addHotkeyFIRTarget    atomic.Pointer[trackedAddHotkeyTarget]
+	addHotkeyPending      atomic.Bool
+	catalogRefreshPending atomic.Bool
+	tracker               trackingAPI
+	trackingRequests      chan struct{}
+	charactersAt          time.Time
+	charactersRevision    uint64
+	trackedSnapshot       market.TrackedSnapshot
+	trackedAt             time.Time
+	trackedRevision       uint64
+	marketKinds           map[string]marketKindState
+	confirmedProgress     localprogress.Snapshot
+	pendingAddQueue       []pendingMarketAdd
+	pendingAddRunning     bool
+	pendingAddNextID      uint64
+	pendingAddError       string
+	localSnapshot         localprogress.Snapshot
+	localAt               time.Time
+	localRevision         uint64
+	state                 ItemState
+	stateSequence         uint64
+	apiKey                string
+	dir                   string
+	client                *market.Client
+	ocr                   itemNameScanner
+	wailsCtx              context.Context
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	quitGuard             PendingExitGuard
 }
 
 func NewItemWindowApp() (*ItemWindowApp, error) {
@@ -152,9 +129,6 @@ func NewItemWindowApp() (*ItemWindowApp, error) {
 	}
 	dir := filepath.Join(base, "TarkovPilotPlus")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := recoverLocalProgressImport(dir); err != nil {
 		return nil, err
 	}
 	a := &ItemWindowApp{dir: dir, ocr: scanner.New(nameScanScript)}
@@ -184,12 +158,8 @@ func NewItemWindowApp() (*ItemWindowApp, error) {
 	}
 	a.client = market.NewClient(filepath.Join(dir, "item-cache"))
 	a.tracker = a.client
-	a.devRequirements = tarkovdev.NewClient(filepath.Join(dir, "dev-cache"))
-	a.localStore = localprogress.NewStore(filepath.Join(dir, "local-progress"))
-	a.restoreHandoverLocked()
-	a.restoreStockEditorLocked()
+
 	a.trackingRequests = make(chan struct{}, 1)
-	a.progressWorkRequests = make(chan struct{}, 1)
 	return a, nil
 }
 
@@ -239,9 +209,12 @@ func normalizeSavedItemOptions(o ItemOptions) ItemOptions {
 	return o
 }
 
-func (a *ItemWindowApp) startup(ctx context.Context, parent windows.Handle) {
+func (a *ItemWindowApp) startup(ctx context.Context, parent windows.Handle, parentPID int) {
 	a.wailsCtx = ctx
 	a.ctx, a.cancel = context.WithCancel(context.Background())
+	if err := servePendingExit(a.ctx, parentPID, a.GetPendingAddCount, a.preparePendingQuit, a.cancelPendingQuitPreparation); err != nil {
+		println("Pending Market saves status error:", err.Error())
+	}
 	go func() {
 		defer windows.CloseHandle(parent)
 		_, _ = windows.WaitForSingleObject(parent, windows.INFINITE)
@@ -249,7 +222,6 @@ func (a *ItemWindowApp) startup(ctx context.Context, parent windows.Handle) {
 	}()
 	go a.watchInspectClicks()
 	go a.runTracking()
-	go a.runProgressWork()
 	a.startTrackedAddHotkey()
 	a.requestTracking()
 }
@@ -270,18 +242,15 @@ func (a *ItemWindowApp) GetState() ItemState {
 	a.stateSequence++
 	st := a.state
 	st.StateSequence = a.stateSequence
-	// A két forrás közös kezelése állandó; ez csak kompatibilis kijelzési adat.
-	st.LocalProgress = true
 	st.AddHotkey = normalizeTrackedAddHotkey(st.AddHotkey)
 	st.FIRHotkey = normalizeTrackedFIRHotkey(st.FIRHotkey)
-	editorCapture := a.localBackupBusyLocked() || st.StockEditor != nil && st.StockEditor.Open
-	st.FIRHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && !editorCapture && st.FIRHotkey != "off"
+	st.FIRHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && st.FIRHotkey != "off"
 	st.FIRHotkeyError = st.AddHotkeyError
-	st.AddHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && !editorCapture && st.AddHotkey != "off"
-	if st.FIRHotkey == "off" || st.HotkeyCapture || editorCapture {
+	st.AddHotkeyReady = st.AddHotkeyReady && !st.HotkeyCapture && st.AddHotkey != "off"
+	if st.FIRHotkey == "off" || st.HotkeyCapture {
 		st.FIRHotkeyError = ""
 	}
-	if st.AddHotkey == "off" || st.HotkeyCapture || editorCapture {
+	if st.AddHotkey == "off" || st.HotkeyCapture {
 		st.AddHotkeyError = ""
 	}
 	st.Language = itemScanLanguage
@@ -289,19 +258,8 @@ func (a *ItemWindowApp) GetState() ItemState {
 	st.Characters = cloneCharacters(a.state.Characters)
 	st.Tracking = cloneTrackingState(st.Tracking)
 	st.Local = cloneLocalProgressState(st.Local)
-	st.Handover = cloneHandoverState(st.Handover)
-	st.StockEditor = cloneStockEditorState(st.StockEditor)
-	st.MarketFallbackItemIDs = append([]string{}, st.MarketFallbackItemIDs...)
-	st.MarketFallbackAppendAllowedItemIDs = append([]string{}, st.MarketFallbackAppendAllowedItemIDs...)
-	if st.ProgressSync != nil {
-		syncState := *st.ProgressSync
-		syncState.Operations = append([]ItemProgressSyncOperation{}, syncState.Operations...)
-		st.ProgressSync = &syncState
-	}
-	if st.LocalBackup != nil {
-		backup := *st.LocalBackup
-		st.LocalBackup = &backup
-	}
+	st.PendingAdds = clonePendingAddState(st.PendingAdds)
+
 	if st.Item != nil {
 		item := *st.Item
 		st.Item = &item
@@ -328,9 +286,6 @@ func (a *ItemWindowApp) RevealAPIKey() string {
 }
 
 func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
-	if a.handoverBusy() || a.stockEditorBusy() {
-		return a.GetState()
-	}
 	for _, shortcut := range []struct{ name, value string }{{"Regular", options.AddHotkey}, {"Found in Raid", options.FIRHotkey}} {
 		if strings.TrimSpace(shortcut.value) == "" {
 			continue
@@ -346,10 +301,6 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 		return a.GetState()
 	}
 	a.mu.Lock()
-	if a.state.Handover != nil && a.state.Handover.Busy || a.stockEditorBusyLocked() {
-		a.mu.Unlock()
-		return a.GetState()
-	}
 	// A kiválasztott karakter egyedi azonosítója határozza meg a játékmódot.
 	// Kézi módváltáskor a korábbi, más módban lévő karaktert elengedjük.
 	for _, character := range a.state.Characters {
@@ -370,12 +321,10 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 	data, _ := json.MarshalIndent(options, "", "    ")
 	keepProgress := a.apiKey != "" && options.CharacterUID == a.state.CharacterUID && options.Mode == a.state.Mode
 	options.revision = a.state.ItemOptions.revision + 1
-	a.cancelTrackingWriteLocked()
 	changed := a.state.Mode != options.Mode || a.state.Language != options.Language
 	hotkeyChanged := a.state.AddHotkey != options.AddHotkey || a.state.FIRHotkey != options.FIRHotkey
 	a.state.ItemOptions = options
-	a.restoreHandoverLocked()
-	a.restoreStockEditorLocked()
+
 	if hotkeyChanged {
 		a.state.AddHotkeyReady = false
 		a.state.AddHotkeyError = ""
@@ -385,12 +334,10 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 	a.localAt = time.Time{}
 	if keepProgress {
 		a.localRevision = options.revision
-		a.progressBaseRevision = options.revision
 	} else {
-		a.progressBaseSnapshot = localprogress.Snapshot{}
-		a.progressUnsafeItems = nil
+		a.marketKinds = nil
 		a.localSnapshot = localprogress.Snapshot{}
-		a.state.ProgressSync = nil
+		a.confirmedProgress = localprogress.Snapshot{}
 	}
 	a.state.CharactersError = ""
 	a.state.Error = ""
@@ -418,9 +365,6 @@ func (a *ItemWindowApp) SetOptions(options ItemOptions) ItemState {
 }
 
 func (a *ItemWindowApp) SaveAPIKey(key string) ItemState {
-	if a.handoverBusy() || a.stockEditorBusy() {
-		return a.GetState()
-	}
 	key = strings.TrimSpace(key)
 	if key == "" || len(key) > 4096 || strings.ContainsAny(key, "\r\n\x00") {
 		a.setError("Enter a valid API key.")
@@ -428,10 +372,6 @@ func (a *ItemWindowApp) SaveAPIKey(key string) ItemState {
 	}
 	sealed, err := protectAPIKey([]byte(key))
 	a.mu.Lock()
-	if a.state.Handover != nil && a.state.Handover.Busy || a.stockEditorBusyLocked() {
-		a.mu.Unlock()
-		return a.GetState()
-	}
 	if err == nil {
 		err = writePrivateFile(filepath.Join(a.dir, "api-key.bin"), sealed)
 	}
@@ -459,14 +399,7 @@ func (a *ItemWindowApp) SaveAPIKey(key string) ItemState {
 }
 
 func (a *ItemWindowApp) ClearAPIKey() ItemState {
-	if a.handoverBusy() || a.stockEditorBusy() {
-		return a.GetState()
-	}
 	a.mu.Lock()
-	if a.state.Handover != nil && a.state.Handover.Busy || a.stockEditorBusyLocked() {
-		a.mu.Unlock()
-		return a.GetState()
-	}
 	if err := os.Remove(filepath.Join(a.dir, "api-key.bin")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.mu.Unlock()
 		a.setError("The API key could not be cleared.")
@@ -603,12 +536,11 @@ func (a *ItemWindowApp) ScanNow() ItemState {
 	a.state.Busy = true
 	a.state.Error = ""
 	a.state.Status = "Switch back to the game; scanning starts in 3 seconds…"
-	generation := handoverScanGeneration(a.state)
 	a.mu.Unlock()
 	a.emit()
 	go func() {
 		defer a.scanMu.Unlock()
-		a.scanLocked(false, 3*time.Second, generation)
+		a.scanLocked(false, 3*time.Second)
 	}()
 	return a.GetState()
 }
@@ -621,13 +553,9 @@ func (a *ItemWindowApp) scan(automatic bool, delay time.Duration) {
 	a.scanLocked(automatic, delay)
 }
 
-func (a *ItemWindowApp) scanLocked(automatic bool, delay time.Duration, expectedGeneration ...uint64) {
+func (a *ItemWindowApp) scanLocked(automatic bool, delay time.Duration) {
 	st := a.GetState()
-	generation := handoverScanGeneration(st)
-	if len(expectedGeneration) > 0 {
-		generation = expectedGeneration[0]
-	}
-	if !st.Enabled || !st.HasAPIKey || (automatic && !handoverAutomaticScan(st)) {
+	if !st.Enabled || !st.HasAPIKey || (automatic && !st.Automatic) {
 		if !automatic {
 			// ScanNow publishes Busy before scheduling this operation. Options
 			// may disable scanning before the goroutine gets to this check.
@@ -725,8 +653,7 @@ func (a *ItemWindowApp) scanLocked(automatic bool, delay time.Duration, expected
 		outcome = "Item recognized: " + item.Name
 	}
 	a.setScanDetails(result, opts, outcome)
-	a.captureHandoverScan(result, catalog.Items, opts, generation)
-	a.acceptItem(item, found, opts, err, generation)
+	a.acceptItem(item, found, opts, err)
 	if !found {
 		a.updateRevision(opts.revision, func(current *ItemState) { current.Status = outcome })
 	}
@@ -796,9 +723,9 @@ func (a *ItemWindowApp) scanWaiting(result scanner.Result, opts ItemOptions) boo
 	return true
 }
 
-func (a *ItemWindowApp) acceptMatch(lines []string, catalog market.Catalog, opts ItemOptions, loadErr error, generation ...uint64) {
+func (a *ItemWindowApp) acceptMatch(lines []string, catalog market.Catalog, opts ItemOptions, loadErr error) {
 	item, found := market.Match(lines, catalog.Items)
-	a.acceptItem(item, found, opts, loadErr, generation...)
+	a.acceptItem(item, found, opts, loadErr)
 }
 
 // Each verified Inspect is matched independently to the nearest full item name.
@@ -835,7 +762,7 @@ func matchScan(result scanner.Result, items []market.Item) (market.Item, bool) {
 	return selected, found
 }
 
-func (a *ItemWindowApp) acceptItem(item market.Item, found bool, opts ItemOptions, loadErr error, generation ...uint64) {
+func (a *ItemWindowApp) acceptItem(item market.Item, found bool, opts ItemOptions, loadErr error) {
 	a.mu.Lock()
 	defer func() {
 		a.mu.Unlock()
@@ -853,21 +780,12 @@ func (a *ItemWindowApp) acceptItem(item market.Item, found bool, opts ItemOption
 	}
 	if found {
 		if a.state.Item == nil || a.state.Item.UID != item.UID {
-			// A másik Inspect csak az itemhez kötött régi írást szakítja meg.
-			// A karakter tartós háttérfeltöltése ettől független.
-			if a.trackingWriteCancel != nil {
-				a.trackingWriteCancel()
-				a.trackingWriteCancel = nil
-			}
 			a.state.Tracking = nil
 		} else if item.BSGID == "" {
 			// A régi katalógus még nem tartalmazza a feloldott BSG-azonosítót.
 			item.BSGID = a.state.Item.BSGID
 		}
 		a.state.Item = &item
-		if handoverCaptureCurrent(a.state.Handover, generation) {
-			a.captureHandoverItemLocked(item, opts)
-		}
 		a.state.Status = "Item recognized."
 	} else {
 		a.state.Status = "No unambiguous item name was found. Open its Inspect window or search by name."
@@ -883,7 +801,6 @@ func (a *ItemWindowApp) SearchItem(name string) (result ItemState) {
 	}
 	defer a.scanMu.Unlock()
 	a.mu.Lock()
-	generation := handoverScanGeneration(a.state)
 	a.state.Busy = true
 	a.state.Error = ""
 	a.state.Status = "Searching for item…"
@@ -900,7 +817,7 @@ func (a *ItemWindowApp) SearchItem(name string) (result ItemState) {
 	if err != nil && len(catalog.Items) == 0 {
 		a.errorRevision(opts.revision, marketError(err))
 	} else {
-		a.acceptMatch([]string{name}, catalog, opts, err, generation)
+		a.acceptMatch([]string{name}, catalog, opts, err)
 		a.emit()
 	}
 	return a.GetState()
@@ -956,7 +873,8 @@ func RunItemWindow(parentPID int, hidden bool) error {
 		StartHidden: hidden, HideWindowOnClose: false,
 		BackgroundColour: &options.RGBA{R: 18, G: 18, B: 18, A: 1},
 		AssetServer:      &assetserver.Options{Assets: itemAssetsFS{frontend}},
-		OnStartup:        func(ctx context.Context) { a.startup(ctx, parent); go a.watchHandoverSignal(parentPID) },
+		OnStartup:        func(ctx context.Context) { a.startup(ctx, parent, parentPID) },
+		OnBeforeClose:    a.beforeClose,
 		OnShutdown:       a.shutdown, Bind: []interface{}{a},
 	})
 }

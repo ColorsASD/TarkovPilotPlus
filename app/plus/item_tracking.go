@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -38,12 +37,9 @@ type ItemTrackingState struct {
 	CompletedSources        []ItemTrackingCompletedSource `json:"completedSources"`
 	Error                   string                        `json:"error"`
 	Status                  string                        `json:"status"`
-	Local                   bool                          `json:"local"`
 	Storage                 string                        `json:"storage,omitempty"`
 	MarketAvailableQuantity int64                         `json:"marketAvailableQuantity"`
-	LocalAvailableQuantity  int64                         `json:"localAvailableQuantity"`
 	MarketRequiredQuantity  int64                         `json:"marketRequiredQuantity"`
-	HasLocalRequirements    bool                          `json:"hasLocalRequirements"`
 	AddRegularAllowed       bool                          `json:"addRegularAllowed"`
 	AddFIRAllowed           bool                          `json:"addFIRAllowed"`
 	MarketTracked           bool                          `json:"marketTracked"`
@@ -52,10 +48,19 @@ type ItemTrackingState struct {
 }
 
 type ItemTrackingAnyGroup struct {
+	GroupID           string                  `json:"groupId"`
+	AvailableQuantity int64                   `json:"availableQuantity"`
+	RequiredQuantity  int64                   `json:"requiredQuantity"`
+	FIR               bool                    `json:"fir"`
+	Sources           []ItemTrackingAnySource `json:"sources,omitempty"`
+}
+
+type ItemTrackingAnySource struct {
 	GroupID           string `json:"groupId"`
+	QuestName         string `json:"questName,omitempty"`
+	Category          string `json:"category,omitempty"`
 	AvailableQuantity int64  `json:"availableQuantity"`
 	RequiredQuantity  int64  `json:"requiredQuantity"`
-	FIR               bool   `json:"fir"`
 }
 
 type ItemTrackingRequirement struct {
@@ -109,49 +114,29 @@ func cloneCharacters(characters []market.Character) []market.Character {
 }
 
 func (a *ItemWindowApp) clearTrackingLocked() {
-	a.cancelTrackingWriteLocked()
 	a.state.CharacterUID = ""
 	a.state.Characters = nil
 	a.state.CharactersLoading = false
 	a.state.CharactersError = ""
 	a.state.Tracking = nil
 	a.state.Local = nil
-	a.restoreStockEditorLocked()
-	a.localAt = time.Time{}
-	a.charactersAt = time.Time{}
-	a.trackedAt = time.Time{}
+	a.localSnapshot = localprogress.Snapshot{}
+	a.confirmedProgress = localprogress.Snapshot{}
+	a.marketKinds = nil
+	a.localAt, a.charactersAt, a.trackedAt = time.Time{}, time.Time{}, time.Time{}
+	a.localRevision, a.trackedRevision = 0, 0
 	a.trackedSnapshot = market.TrackedSnapshot{}
-	a.progressBaseSnapshot = localprogress.Snapshot{}
-	a.progressUnsafeItems = nil
-	a.progressBaseRevision = 0
-	a.progressBaseAt = time.Time{}
-	a.state.ProgressSync = nil
-}
-
-func (a *ItemWindowApp) cancelTrackingWriteLocked() {
-	if a.progressWriteCancel != nil {
-		a.progressWriteCancel()
-		a.progressWriteCancel = nil
-	}
-	if a.trackingWriteCancel != nil {
-		a.trackingWriteCancel()
-		a.trackingWriteCancel = nil
-	}
 }
 
 func (a *ItemWindowApp) requestTracking() {
-	// Egy új Inspect azonnal a már ellenőrzött forrásokra épül. A hálózati
-	// frissítés ettől függetlenül, a közös háttérsorban történik.
-	if a.trackingMu.TryLock() {
-		a.mu.Lock()
-		key, opts := a.apiKey, a.state.ItemOptions
-		warm := a.progressBaseRevision == opts.revision && a.progressBaseSnapshot.CharUID == opts.CharacterUID && a.progressBaseSnapshot.Revision != ""
-		a.mu.Unlock()
-		if warm {
-			a.publishLocalFirstProgress(key, opts, "")
-		}
-		a.trackingMu.Unlock()
+	// Az Inspect a már letöltött, csak memóriában tartott Market-nézetet
+	// azonnal használhatja. A letöltés időpontját az új megjelenítés nem tolja ki.
+	a.mu.Lock()
+	if a.state.Item != nil && !a.localAt.IsZero() && a.localRevision == a.state.ItemOptions.revision &&
+		a.localSnapshot.CharUID == a.state.CharacterUID && a.localSnapshot.Revision != "" {
+		a.state.Tracking = a.pendingTrackedViewLocked(*a.state.Item)
 	}
+	a.mu.Unlock()
 	if a.tracker == nil || a.trackingRequests == nil || a.ctx == nil {
 		return
 	}
@@ -162,17 +147,18 @@ func (a *ItemWindowApp) requestTracking() {
 }
 
 func (a *ItemWindowApp) runTracking() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-a.trackingRequests:
-			a.mu.Lock()
-			if a.progressBaseRevision != a.state.ItemOptions.revision || a.progressBaseSnapshot.Revision == "" || a.progressBaseAt.IsZero() || time.Since(a.progressBaseAt) >= time.Minute {
-				a.progressRefreshRequested = true
-			}
-			a.mu.Unlock()
-			a.queueProgressWork()
+		case <-ticker.C:
+		}
+		if a.trackingMu.TryLock() {
+			a.refreshTracking()
+			a.trackingMu.Unlock()
 		}
 	}
 }
@@ -191,14 +177,6 @@ func (a *ItemWindowApp) refreshTracking() {
 		a.mu.Unlock()
 		return
 	}
-	pending := a.state.MarketFallbackPending
-	a.mu.Unlock()
-	if pending && opts.CharacterUID != "" {
-		ctx, cancel := context.WithTimeout(a.ctx, 40*time.Second)
-		_ = a.checkPendingMarketFallback(ctx, key, opts)
-		cancel()
-	}
-	a.mu.Lock()
 	if !a.localCurrentLocked(key, opts) {
 		a.mu.Unlock()
 		return
@@ -266,8 +244,7 @@ func (a *ItemWindowApp) refreshTracking() {
 	}
 	if a.state.CharacterUID != opts.CharacterUID {
 		a.state.CharacterUID = opts.CharacterUID
-		a.restoreHandoverLocked()
-		a.restoreStockEditorLocked()
+
 		a.state.Local = nil
 		a.localAt = time.Time{}
 		if a.dir != "" {
@@ -418,6 +395,9 @@ func cloneTrackingState(tracking *ItemTrackingState) *ItemTrackingState {
 	copy.CompletedSources = append([]ItemTrackingCompletedSource(nil), tracking.CompletedSources...)
 	copy.AlternativeNotes = append([]string(nil), tracking.AlternativeNotes...)
 	copy.AnyGroups = append([]ItemTrackingAnyGroup(nil), tracking.AnyGroups...)
+	for i := range copy.AnyGroups {
+		copy.AnyGroups[i].Sources = append([]ItemTrackingAnySource(nil), tracking.AnyGroups[i].Sources...)
+	}
 	if tracking.Variants != nil {
 		copy.Variants = make([]*ItemTrackingState, len(tracking.Variants))
 		for i, variant := range tracking.Variants {
@@ -434,29 +414,11 @@ func cloneTrackedSnapshot(snapshot market.TrackedSnapshot) market.TrackedSnapsho
 	for i := range snapshot.Items {
 		snapshot.Items[i].Sources = append([]market.TrackedSource(nil), snapshot.Items[i].Sources...)
 	}
+	snapshot.Groups = append([]market.TrackedGroup(nil), snapshot.Groups...)
+	for i := range snapshot.Groups {
+		snapshot.Groups[i].ItemIDs = append([]string(nil), snapshot.Groups[i].ItemIDs...)
+	}
 	return snapshot
-}
-
-func (a *ItemWindowApp) applyTracking(key string, opts ItemOptions, item market.Item, snapshot market.TrackedSnapshot, fetchedAt time.Time, status string) bool {
-	if snapshot.CharUID != opts.CharacterUID || !strings.EqualFold(snapshot.GameMode, opts.Mode) {
-		a.trackingFailure(key, opts, item.UID, market.ErrProgressNotFound)
-		return false
-	}
-	a.mu.Lock()
-	if a.apiKey != key || a.state.ItemOptions.revision != opts.revision || a.state.CharacterUID != opts.CharacterUID {
-		a.mu.Unlock()
-		return false
-	}
-	// Reusing a snapshot must not extend its lifetime beyond the API fetch.
-	a.trackedSnapshot, a.trackedRevision, a.trackedAt = cloneTrackedSnapshot(snapshot), opts.revision, fetchedAt
-	if a.state.Item == nil || a.state.Item.UID != item.UID {
-		a.mu.Unlock()
-		return false
-	}
-	a.applyLocalMarketStockLocked(item, snapshot, status)
-	a.mu.Unlock()
-	a.emit()
-	return true
 }
 
 func trackingError(err error) string {
@@ -485,6 +447,8 @@ func trackingError(err error) string {
 		return "The Tracked Items ID for the recognized item was not found on Tarkov Market."
 	case errors.Is(err, market.ErrProgressInvalidRequest):
 		return "The character or item ID required for the Tracked Items request is invalid."
+	case errors.Is(err, market.ErrProgressPayloadTooLarge):
+		return "Tarkov Market rejected the request because it was too large."
 	case errors.Is(err, market.ErrResponseTooBig):
 		return "The Tarkov Market Tracked Items response is too large; stock could not be loaded."
 	case errors.Is(err, market.ErrUnauthorized), errors.Is(err, market.ErrAPIKeyRequired), errors.Is(err, market.ErrRateLimited):
@@ -502,6 +466,7 @@ func (a *ItemWindowApp) trackingFailure(key string, opts ItemOptions, uid string
 		}
 		a.state.Tracking.Loading, a.state.Tracking.Adding = false, false
 		a.state.Tracking.Error = trackingError(err)
+		a.localAt, a.trackedAt = time.Time{}, time.Time{}
 	}
 	a.mu.Unlock()
 	a.emit()
@@ -525,147 +490,5 @@ func (a *ItemWindowApp) addTrackedItemKind(uid string, hotkeyTarget *trackedAddH
 	if kind != "regular" && kind != "fir" {
 		return a.GetState()
 	}
-	if !a.trackingMu.TryLock() {
-		a.notifyTrackedAddBusy(uid, hotkeyTarget)
-		return a.GetState()
-	}
-	defer a.trackingMu.Unlock()
-	return a.addCachedTrackedItemKind(uid, hotkeyTarget, kind)
-}
-
-// A Marketen listázott tárgyak a meglévő, revízióval védett API-írást használják.
-// A hívó már birtokolja a trackingMu zárolást.
-func (a *ItemWindowApp) addMarketTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget, expected *ItemOptions) ItemState {
-	return a.addMarketTrackedItemKind(uid, hotkeyTarget, expected, "regular")
-}
-
-func (a *ItemWindowApp) addMarketTrackedItemKind(uid string, hotkeyTarget *trackedAddHotkeyTarget, expected *ItemOptions, kind string) ItemState {
-	a.mu.Lock()
-	key, opts := a.apiKey, a.state.ItemOptions
-	if (expected != nil && (opts.revision != expected.revision || opts.CharacterUID != expected.CharacterUID)) ||
-		!a.canAddTrackedItemLocked() || a.state.Item.UID != uid || (hotkeyTarget != nil &&
-		(expected == nil && !a.trackedAddHotkeyTargetCurrent(hotkeyTarget) || !a.state.AddHotkeyReady || !trackedAddHotkeyEnabled(opts) ||
-			hotkeyTarget.UID != uid || hotkeyTarget.ItemID != a.state.Item.BSGID || hotkeyTarget.CharUID != opts.CharacterUID || hotkeyTarget.Revision != opts.revision)) {
-		a.mu.Unlock()
-		return a.GetState()
-	}
-	item := *a.state.Item
-	if item.BSGID == "" || opts.CharacterUID == "" {
-		a.mu.Unlock()
-		return a.GetState()
-	}
-	ctx, cancel := context.WithTimeout(a.ctx, 40*time.Second)
-	a.trackingWriteCancel = cancel
-	defer func() {
-		cancel()
-		a.mu.Lock()
-		a.trackingWriteCancel = nil
-		a.mu.Unlock()
-	}()
-	a.state.Tracking.Adding = true
-	a.state.Tracking.Status = "Adding…"
-	a.mu.Unlock()
-	a.emit()
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt == 0 {
-			if _, syncErr := a.recoverMarketFallback(ctx, key, opts, item.BSGID, false); syncErr != nil {
-				a.mu.Lock()
-				pending := a.marketFallbackBlocksItemLocked(item.BSGID)
-				a.mu.Unlock()
-				if pending {
-					a.trackingFailure(key, opts, uid, syncErr)
-					return a.GetState()
-				}
-			}
-		}
-		snapshot, err := a.tracker.LoadTracked(ctx, key, opts.CharacterUID, opts.Language)
-		if err != nil {
-			a.trackingFailure(key, opts, uid, err)
-			return a.GetState()
-		}
-		view := trackedView(item, snapshot)
-		if snapshot.CharUID != opts.CharacterUID || !strings.EqualFold(snapshot.GameMode, opts.Mode) {
-			a.trackingFailure(key, opts, uid, market.ErrProgressNotFound)
-			return a.GetState()
-		}
-		destination := a.ensureLocalMarketRevision(ctx, key, opts, item, snapshot.Revision)
-		if destination != "" {
-			a.mu.Lock()
-			if a.localCurrentLocked(key, opts) && a.localItemCurrentLocked(item) {
-				// A friss API-készletet is ellenőrizzük. A követelmények már
-				// ugyanahhoz a revízióhoz tartoznak, a készlet és a típusos
-				// annotáció pedig a most olvasott mennyiséghez igazodik.
-				a.applyLocalMarketStockLocked(item, snapshot, "")
-				if a.state.Local.Error != "" || !a.allowTrackedItemKindLocked(item.BSGID, kind) {
-					destination = ""
-				} else {
-					destination = a.state.Tracking.Storage
-					a.state.Tracking.Adding = true
-				}
-			} else {
-				destination = ""
-			}
-			a.mu.Unlock()
-			if destination == "" {
-				a.emit()
-			}
-		}
-		if destination == "local" {
-			a.mu.Lock()
-			if ctx.Err() == nil && a.localCurrentLocked(key, opts) && a.localItemCurrentLocked(item) {
-				a.commitLocalStockKindLocked(opts, item, kind)
-			}
-			a.mu.Unlock()
-			a.emit()
-			return a.GetState()
-		}
-		if destination != "market" {
-			return a.GetState()
-		}
-		a.mu.Lock()
-		fallbackRow, _ := stockEditorItem(a.localSnapshot, item.BSGID)
-		a.mu.Unlock()
-		if fallbackRow.MarketFallbackAvailableQuantity > 0 {
-			if a.saveMarketFallbackAdd(key, opts, item, kind, "Added 1 item locally. Tarkov Market upload is pending.") {
-				a.emit()
-			}
-			return a.GetState()
-		}
-		if view.Error != "" {
-			a.applyTracking(key, opts, item, snapshot, time.Now(), "")
-			return a.GetState()
-		}
-		if !view.Tracked {
-			a.trackingFailure(key, opts, uid, market.ErrProgressNotFound)
-			return a.GetState()
-		}
-		if view.RequiredQuantity <= 0 {
-			a.applyTracking(key, opts, item, snapshot, time.Now(), "")
-			return a.GetState()
-		}
-		if view.AvailableQuantity >= 1_000_000_000 {
-			a.trackingFailure(key, opts, uid, errors.New("quantity limit"))
-			return a.GetState()
-		}
-		if !a.trackingCurrent(key, opts, uid) {
-			return a.GetState()
-		}
-		target := view.AvailableQuantity + 1
-		result, err := a.tracker.SetTrackedQuantity(ctx, key, opts.CharacterUID, item.BSGID, snapshot.Revision, target)
-		if errors.Is(err, market.ErrProgressConflict) && attempt == 0 {
-			continue
-		}
-		if err != nil && !errors.Is(err, market.ErrProgressWriteUncertain) {
-			if safeMarketFallbackRejection(err) {
-				return a.finishTrackedMarketAdd(ctx, key, opts, item, snapshot, result, target, kind, err)
-			}
-			status := fmt.Sprintf("Market did not save the increase. Requested stock: %d. %s", target,
-				progressWriteDiagnostic(result, err, snapshot.Revision, "", nil))
-			a.setTrackedWriteStatus(key, opts, item, status+progressItemMismatch(item, snapshot))
-			a.trackingFailure(key, opts, uid, err)
-			return a.GetState()
-		}
-		return a.finishTrackedMarketAdd(ctx, key, opts, item, snapshot, result, target, kind, err)
-	}
-	return a.GetState()
+	return a.reservePendingMarketAdd(uid, hotkeyTarget, kind)
 }

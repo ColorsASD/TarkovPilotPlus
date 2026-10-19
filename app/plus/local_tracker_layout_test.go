@@ -5,12 +5,41 @@ import (
 	"time"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
-	"github.com/ggdiam/TarkovPilot/app/plus/internal/tarkovdev"
 )
 
 const layoutAugmentin = "layout-augmentin"
 const layoutSalewa = "layout-salewa"
 const layoutIFAK = "layout-ifak"
+
+func marketQuestGroupForTest(quest, requirement string, quantity int64, fir bool, ids ...string) market.TrackedGroup {
+	return market.TrackedGroup{QuestID: quest, QuestName: quest, RequirementID: requirement, Name: "Any accepted item",
+		Amount: quantity, RequiredQuantity: quantity, RemainingQuantity: quantity, FIR: fir, ItemIDs: ids}
+}
+
+func setMarketGroupRowsForTest(fake *fakeCharacterProgress, fixed []market.TrackedItem, groups ...market.TrackedGroup) {
+	fake.snapshot.Items = append([]market.TrackedItem{}, fixed...)
+	fake.snapshot.Groups = groups
+	for _, group := range groups {
+		for _, id := range group.ItemIDs {
+			index := -1
+			for i := range fake.snapshot.Items {
+				if fake.snapshot.Items[i].ItemID == id {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				fake.snapshot.Items = append(fake.snapshot.Items, market.TrackedItem{ItemID: id, Name: id})
+				index = len(fake.snapshot.Items) - 1
+			}
+			row := &fake.snapshot.Items[index]
+			row.RequiredQuantity += group.RequiredQuantity
+			row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
+			row.Sources = append(row.Sources, market.TrackedSource{Type: "questGroup", QuestID: group.QuestID,
+				RequirementID: group.RequirementID, Amount: group.Amount, RemainingRequiredQuantity: group.RequiredQuantity, FIR: group.FIR})
+		}
+	}
+}
 
 func refreshLayoutItem(t *testing.T, a *ItemWindowApp, id, name string) ItemState {
 	t.Helper()
@@ -36,17 +65,10 @@ func medicalLayoutStates(t *testing.T) map[string]ItemState {
 		{ItemID: layoutSalewa, Name: "Salewa first aid kit", RequiredQuantity: 1, AvailableQuantity: 1,
 			Sources: []market.TrackedSource{{Type: "quest", QuestID: "quest-a", Amount: 1, RemainingRequiredQuantity: 1}}},
 	}
-	a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{
-		{ID: "quest-a", Objectives: []tarkovdev.Objective{
-			{ID: "fixed-augmentin", Type: "giveItem", Count: 1, FoundInRaid: true, ItemIDs: []string{layoutAugmentin}},
-			{ID: "fixed-salewa", Type: "giveItem", Count: 1, ItemIDs: []string{layoutSalewa}},
-		}},
-		{ID: "quest-b", Objectives: []tarkovdev.Objective{{ID: "regular-any", Type: "giveItem", Count: 1, ItemIDs: []string{layoutAugmentin, layoutSalewa}}}},
-		{ID: "quest-c", Objectives: []tarkovdev.Objective{{ID: "fir-any", Type: "giveItem", Count: 1, FoundInRaid: true, ItemIDs: []string{layoutAugmentin, layoutSalewa}}}},
-	}, Hideout: []tarkovdev.Station{}}}
-	if _, err := a.localStore.RecordMarketAdd("character-a", "PVP", layoutSalewa, "fir", 0, 1); err != nil {
-		t.Fatal(err)
-	}
+	setMarketGroupRowsForTest(fake, fake.snapshot.Items,
+		marketQuestGroupForTest("quest-b", "regular-any", 1, false, layoutAugmentin, layoutSalewa),
+		marketQuestGroupForTest("quest-c", "fir-any", 1, true, layoutAugmentin, layoutSalewa))
+	a.recordLocalMarketAdd(a.apiKey, a.state.ItemOptions, market.Item{BSGID: layoutSalewa}, "fir", 0, 1)
 	states := map[string]ItemState{
 		"augmentin-open": refreshLayoutItem(t, a, layoutAugmentin, "Augmentin antibiotic pills"),
 		"salewa-open":    refreshLayoutItem(t, a, layoutSalewa, "Salewa first aid kit"),
@@ -101,23 +123,22 @@ func TestLocalTrackerMedicalFixedAndAnyLayout(t *testing.T) {
 
 func groupedLayoutStates(t *testing.T, differentCandidates bool) map[string]ItemState {
 	t.Helper()
-	a, fake := newDevOnlyTestApp(t)
+	a, fake := newLocalTestApp(t)
 	fake.quests.Quests = append(fake.quests.Quests, market.Quest{QuestID: "quest-c", Status: "available"})
 	secondCandidates := []string{layoutSalewa, layoutAugmentin}
 	if differentCandidates {
 		secondCandidates = []string{layoutIFAK, layoutAugmentin}
 	}
-	a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{
-		{ID: "quest-b", Objectives: []tarkovdev.Objective{{ID: "any-b", Type: "giveItem", Count: 3, ItemIDs: []string{layoutAugmentin, layoutSalewa}}}},
-		{ID: "quest-c", Objectives: []tarkovdev.Objective{{ID: "any-c", Type: "giveItem", Count: 3, ItemIDs: secondCandidates}}},
-	}, Hideout: []tarkovdev.Station{}}}
+	setMarketGroupRowsForTest(fake, nil,
+		marketQuestGroupForTest("quest-b", "any-b", 3, false, layoutAugmentin, layoutSalewa),
+		marketQuestGroupForTest("quest-c", "any-c", 3, false, secondCandidates...))
 	states := map[string]ItemState{"zero": refreshLayoutItem(t, a, layoutAugmentin, "Augmentin antibiotic pills")}
 	if !differentCandidates {
 		for i := 0; i < 4; i++ {
-			states["partial"] = a.AddTrackedItem(layoutAugmentin + "-uid")
+			states["partial"] = addMarketKindForTest(t, a, layoutAugmentin+"-uid", "regular")
 		}
 		for i := 0; i < 2; i++ {
-			states["full"] = a.AddTrackedItem(layoutAugmentin + "-uid")
+			states["full"] = addMarketKindForTest(t, a, layoutAugmentin+"-uid", "regular")
 		}
 	}
 	return states
@@ -152,14 +173,15 @@ func TestLocalTrackerFullFixedRequirementsKeepRatiosUntilQuestCompletion(t *test
 	for _, fir := range []bool{false, true} {
 		kind := map[bool]string{false: "regular", true: "fir"}[fir]
 		t.Run(kind, func(t *testing.T) {
-			a, fake := newDevOnlyTestApp(t)
-			a.devRequirements = &fakeRequirements{catalog: tarkovdev.Catalog{Tasks: []tarkovdev.Task{
-				{ID: "quest-b", Objectives: []tarkovdev.Objective{{ID: "fixed-ten", Type: "giveItem", Count: 10, FoundInRaid: fir, ItemIDs: []string{trackingBSGID}}}},
-			}, Hideout: []tarkovdev.Station{}}}
+			a, fake := newLocalTestApp(t)
+			fake.snapshot.Items = []market.TrackedItem{{ItemID: trackingBSGID, RequiredQuantity: 10, RemainingQuantity: 10,
+				Sources: []market.TrackedSource{{Type: "quest", QuestID: "quest-b", Amount: 10, RemainingRequiredQuantity: 10, FIR: fir}},
+			}}
+			fake.snapshot.Groups = nil
 			refreshLayoutItem(t, a, trackingBSGID, "Tracked item")
 			var state ItemState
 			for i := 0; i < 10; i++ {
-				state = addAndSyncCachedTest(t, a, trackingBSGID+"-uid", kind)
+				state = addMarketKindForTest(t, a, trackingBSGID+"-uid", kind)
 			}
 			if available, required := requirementStock(t, state, kind); available != 10 || required != 10 {
 				t.Fatalf("full fixed requirement lost its 10/10 ratio: %+v", state.Tracking)
@@ -172,8 +194,8 @@ func TestLocalTrackerFullFixedRequirementsKeepRatiosUntilQuestCompletion(t *test
 			if state.Tracking.RequiredQuantity != 0 || len(state.Tracking.Requirements) != 0 || len(state.Tracking.AnyGroups) != 0 || len(state.Tracking.CompletedSources) != 1 || state.Tracking.CompletedSources[0].Quantity != 10 {
 				t.Fatalf("completed quest kept an active full fixed requirement: %+v", state.Tracking)
 			}
-			if len(fake.writes) != 0 {
-				t.Fatal("local fixed requirement wrote Market stock")
+			if len(fake.writes) != 10 {
+				t.Fatal("fixed Market requirement did not persist exactly ten additions")
 			}
 		})
 	}

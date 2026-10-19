@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +64,7 @@ func waitTrackedHotkeyIdle(t *testing.T, a *ItemWindowApp) {
 			t.Fatal("Items Tracker shortcut action did not complete")
 		}
 	}
+	waitPendingForTest(t, a)
 }
 
 func trackedHotkeyAPICalls(fake *fakeTrackingAPI) (int, []stockWrite) {
@@ -73,26 +73,30 @@ func trackedHotkeyAPICalls(fake *fakeTrackingAPI) (int, []stockWrite) {
 	return fake.loads, append([]stockWrite(nil), fake.writes...)
 }
 
-func syncTrackedHotkeyStagedTest(t *testing.T, a *ItemWindowApp, fake *fakeTrackingAPI, kind string) ItemState {
+func confirmedTrackedHotkeyState(t *testing.T, a *ItemWindowApp, fake *fakeTrackingAPI, kind string) ItemState {
 	t.Helper()
+	state := waitPendingForTest(t, a)
 	loads, writes := trackedHotkeyAPICalls(fake)
-	state := a.GetState()
-	stock, err := a.loadMarketFallback(state.ItemOptions)
-	if err != nil {
-		t.Fatal(err)
+	if loads != 2 || len(writes) != 1 || state.Tracking.AvailableQuantity != writes[0].Quantity || state.Tracking.Adding || state.Tracking.Error != "" {
+		t.Fatalf("shortcut did not return verified Market stock: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
 	}
-	row, unique := stockEditorItem(stock, trackingBSGID)
+	known := trackedHotkeySessionKinds(t, a)
 	wantRegular, wantFIR := int64(1), int64(0)
 	if kind == "fir" {
 		wantRegular, wantFIR = 0, 1
 	}
-	if loads != 0 || len(writes) != 0 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Adding ||
-		!unique || row.LocalRegularQuantity != wantRegular || row.LocalFIRQuantity != wantFIR || row.LocalAvailableQuantity != 1 {
-		t.Fatalf("foreground action must save exactly one typed piece without API work: reads=%d writes=%+v row=%+v tracking=%+v", loads, writes, row, state.Tracking)
+	if known.stock != writes[0].Quantity || known.regular != wantRegular || known.fir != wantFIR {
+		t.Fatalf("confirmed shortcut lost its in-memory quality: %+v, want %d/%d", known, wantRegular, wantFIR)
 	}
-	return syncCachedMarketTest(t, a)
+	return state
 }
 
+func trackedHotkeySessionKinds(t *testing.T, a *ItemWindowApp) marketKindState {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.marketKinds[marketKindKey(a.state.CharacterUID, a.state.Mode, trackingBSGID)]
+}
 func TestTrackedHotkeyAddsExactlyOneFromFreshStock(t *testing.T) {
 	a, fake := newTrackedHotkeyTestApp(t)
 	// The displayed/cached count deliberately differs from the API stock.
@@ -104,10 +108,10 @@ func TestTrackedHotkeyAddsExactlyOneFromFreshStock(t *testing.T) {
 	runTrackedHotkeyTestWorker(t, a)
 	a.requestTrackedAddHotkey()
 	waitTrackedHotkeyIdle(t, a)
-	state := syncTrackedHotkeyStagedTest(t, a, fake, "regular")
+	state := confirmedTrackedHotkeyState(t, a, fake, "regular")
 	loads, writes := trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0] != (stockWrite{"character-a", trackingBSGID, "revision-1", 4}) {
-		t.Fatalf("background upload must GET fresh stock, PATCH +1 with its revision, then read back: reads=%d writes=%+v", loads, writes)
+		t.Fatalf("shortcut must GET fresh stock, PATCH +1 with its revision, then verify it: reads=%d writes=%+v", loads, writes)
 	}
 	if state.Tracking.AvailableQuantity != 4 || state.Tracking.RemainingQuantity != 3 || state.Tracking.Adding || state.Tracking.Error != "" {
 		t.Fatalf("shortcut did not publish the confirmed stock: %+v", state.Tracking)
@@ -157,14 +161,14 @@ func TestTrackedHotkeyDefaultActionsKeepPhysicalKindThroughUnifiedRouting(t *tes
 			a.addHotkeyRequests <- queued
 			runTrackedHotkeyTestWorker(t, a)
 			waitTrackedHotkeyIdle(t, a)
-			syncTrackedHotkeyStagedTest(t, a, fake, kind)
-			row := handoverStockForTest(t, a, trackingBSGID)
+			confirmedTrackedHotkeyState(t, a, fake, kind)
+			row := trackedHotkeySessionKinds(t, a)
 			wantRegular, wantFIR := int64(1), int64(0)
 			if kind == "fir" {
 				wantRegular, wantFIR = 0, 1
 			}
 			_, writes := trackedHotkeyAPICalls(fake)
-			if len(writes) != 1 || writes[0].Quantity != 1 || row.MarketRegularQuantity != wantRegular || row.MarketFIRQuantity != wantFIR || row.LocalCollectedQuantity != 0 {
+			if len(writes) != 1 || writes[0].Quantity != 1 || row.regular != wantRegular || row.fir != wantFIR {
 				t.Fatalf("public hotkey action used the other quality or duplicated Market count locally: writes=%+v row=%+v", writes, row)
 			}
 		})
@@ -194,10 +198,10 @@ func TestTrackedHotkeyOneDisabledActionDoesNotBlockOtherCustomChord(t *testing.T
 			}
 			runTrackedHotkeyTestWorker(t, a)
 			waitTrackedHotkeyIdle(t, a)
-			syncTrackedHotkeyStagedTest(t, a, fake, kind)
+			confirmedTrackedHotkeyState(t, a, fake, kind)
 			_, writes := trackedHotkeyAPICalls(fake)
-			row := handoverStockForTest(t, a, trackingBSGID)
-			if len(writes) != 1 || (row.MarketFIRQuantity == 1) != (kind == "fir") || (row.MarketRegularQuantity == 1) != (kind == "regular") {
+			row := trackedHotkeySessionKinds(t, a)
+			if len(writes) != 1 || (row.fir == 1) != (kind == "fir") || (row.regular == 1) != (kind == "regular") {
 				t.Fatalf("disabled action queued work or custom chord lost its quality: writes=%+v row=%+v", writes, row)
 			}
 		})
@@ -256,27 +260,6 @@ func TestTrackedHotkeyPreservesBothDisabledChoices(t *testing.T) {
 	}
 }
 
-func TestTrackedHotkeyStockSaveFailureBlocksBothKinds(t *testing.T) {
-	a, _ := newTrackedHotkeyTestApp(t)
-	a.state.Local = &LocalProgressState{Error: "controlled save failure", StockError: true}
-	a.state.Tracking.Storage = "market"
-	a.state.Tracking.MarketRequiredQuantity = 3
-	a.state.Tracking.MarketAvailableQuantity = 0
-	a.publishTrackedAddHotkey()
-	a.requestTrackedAddHotkey()
-	a.requestTrackedAddFIRHotkey()
-	if a.canAddTrackedItemLocked() || a.addHotkeyTarget.Load() != nil ||
-		a.addHotkeyFIRTarget.Load() != nil || len(a.addHotkeyRequests) != 0 {
-		t.Fatal("a quality-save failure still allowed an unannotated Market or local increment")
-	}
-	// A két forrás kötelező: adatkimaradáskor az ismert Market kvóta sem írható.
-	a.state.Local.StockError = false
-	a.publishTrackedAddHotkey()
-	if a.canAddTrackedItemLocked() || a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
-		t.Fatal("a public catalog outage allowed stock changes through a Market-only fallback")
-	}
-}
-
 func TestTrackedHotkeyRejectsUnavailableAddTargets(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -305,7 +288,6 @@ func TestTrackedHotkeyRejectsUnavailableAddTargets(t *testing.T) {
 		{"combined progress missing", func(a *ItemWindowApp) { a.state.Local = nil }},
 		{"combined progress loading", func(a *ItemWindowApp) { a.state.Local.Loading = true }},
 		{"combined progress error", func(a *ItemWindowApp) { a.state.Local.Error = "public source unavailable" }},
-		{"stock annotation failure", func(a *ItemWindowApp) { a.state.Local.StockError = true }},
 		{"separate inventory", func(a *ItemWindowApp) { a.state.Tracking.InventorySeparate = true }},
 		{"ambiguous variants", func(a *ItemWindowApp) {
 			a.state.Tracking.Variants = []*ItemTrackingState{cloneTrackingState(a.state.Tracking)}
@@ -327,8 +309,8 @@ func TestTrackedHotkeyRejectsUnavailableAddTargets(t *testing.T) {
 func TestTrackedHotkeyConcurrentTriggersDoNotQueueRepeatAdds(t *testing.T) {
 	a, fake := newTrackedHotkeyTestApp(t)
 	runTrackedHotkeyTestWorker(t, a)
-	// Hold only the local state lock. The foreground worker must retain its
-	// pending guard while it saves; it no longer waits for a Market request.
+	// A Market-művelet alatt a worker megőrzi a pending jelölést. A zárolás
+	// feloldása előtt érkező további leütések nem indíthatnak új műveletet.
 	a.mu.Lock()
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(a.mu.Unlock) }
@@ -337,7 +319,7 @@ func TestTrackedHotkeyConcurrentTriggersDoNotQueueRepeatAdds(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for len(a.addHotkeyRequests) != 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("shortcut worker did not consume its local action")
+			t.Fatal("shortcut worker did not consume its captured action")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -351,11 +333,11 @@ func TestTrackedHotkeyConcurrentTriggersDoNotQueueRepeatAdds(t *testing.T) {
 	}
 	triggers.Wait()
 	if !a.addHotkeyPending.Load() || len(a.addHotkeyRequests) != 0 {
-		t.Fatal("presses while a local Add is pending must not queue repeat stock changes")
+		t.Fatal("presses while Market Add is pending must not queue repeat stock changes")
 	}
 	release()
 	waitTrackedHotkeyIdle(t, a)
-	syncTrackedHotkeyStagedTest(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake, "regular")
 	loads, writes := trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("concurrent shortcut callbacks produced repeated stock changes: reads=%d writes=%+v", loads, writes)
@@ -382,7 +364,7 @@ func TestTrackedHotkeyConcurrentEligibleCallbacksQueueOneAction(t *testing.T) {
 	}
 	runTrackedHotkeyTestWorker(t, a)
 	waitTrackedHotkeyIdle(t, a)
-	syncTrackedHotkeyStagedTest(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake, "regular")
 	loads, writes = trackedHotkeyAPICalls(fake)
 	if loads != 2 || len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("concurrent eligible callbacks produced repeated stock changes: reads=%d writes=%+v", loads, writes)
@@ -433,38 +415,46 @@ func TestTrackedHotkeyQueuedTargetCannotFollowStateChanges(t *testing.T) {
 	}
 }
 
-func TestTrackedHotkeyFreshCompletionKeepsStagedStockWithoutUploading(t *testing.T) {
+func TestTrackedHotkeyFreshCompletionSkipsMarketWrite(t *testing.T) {
 	a, fake := newTrackedHotkeyTestApp(t)
 	fake.snapshot = completedCMSFixture()
-	// The cached requirement still allows the physical press. Once its one
-	// piece is durably saved, a newer completion must not erase or upload it.
 	if a.addHotkeyTarget.Load() == nil {
-		t.Fatal("earlier scan must initially allow Add")
+		t.Fatal("the cached requirement must initially allow a physical press")
 	}
 	runTrackedHotkeyTestWorker(t, a)
 	a.requestTrackedAddHotkey()
 	waitTrackedHotkeyIdle(t, a)
 	loads, writes := trackedHotkeyAPICalls(fake)
-	if loads != 0 || len(writes) != 0 || a.GetState().Tracking.AvailableQuantity != 1 {
-		t.Fatal("shortcut must stage stock from the confirmed cache without foreground API calls")
-	}
-	a.RefreshLocalProgress()
-	if err := a.processProgressWork(a.ctx); err == nil || !strings.Contains(err.Error(), "No active Market requirement remains") {
-		t.Fatalf("closed demand must explain why the saved piece was not uploaded: %v", err)
-	}
-	loads, writes = trackedHotkeyAPICalls(fake)
 	state := a.GetState()
-	stock, err := a.loadMarketFallback(state.ItemOptions)
-	row, unique := stockEditorItem(stock, trackingBSGID)
-	if err != nil || !unique || row.LocalAvailableQuantity != 1 || row.LocalRegularQuantity != 1 ||
-		loads < 1 || len(writes) != 0 || state.Tracking.RequiredQuantity != 0 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Adding {
-		t.Fatalf("fresh completion must keep the durable piece and skip PATCH: reads=%d writes=%+v row=%+v tracking=%+v err=%v", loads, writes, row, state.Tracking, err)
+	if loads != 1 || len(writes) != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.RequiredQuantity != 0 || state.Tracking.Adding {
+		t.Fatalf("fresh completion sent an obsolete increment: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
 	}
 	if a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
-		t.Fatal("completed requirement remained available for another shortcut")
+		t.Fatal("completed requirement still allowed a shortcut")
 	}
+	assertNoTrackingTestStockAdded(t, a)
 }
 
+func TestTrackedHotkeyFreshAnyCoverageFromAnotherItemSkipsMarketWrite(t *testing.T) {
+	a, fake := newTrackedHotkeyTestApp(t)
+	const other = "other-group-candidate"
+	group := marketQuestGroupForTest("any-quest", "any-two", 2, false, trackingBSGID, other)
+	fake.snapshot.Groups = []market.TrackedGroup{group}
+	groupSource := market.TrackedSource{Type: "questGroup", QuestID: group.QuestID, RequirementID: group.RequirementID, Amount: 2}
+	fake.snapshot.Items = []market.TrackedItem{{ItemID: trackingBSGID, Sources: []market.TrackedSource{groupSource}}, {ItemID: other, AvailableQuantity: 2, Sources: []market.TrackedSource{groupSource}}}
+	runTrackedHotkeyTestWorker(t, a)
+	a.requestTrackedAddHotkey()
+	waitTrackedHotkeyIdle(t, a)
+	loads, writes := trackedHotkeyAPICalls(fake)
+	state := a.GetState()
+	if loads != 1 || len(writes) != 0 || state.Tracking.AvailableQuantity != 0 || state.Tracking.AddRegularAllowed || state.Tracking.AddFIRAllowed {
+		t.Fatalf("covered shared Market stock allowed overcollection: reads=%d writes=%+v tracking=%+v", loads, writes, state.Tracking)
+	}
+	if a.addHotkeyTarget.Load() != nil || a.addHotkeyFIRTarget.Load() != nil {
+		t.Fatal("covered Any retained a hotkey target")
+	}
+	assertNoTrackingTestStockAdded(t, a)
+}
 func TestTrackedHotkeyAutomaticScanningOffStillAllowsLoadedItem(t *testing.T) {
 	a, fake := newTrackedHotkeyTestApp(t)
 	a.state.Automatic = false
@@ -472,7 +462,7 @@ func TestTrackedHotkeyAutomaticScanningOffStillAllowsLoadedItem(t *testing.T) {
 	runTrackedHotkeyTestWorker(t, a)
 	a.requestTrackedAddHotkey()
 	waitTrackedHotkeyIdle(t, a)
-	syncTrackedHotkeyStagedTest(t, a, fake, "regular")
+	confirmedTrackedHotkeyState(t, a, fake, "regular")
 	_, writes := trackedHotkeyAPICalls(fake)
 	if len(writes) != 1 || writes[0].Quantity != 1 {
 		t.Fatalf("manual search results must allow the shortcut with automatic scanning off: %+v", writes)
@@ -484,7 +474,7 @@ func TestTrackedAddButtonWorksWhenShortcutIsOff(t *testing.T) {
 	a.state.AddHotkey = "Off"
 	a.publishTrackedAddHotkey()
 	a.AddTrackedItem(trackingItemUID)
-	state := syncTrackedHotkeyStagedTest(t, a, fake, "regular")
+	state := confirmedTrackedHotkeyState(t, a, fake, "regular")
 	_, writes := trackedHotkeyAPICalls(fake)
 	if len(writes) != 1 || writes[0].Quantity != 1 || state.Tracking.AvailableQuantity != 1 || state.Tracking.Error != "" {
 		t.Fatalf("disabling the shortcut disabled the existing Add button: writes=%+v tracking=%+v", writes, state.Tracking)

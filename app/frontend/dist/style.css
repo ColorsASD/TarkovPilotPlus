@@ -604,10 +604,8 @@ select {
     font-size: 13px;
 }
 
-.hand-in-entry { display: flex; flex-direction: column; gap: 6px; margin-bottom: 9px; }
-.hand-in-entry button { width: 100%; }
-.hand-in-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.hand-in-status.error { color: var(--err); }
+
+.event-pending { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: normal; overflow-wrap: anywhere; }
 
 .event-log {
     flex: 1;

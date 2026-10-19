@@ -256,21 +256,48 @@ func (errorReader) Read([]byte) (int, error) { return 0, errors.New("private-fix
 func TestProgressHTTPStatusErrorsAreSanitized(t *testing.T) {
 	for status, expected := range map[int]error{
 		401: ErrUnauthorized, 403: ErrProgressForbidden, 404: ErrProgressNotFound, 409: ErrProgressConflict,
-		428: ErrProgressRevisionRequired, 400: ErrProgressInvalidRequest,
+		428: ErrProgressRevisionRequired, 400: ErrProgressInvalidRequest, 413: ErrProgressPayloadTooLarge,
 		500: ErrProgressUnavailable, 503: ErrProgressUnavailable,
 	} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			client := progressTestClient(t, func(*http.Request) (*http.Response, error) {
-				return response(status, `{"error":"private-fixture-key"}`), nil
+		for _, method := range []string{http.MethodGet, http.MethodPatch} {
+			t.Run(fmt.Sprint(status)+"/"+method, func(t *testing.T) {
+				calls := 0
+				client := progressTestClient(t, func(req *http.Request) (*http.Response, error) {
+					calls++
+					requireHeaderOnlyKey(t, req)
+					if req.Method != method || req.Header.Get("Accept") != "application/json" {
+						t.Fatalf("wrong progress method or response format: %s", req.Method)
+					}
+					if method == http.MethodPatch {
+						body, err := io.ReadAll(req.Body)
+						if err != nil || req.URL.Path != "/api/v1/characters/char-1/tracked-items/"+progressItemID || req.URL.RawQuery != "" ||
+							req.Header.Get("If-Match") != `"revision-1"` || req.Header.Get("Content-Type") != "application/json" || string(body) != `{"availableQuantity":5}` {
+							t.Fatalf("rejected PATCH lost its exact target, revision or payload: %s %s", req.URL, body)
+						}
+					} else if req.URL.Path != "/api/v1/characters/char-1/tracked-items" || req.URL.RawQuery != "lang=en" || req.Header.Get("If-Match") != "" {
+						t.Fatalf("read request used write parameters: %s", req.URL)
+					}
+					return response(status, `{"error":"private-fixture-key"}`), nil
+				})
+				var err error
+				if method == http.MethodPatch {
+					_, err = client.SetTrackedQuantity(context.Background(), "private-fixture-key", "char-1", progressItemID, "revision-1", 5)
+				} else {
+					_, err = client.LoadTracked(context.Background(), "private-fixture-key", "char-1", "en")
+				}
+				if !errors.Is(err, expected) || strings.Contains(err.Error(), "private-fixture-key") || calls != 1 {
+					t.Fatalf("wrong, repeated or unsanitized HTTP %d error: %v calls=%d", status, err, calls)
+				}
+				info := ProgressWriteFailure(err)
+				if info.Reason != "http" || info.HTTPStatus != status || info.ACKOK != nil || info.ACKChanged != nil {
+					t.Fatalf("HTTP diagnostic category was lost: %+v", info)
+				}
+				uncertain := method == http.MethodPatch && status >= 500
+				if errors.Is(err, ErrProgressWriteUncertain) != uncertain {
+					t.Fatalf("HTTP %d %s has wrong write certainty: %v", status, method, err)
+				}
 			})
-			_, err := client.LoadTracked(context.Background(), "key", "char-1", "en")
-			if !errors.Is(err, expected) || strings.Contains(err.Error(), "private-fixture-key") {
-				t.Fatalf("wrong or unsanitized HTTP %d error: %v", status, err)
-			}
-			if status >= 500 && (!strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) || errors.Is(err, ErrProgressWriteUncertain)) {
-				t.Fatalf("server read failure lost status or implied a write: %v", err)
-			}
-		})
+		}
 	}
 }
 

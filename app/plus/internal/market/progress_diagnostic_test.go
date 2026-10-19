@@ -43,7 +43,7 @@ func TestProgressWriteSchemaDiagnosticPreservesControlledReason(t *testing.T) {
 }
 
 func TestProgressWriteHTTPDiagnosticContainsOnlyStatus(t *testing.T) {
-	for _, status := range []int{400, 401, 403, 409, 418, 429, 500, 503} {
+	for _, status := range []int{400, 401, 403, 409, 413, 418, 429, 500, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			calls := 0
 			client := progressTestClient(t, func(*http.Request) (*http.Response, error) {
@@ -68,6 +68,7 @@ func TestProgressWriteFailureNeverFormatsUnknownError(t *testing.T) {
 		{errors.Join(ErrProgressWriteUncertain, context.DeadlineExceeded), "timeout"},
 		{errors.Join(ErrProgressWriteUncertain, context.Canceled), "canceled"},
 		{ErrProgressWriteUncertain, "uncertain"},
+		{ErrProgressPayloadTooLarge, "payload_too_large"},
 	} {
 		if info := ProgressWriteFailure(tc.err); info.Reason != tc.reason || info.HTTPStatus != 0 || info.ACKOK != nil || info.ACKChanged != nil {
 			t.Fatalf("uncontrolled error was not reduced to a safe category: %+v", info)
