@@ -10,6 +10,7 @@ import (
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/nextitem"
 )
 
 type trackingAPI interface {
@@ -45,6 +46,7 @@ type ItemTrackingState struct {
 	MarketTracked           bool                          `json:"marketTracked"`
 	AlternativeNotes        []string                      `json:"alternativeNotes,omitempty"`
 	AnyGroups               []ItemTrackingAnyGroup        `json:"anyGroups,omitempty"`
+	NextItem                *nextitem.Forecast            `json:"nextItem,omitempty"`
 }
 
 type ItemTrackingAnyGroup struct {
@@ -56,11 +58,18 @@ type ItemTrackingAnyGroup struct {
 }
 
 type ItemTrackingAnySource struct {
-	GroupID           string `json:"groupId"`
-	QuestName         string `json:"questName,omitempty"`
-	Category          string `json:"category,omitempty"`
+	GroupID           string                `json:"groupId"`
+	QuestName         string                `json:"questName,omitempty"`
+	Category          string                `json:"category,omitempty"`
+	AvailableQuantity int64                 `json:"availableQuantity"`
+	RequiredQuantity  int64                 `json:"requiredQuantity"`
+	Items             []ItemTrackingAnyItem `json:"items,omitempty"`
+}
+
+type ItemTrackingAnyItem struct {
+	ItemID            string `json:"itemId"`
+	Name              string `json:"name"`
 	AvailableQuantity int64  `json:"availableQuantity"`
-	RequiredQuantity  int64  `json:"requiredQuantity"`
 }
 
 type ItemTrackingRequirement struct {
@@ -68,6 +77,7 @@ type ItemTrackingRequirement struct {
 	AvailableQuantity int64  `json:"availableQuantity"`
 	RequiredQuantity  int64  `json:"requiredQuantity"`
 	Type              string `json:"type,omitempty"`
+	AllocationUnknown bool   `json:"allocationUnknown,omitempty"`
 }
 
 type ItemTrackingCompletedSource struct {
@@ -405,8 +415,18 @@ func cloneTrackingState(tracking *ItemTrackingState) *ItemTrackingState {
 	copy.CompletedSources = append([]ItemTrackingCompletedSource(nil), tracking.CompletedSources...)
 	copy.AlternativeNotes = append([]string(nil), tracking.AlternativeNotes...)
 	copy.AnyGroups = append([]ItemTrackingAnyGroup(nil), tracking.AnyGroups...)
+	if tracking.NextItem != nil {
+		forecast := *tracking.NextItem
+		forecast.PossibleCategories = append([]string(nil), tracking.NextItem.PossibleCategories...)
+		forecast.Changes = append([]nextitem.Change(nil), tracking.NextItem.Changes...)
+		forecast.Targets = append([]nextitem.Target(nil), tracking.NextItem.Targets...)
+		copy.NextItem = &forecast
+	}
 	for i := range copy.AnyGroups {
 		copy.AnyGroups[i].Sources = append([]ItemTrackingAnySource(nil), tracking.AnyGroups[i].Sources...)
+		for j := range copy.AnyGroups[i].Sources {
+			copy.AnyGroups[i].Sources[j].Items = append([]ItemTrackingAnyItem(nil), tracking.AnyGroups[i].Sources[j].Items...)
+		}
 	}
 	if tracking.Variants != nil {
 		copy.Variants = make([]*ItemTrackingState, len(tracking.Variants))

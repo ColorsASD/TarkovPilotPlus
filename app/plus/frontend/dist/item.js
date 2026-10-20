@@ -175,7 +175,144 @@
         $('characters-note').classList.toggle('error', !!error);
     };
 
+    const copyName = async (name) => {
+        if (!name) return;
+        showFeedback('');
+        try {
+            if (window.runtime && typeof window.runtime.ClipboardSetText === 'function') {
+                if (await window.runtime.ClipboardSetText(name) !== true) throw new Error('Copy failed');
+            } else if (!nativeApp() && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(name);
+            } else {
+                throw new Error('Clipboard unavailable');
+            }
+        } catch (_) {
+            showFeedback('The name could not be copied.', true);
+        }
+    };
+    const copyNameButton = (name, kind) => {
+        const button = document.createElement('button');
+        button.className = 'name-copy-button';
+        button.type = 'button';
+        button.title = kind === 'quest' ? 'Copy quest name' : 'Copy hideout name';
+        button.setAttribute('aria-label', 'Copy ' + name);
+        button.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h8v8H5ZM10 5V2H2v8h3" /></svg>';
+        button.addEventListener('click', () => copyName(name));
+        return button;
+    };
     const trackingCards = new Map();
+    const trackingDisplayBaselines = new WeakMap();
+    const nextItemCategories = new Set(['Regular', 'Found in Raid', 'Shared', 'Shared (FiR)']);
+    let nextItemCacheKey = '';
+    let nextItemCache = null;
+    const nextItemContextKey = () => {
+        const itemUid = safeText(state.item && state.item.uid);
+        const itemId = safeText(state.item && state.item.bsgId);
+        const charUid = safeText(state.characterUid);
+        const key = state.hasAPIKey && itemUid && itemId && charUid &&
+            !pendingOptions.has('game-mode') && !pendingOptions.has('tracked-character') ?
+            JSON.stringify([itemUid, itemId, charUid, String(state.mode || '').toUpperCase()]) : '';
+        if (key !== nextItemCacheKey) {
+            nextItemCacheKey = key;
+            nextItemCache = null;
+        }
+        return key;
+    };
+    const currentNextItem = (tracking, multipleVariants) => {
+        const key = nextItemContextKey();
+        const current = currentTracking();
+        const pending = state.pendingAdds && state.pendingAdds.running === true && Number.isSafeInteger(state.pendingAdds.count) && state.pendingAdds.count > 0;
+        const transient = !!tracking && (tracking.loading || tracking.adding || !!state.local && state.local.loading ||
+            isBusy() || pending || sameTrackingTarget(changingTracking));
+        const invalid = !key || !tracking || !sameTrackingTarget(tracking) ||
+            safeText(tracking.itemId) && tracking.itemId !== state.item.bsgId ||
+            tracking.firInventorySeparate === true || multipleVariants || current && Array.isArray(current.variants) && current.variants.length > 1;
+        const error = safeText(state.error) || safeText(state.local && state.local.error) || safeText(tracking && tracking.error) || sameTrackingTarget(trackingFailure);
+        if (invalid || error) {
+            nextItemCache = null;
+            return null;
+        }
+        if (transient && nextItemCache) return nextItemCache;
+        const forecast = tracking.nextItem && typeof tracking.nextItem === 'object' && !Array.isArray(tracking.nextItem) ? tracking.nextItem : null;
+        if (forecast && ['estimated', 'uncertain', 'unavailable'].includes(forecast.status)) {
+            const category = forecast.status === 'estimated' && nextItemCategories.has(forecast.category) ? forecast.category : '—';
+            const targets = Array.isArray(forecast.targets) ? forecast.targets.filter((target) =>
+                target && typeof target === 'object' && !Array.isArray(target) &&
+                (target.kind === 'quest' || target.kind === 'module') && Number.isSafeInteger(target.requiredQuantity) && target.requiredQuantity >= 0 &&
+                (target.allocationUnknown === true || Number.isSafeInteger(target.availableQuantity) && target.availableQuantity >= 0)).map((target) => ({
+                    kind: target.kind, name: safeText(target.goalName).trim() || (target.kind === 'quest' ? 'Unnamed quest' : 'Unnamed hideout upgrade'),
+                    availableQuantity: target.availableQuantity, requiredQuantity: target.requiredQuantity, allocationUnknown: target.allocationUnknown === true,
+                    completed: target.completed === true,
+                })).sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'quest' ? -1 : 1) : [];
+            if (targets.length) {
+                const noRawGap = Number.isSafeInteger(tracking.availableQuantity) && Number.isSafeInteger(tracking.requiredQuantity) &&
+                    tracking.availableQuantity >= 0 && tracking.requiredQuantity >= 0 && tracking.availableQuantity >= tracking.requiredQuantity;
+                const fullyCovered = tracking.addAllowed === false && noRawGap && targets.every((target) =>
+                    !target.allocationUnknown && target.availableQuantity >= target.requiredQuantity);
+                const completedState = !transient && tracking.addAllowed === false && tracking.requiredQuantity === 0 && targets.every((target) => target.completed);
+                const displayCategory = completedState || fullyCovered && !transient ? '' : category;
+                nextItemCache = {category: displayCategory, targets, completedState};
+                return nextItemCache;
+            }
+        }
+        if (transient) return nextItemCache;
+        nextItemCache = null;
+        return null;
+    };
+    const renderNextItem = (panel, forecast) => {
+        const nextItem = panel.querySelector('[data-tracked="next-item"]');
+        const category = panel.querySelector('[data-tracked="next-item-category"]');
+        const label = forecast && forecast.completedState ? 'Completed Item' : 'Next Item';
+        panel.querySelector('[data-tracked="next-item-label"]').textContent = label;
+        panel.querySelector('.tracked-stock-list').classList.toggle('hidden', !!(forecast && forecast.completedState));
+        panel.querySelector('[data-tracked="add"]').classList.toggle('hidden', !!(forecast && forecast.completedState));
+        panel.querySelector('[data-tracked="remove"]').classList.toggle('hidden', !!(forecast && forecast.completedState));
+        nextItem.classList.toggle('completed', !!(forecast && forecast.completedState));
+        const baseline = trackingDisplayBaselines.get(panel);
+        if (baseline) {
+            panel.querySelector('[data-tracked="ratio"]').textContent = forecast && forecast.completedState ? '0/0' : baseline.stockRatio;
+            panel.querySelector('[data-tracked="requirements"]').classList.toggle('hidden', !!(forecast && forecast.completedState) || !baseline.hasRequirements);
+        }
+        category.textContent = forecast ? forecast.category : '';
+        panel.querySelector('[data-tracked="next-item-targets"]').replaceChildren(...(forecast ? ['quest', 'module'].flatMap((kind) => {
+            const targets = forecast.targets.filter((target) => target.kind === kind);
+            if (!targets.length) return [];
+            const group = document.createElement('div');
+            group.className = 'tracked-next-item-target-group';
+            const heading = document.createElement('h3');
+            heading.className = 'tracked-next-item-target-heading';
+            heading.textContent = kind === 'quest'
+                ? targets.length === 1 ? 'Quest' : 'Quests'
+                : targets.length === 1 ? 'Hideout Module' : 'Hideout Modules';
+            group.append(heading, ...targets.map((target) => {
+                const row = document.createElement('div');
+                row.className = 'tracked-next-item-target';
+                row.dataset.kind = target.kind;
+                const name = document.createElement('span');
+                name.className = 'tracked-next-item-target-name';
+                name.textContent = target.name;
+                name.append(document.createTextNode(' '), copyNameButton(target.name, target.kind));
+                if (target.completed) {
+                    const check = document.createElement('span');
+                    check.className = 'tracked-next-item-target-completed';
+                    check.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>';
+                    check.setAttribute('role', 'img');
+                    check.setAttribute('aria-label', 'Completed');
+                    name.append(document.createTextNode(' '), check);
+                }
+                const ratio = document.createElement('span');
+                ratio.className = 'tracked-next-item-target-ratio';
+                ratio.textContent = '(' + (target.allocationUnknown ? '—' : quantityText(target.availableQuantity)) + '/' + quantityText(target.requiredQuantity) + ')';
+                row.append(name, ratio);
+                return row;
+            }));
+            return [group];
+        }) : []));
+        nextItem.classList.toggle('hidden', !forecast);
+        if (forecast) nextItem.setAttribute('aria-label', label + (forecast.category ? ': ' + forecast.category : ''));
+        else nextItem.removeAttribute('aria-label');
+    };
+    const updateNextItem = (panel, tracking, multipleVariants) => renderNextItem(panel, currentNextItem(tracking, multipleVariants));
     const renderTrackingCard = (panel, tracking, multipleVariants, variantLabel) => {
         const element = (name) => panel.querySelector('[data-tracked="' + name + '"]');
         const tracked = !!tracking && tracking.tracked === true;
@@ -216,13 +353,12 @@
             }, []).sort((a, b) =>
                 a.fir === true ? b.fir === true ? 0 : -1 : b.fir === true ? 1 : 0) : [];
         const separateInventory = tracked && tracking.firInventorySeparate === true;
-        const completedSources = tracked && Array.isArray(tracking.completedSources) ? tracking.completedSources.filter((source) =>
-            source && typeof source === 'object' && !Array.isArray(source)) : [];
         const noActiveRequirement = noRequiredQuantity && !visibleRequirements.some((requirement) => requirement.requiredQuantity > 0) && !anyGroups.length;
         const hasStock = tracked && Number.isSafeInteger(tracking.availableQuantity) && tracking.availableQuantity > 0;
-        panel.classList.toggle('hidden', noActiveRequirement && !hasStock && !error && !(tracking && tracking.loading) && !changing ||
-            !tracked && !error && !(tracking && tracking.loading) && !changing);
-        element('content').classList.toggle('hidden', !tracked || noActiveRequirement && !hasStock);
+        const nextItem = currentNextItem(tracking, multipleVariants);
+        panel.classList.toggle('hidden', !nextItem && (noActiveRequirement && !hasStock && !error && !loading && !changing ||
+            !tracked && !error && !loading && !changing));
+        element('content').classList.toggle('hidden', !nextItem && (!tracked || noActiveRequirement && !hasStock));
         const variantName = multipleVariants ? variantLabel : '';
         element('variant-name').textContent = variantName;
         element('variant-name').classList.toggle('hidden', !variantName);
@@ -230,8 +366,9 @@
         // Shared rows report confirmed API progress, which can lag pending stock.
         const collectionCovered = noRequiredQuantity && (anyGroups.length > 0 || hasStock);
         const stockRequiredQuantity = collectionCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
-        element('ratio').textContent = tracked ?
-            quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
+        const stockRatio = tracked ? quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
+        element('ratio').textContent = stockRatio;
+        trackingDisplayBaselines.set(panel, {stockRatio, hasRequirements: !!visibleRequirements.length || !!anyGroups.length});
         element('ratio').setAttribute('aria-label', 'Available / required quantity');
         element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
             const row = document.createElement('div');
@@ -240,7 +377,8 @@
             const label = document.createElement('dt');
             label.textContent = requirement.kind === 'fir' ? 'Found in Raid' : 'Regular';
             const quantity = document.createElement('dd');
-            quantity.textContent = quantityText(requirement.availableQuantity) + '/' + quantityText(requirement.requiredQuantity);
+            quantity.textContent = (requirement.allocationUnknown === true ? '—' : quantityText(requirement.availableQuantity)) + '/' + quantityText(requirement.requiredQuantity);
+            row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
             row.append(label, quantity);
             return row;
         }), ...anyGroups.map((group) => {
@@ -251,35 +389,11 @@
             label.textContent = group.fir === true ? 'Shared (FiR)' : 'Shared';
             const quantity = document.createElement('dd');
             quantity.textContent = quantityText(group.availableQuantity) + '/' + quantityText(group.requiredQuantity);
-            const genericLabel = group.fir === true ? 'Shared Found in Raid requirement' : 'Shared requirement';
-            const details = group.sources.map((source) => {
-                const questName = safeText(source.questName).trim();
-                const category = safeText(source.category).trim();
-                const name = [questName, category].filter(Boolean).join(' · ') || genericLabel;
-                return name + ': ' + quantityText(source.availableQuantity) + '/' + quantityText(source.requiredQuantity);
-            });
-            row.title = details.length ? details.join('\n') : genericLabel + ': ' + quantity.textContent;
-            row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent + '; ' + row.title.replace(/\n/g, '; '));
+            row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
             row.append(label, quantity);
             return row;
         }));
         element('requirements').classList.toggle('hidden', !visibleRequirements.length && !anyGroups.length);
-        element('completed-sources').replaceChildren(...completedSources.map((source) => {
-            const row = document.createElement('div');
-            row.className = 'tracked-completed-row';
-            row.dataset.type = source.type === 'quest' || source.type === 'hideout' ? source.type : 'unknown';
-            const label = document.createElement('dt');
-            label.textContent = ({ quest: 'Quest completed', hideout: 'Hideout upgrade completed' })[row.dataset.type] || 'Requirement completed';
-            if (source.optional === true) label.textContent += ' (optional)';
-            row.append(label);
-            if (Number.isSafeInteger(source.quantity) && source.quantity > 0) {
-                const quantity = document.createElement('dd');
-                quantity.textContent = itemsText(source.quantity) + ' completed';
-                row.append(quantity);
-            }
-            return row;
-        }));
-        element('completed-sources').classList.toggle('hidden', !completedSources.length);
         const add = element('add');
         add.disabled = !canAddTracking(tracking);
         add.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
@@ -292,9 +406,12 @@
         element('status').classList.toggle('hidden', !status);
         element('error').textContent = error;
         element('error').classList.toggle('hidden', !error);
+        renderNextItem(panel, nextItem);
     };
     const renderTracking = () => {
+        nextItemContextKey();
         const entries = trackingEntries();
+        if (!entries.length) nextItemCache = null;
         const panels = $('tracked-panels');
         const keys = new Set();
         const names = entries.map((tracking) => safeText(tracking.variantName).trim());
@@ -402,6 +519,7 @@
             const removeBadge = panel.querySelector('[data-tracked="remove-hotkey"]');
             removeBadge.textContent = hotkeys[1].value;
             removeBadge.classList.toggle('hidden', !hotkeys[1].ready);
+            updateNextItem(panel, entries[index], entries.length > 1);
         });
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
@@ -444,7 +562,9 @@
         const item = state.item;
         const marketAvailable = !!item && item.haveMarketData === true && !item.bannedOnFlea;
         const slots = item && Number.isInteger(item.slots) && item.slots > 0 ? item.slots : 0;
-        $('item-name').textContent = item ? safeText(item.name) || safeText(item.shortName) || 'Unknown item' : 'Waiting for item';
+        const itemName = item ? safeText(item.name) || safeText(item.shortName) : '';
+        $('item-name-text').textContent = itemName || (item ? 'Unknown item' : 'Waiting for item');
+        $('btn-copy-item').classList.toggle('hidden', !itemName);
         $('item-meta').textContent = item ? (slots ? numberText(slots) + (slots === 1 ? ' slot' : ' slots') : 'Slots: —') :
             'Open the item Inspect window in the game.';
         renderPrice('current-price', 'current-slot-price', marketAvailable ? item.price : null, slots);
@@ -524,8 +644,8 @@
     const previewVariants = preview && new URLSearchParams(window.location.search).get('variants') === '1';
     const previewCompletion = preview && new URLSearchParams(window.location.search).get('completion') === '1';
     const sampleItem = previewVariants ? {
-        uid: 'preview-fuel-tank', bsgId: 'preview-tracked-item', name: 'Metal fuel tank', shortName: 'Fuel',
-        price: 118000, avg24hPrice: 121600, traderName: 'Therapist', traderPrice: 28920, traderPriceCur: '₽', slots: 6,
+        uid: 'preview-mf-untar', bsgId: 'preview-tracked-item', name: 'MF-UNTAR body armor', shortName: 'MF-UN',
+        price: 54999, avg24hPrice: 68710, traderName: 'Ragman', traderPrice: 13112, traderPriceCur: '₽', slots: 9,
         haveMarketData: true, bannedOnFlea: false,
     } : {
         uid: 'preview-item', bsgId: 'preview-tracked-item', name: 'Galvion Caiman Hybrid helmet (MultiCam Alpine)', shortName: 'Caiman',
@@ -540,14 +660,22 @@
             remainingQuantity: 7, requirement: 'fir', requirements: [{ kind: 'fir', requiredQuantity: 7 }], error: '', status: '' },
     };
     if (previewVariants) {
-        const variantError = 'Tarkov Market API cannot update variants that share the same item ID separately.';
-        const full = { ...previewState.tracking, variantName: 'Metal fuel tank (100/100)', availableQuantity: 1,
-            requiredQuantity: 4, remainingQuantity: 3, requirement: 'fir', requirements: [{ kind: 'fir', requiredQuantity: 4 }], error: variantError };
-        const empty = { ...previewState.tracking, variantName: 'Metal fuel tank (0/100)', availableQuantity: 2,
-            requiredQuantity: 6, remainingQuantity: 4, requirement: 'regular', requirements: [{ kind: 'regular', requiredQuantity: 6 }], error: variantError };
-        previewState.tracking = { ...full, variants: [full, empty] };
+        const variantError = 'Separate stock updates are unavailable for variants sharing an item ID in the current Tarkov Market API.';
+        const regular = { ...previewState.tracking, variantName: 'MF-UNTAR body armor (0/50)', availableQuantity: 0,
+            requiredQuantity: 1, remainingQuantity: 1, requirement: 'regular',
+            requirements: [{ kind: 'regular', requiredQuantity: 1, availableQuantity: 0 }],
+            addAllowed: false, removeAllowed: false, error: variantError };
+        const fir = { ...previewState.tracking, variantName: 'MF-UNTAR body armor', availableQuantity: 2,
+            requiredQuantity: 0, remainingQuantity: 0, requirement: 'unknown', requirements: [],
+            anyGroups: [{ groupId: 'quest:scavenger:body-armor', fir: true, requiredQuantity: 15, availableQuantity: 6,
+                sources: [{ questName: 'Scavenger', category: 'Body Armor', requiredQuantity: 15, availableQuantity: 6,
+                    items: [{ itemId: 'preview-mf-untar', name: 'MF-UNTAR body armor', availableQuantity: 2 },
+                        { itemId: 'preview-6b13', name: '6B13 assault armor (EMR)', availableQuantity: 3 },
+                        { itemId: 'preview-interceptor', name: 'Interceptor OTV body armor (UCP)', availableQuantity: 1 }] }] }],
+            addAllowed: false, removeAllowed: false, error: variantError };
+        previewState.tracking = { ...fir, variants: [regular, fir] };
     }
-    if (preview) {
+    if (preview && !previewVariants) {
         previewState.item = { ...sampleItem, name: 'Salewa first aid kit', shortName: 'Salewa', slots: 2,
             price: 0, avg24hPrice: 0, traderPrice: 0, traderName: '', haveMarketData: false };
         previewState.tracking = { ...previewState.tracking, requirement: 'mixed',
@@ -555,6 +683,8 @@
             addAllowed: true, removeAllowed: !previewCompletion, marketAvailableQuantity: previewCompletion ? 0 : 2,
             requirements: [{ kind: 'fir', requiredQuantity: previewCompletion ? 2 : 5, availableQuantity: previewCompletion ? 0 : 2 },
                 { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: previewCompletion ? 0 : 2 }] };
+    }
+    if (preview) {
         previewState.pendingAdds = { count: 0, running: false, status: '', error: '' };
         previewState.local = { loading: false, error: '', warning: '', updatedAt: '2026-10-11T21:30:00Z' };
     }
@@ -575,16 +705,18 @@
         if (method === 'SetHotkeyCapture') previewState = { ...previewState, hotkeyCapture: !!args[0],
             addHotkeyReady: !args[0] && previewState.addHotkey !== 'off', removeHotkeyReady: !args[0] && previewState.removeHotkey !== 'off' };
         if (method === 'RefreshLocalProgress' && previewState.local) {
-            const requiredQuantity = previewCompletion ? 4 : 5;
-            const firRequired = previewCompletion ? 1 : 2;
-            const stock = previewState.tracking.marketAvailableQuantity;
-            const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: Math.min(stock, firRequired) },
-                { kind: 'regular', requiredQuantity: 3, availableQuantity: Math.min(3, stock) }];
-            const addAllowed = previewState.tracking.availableQuantity < requiredQuantity;
-            previewState.tracking = { ...previewState.tracking, requiredQuantity,
-                remainingQuantity: Math.max(0, requiredQuantity - previewState.tracking.availableQuantity),
-                requirements, addAllowed,
-                completedSources: [{ type: 'quest', quantity: 3, optional: false }] };
+            if (!previewVariants) {
+                const requiredQuantity = previewCompletion ? 4 : 5;
+                const firRequired = previewCompletion ? 1 : 2;
+                const stock = previewState.tracking.marketAvailableQuantity;
+                const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: Math.min(stock, firRequired) },
+                    { kind: 'regular', requiredQuantity: 3, availableQuantity: Math.min(3, stock) }];
+                const addAllowed = previewState.tracking.availableQuantity < requiredQuantity;
+                previewState.tracking = { ...previewState.tracking, requiredQuantity,
+                    remainingQuantity: Math.max(0, requiredQuantity - previewState.tracking.availableQuantity),
+                    requirements, addAllowed,
+                    completedSources: [{ type: 'quest', quantity: 3, optional: false }] };
+            }
             previewState.local = { ...previewState.local, updatedAt: new Date().toISOString() };
         }
         if (method === 'SaveAPIKey') {
@@ -819,6 +951,7 @@
             catch (_) { showFeedback('The app could not be closed.', true); }
         });
         $('btn-item-page').addEventListener('click', () => action('OpenItemPage'));
+        $('btn-copy-item').addEventListener('click', () => copyName(safeText(state.item && state.item.name) || safeText(state.item && state.item.shortName)));
         $('search-form').addEventListener('submit', (event) => {
             event.preventDefault();
             const name = $('search-name').value.trim();

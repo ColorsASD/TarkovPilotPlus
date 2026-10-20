@@ -389,7 +389,8 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 func (a *ItemWindowApp) loadPendingProgress(ctx context.Context, entry pendingMarketAdd, remote market.TrackedSnapshot) (localprogress.Snapshot, error) {
 	quests := market.QuestSnapshot{CharUID: remote.CharUID, GameMode: remote.GameMode, Revision: remote.Revision, Quests: []market.Quest{}}
 	hideout := market.HideoutSnapshot{CharUID: remote.CharUID, GameMode: remote.GameMode, Revision: remote.Revision, Modules: []market.HideoutUpgrade{}}
-	if progress, ok := a.tracker.(characterProgressAPI); ok {
+	progress, hasProgress := a.tracker.(characterProgressAPI)
+	if hasProgress {
 		var err error
 		quests, err = progress.LoadQuests(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
 		if err != nil {
@@ -400,7 +401,11 @@ func (a *ItemWindowApp) loadPendingProgress(ctx context.Context, entry pendingMa
 			return localprogress.Snapshot{}, err
 		}
 	}
-	return localprogress.Merge(remote, quests, hideout)
+	merged, err := localprogress.Merge(remote, quests, hideout)
+	if err == nil && !hasProgress {
+		merged.MetadataComplete = false
+	}
+	return merged, err
 }
 
 func (a *ItemWindowApp) verifyPendingMarketAdd(ctx context.Context, entry pendingMarketAdd, remote market.TrackedSnapshot) bool {

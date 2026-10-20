@@ -4,43 +4,168 @@ TarkovPilot+ is a Windows companion app for Escape from Tarkov. It extends [Tark
 
 For the original map, screenshot and game-log features, see the [original TarkovPilot README](https://github.com/ggdiam/TarkovPilot/blob/master/README.md). This README describes this fork and its own additions.
 
-The current Plus version is **1.2.1**, based on **TarkovPilot 2.1.1**. Their source code and version numbers are maintained separately. Both app window title bars display **TarkovPilot+**, and the app interface is in English.
+The current Plus version is **1.3.0**, based on **TarkovPilot 2.1.1**. Their source code and version numbers are maintained separately. Both app window title bars display **TarkovPilot+**, and the app interface is in English.
 
 ## Features
 
-- **Item scanner window.** The item window opens with the main app. Closing either window closes both; unsaved Market updates trigger a warning before exit.
-- **Local English name scanning.** The bundled Tesseract engine reads the title of an open item Inspect window. It does not use Windows OCR. Automatic scanning checks the foreground game window after a left-click; it does not continuously search the whole screen for item names.
-- **Manual scanning and search.** Click **Scan now**, switch back to the game within 3 seconds and keep the Inspect window open. Alternatively, enter an English item name and click **Search**. Both actions remain available when **Automatic scanning** is off.
-- **Tarkov Market prices.** Flea Market shows **Best price** and **24-hour average price**. Trader shows **Best price** and the trader's name. Each price includes its per-slot value in parentheses, and trader prices keep their own currency. Missing or unavailable prices display `—`.
-- **Items Tracker.** Quest and hideout requirements, goal completion and stock come from Tarkov Market. Select a character to see **Found in Raid**, **Regular**, **Shared (FiR)** and **Shared** requirements. Requirement rows show the latest confirmed API progress. Shared progress includes other eligible items. The **Stock** target credits those items without subtracting the selected item's own stock twice: for example, water can progress from `0/4` to `4/4` while Operation Aquarius progresses from `1/3` to `3/3`. When the collection target is covered and no other requirement remains, Stock shows a complete ratio, such as `2/2` or `0/0`. Filled requirements remain visible until the associated goal is completed. Add stops when no eligible requirement needs another item. Found in Raid and Regular describe the API requirements; stock changes do not assign item quality.
-- **Explicit stock updates.** **Add item** increases stock by one; **Remove item** decreases it by one while stock is above zero. Both update the displayed Stock immediately and save to Tarkov Market in the background. Pending changes count toward stock and collection limits. A definite rejection removes the rejected change and displays the error. Network outages keep changes pending in memory; uncertain writes are checked by reading Market before any retry. Character selection uses unique IDs, so characters with the same name remain separate. Choosing a character also selects its PVP, PVE or SEASON game mode.
-- **Global stock shortcuts.** By default, press **F1** to add an item or **F2** to remove one without leaving the game. Both buttons remain available. In Settings, configure or disable each shortcut separately with a key or a Ctrl/Alt/Shift combination. Supported keys include F1-F12, letters, numbers, Space, Insert, Delete, Home, End, PageUp and PageDown. The two actions require different shortcuts. Each shortcut binds its request to the loaded item and character and changes stock at most once per physical press. Holding a key does not repeat the action. Further presses can reserve eligible changes while earlier saves run in the background. Enabled shortcuts are consumed globally for normal Windows keyboard input, even when their action is unavailable; other keys and modifier combinations keep their usual behavior. Applications using direct keyboard input or another higher-priority input handler may still receive the key.
-- **Completion information.** While an active requirement remains, completed quest and hideout sources appear separately, for example **Quest completed — 4 items completed**. Optional completions are labelled. These values do not increase stock or active requirements.
-- **Pending Market updates.** While background saves run, the scanner status and the main Events log heading include the unsaved item count in parentheses. Pending work exists only in memory. The app warns before closing with unsaved items; exiting discards updates that have not reached Market.
-- **Protected API key.** The item scanner's API key is stored with Windows DPAPI encryption for the current Windows user. The field is masked by default; the eye icon explicitly shows or hides the saved key.
-- **Current help and scan details.** **How it works** explains the controls. **Scan details** shows detected Inspect windows, recognized titles and the result. The catalog timestamp appears without a source label, in local `YYYY.MM.DD. HH:mm:ss` format, for example `2026.10.11. 00:30:23`.
-
-Item names, prices, images, characters and tracking data come from the [Tarkov Market API](https://tarkov-market.com/dev/api). The catalog is cached locally for five minutes, and requests respect rate limits and server retry delays. Character and inventory responses are not written to the catalog cache. Tracked Items requires the appropriate API PRO access.
-
-Completing a quest or hideout upgrade on Market removes its active requirements. Other unfinished goals keep their own requirements. Alternative candidates belong to the same **Shared requirement: N of M eligible items** supplied by Market.
-
-After a confirmed load, Inspect changes and stock actions use the Market requirement graph in memory. Add and Remove reserve their stock change immediately, then a background worker checks fresh Market stock and its revision before sending each documented absolute update in order. The scanner status and main Events log heading track the pending item count. A network outage retains those in-memory changes; a definite rejection removes the rejected change. Refresh verifies uncertain writes without automatically repeating them. Inventory, progress and pending updates are not written to disk, and unsaved work is not restored after restart. The app does not keep item-quality annotations. **Refresh progress** reloads the current Market state.
-
-A successful write acknowledgement remains valid when another client changes stock before the follow-up read. The app displays the later confirmed stock without applying its saved change again. Queued shortcut requests survive unrelated state updates while their item, character and settings remain eligible. Pending updates keep their order within each API-key, character and game-mode profile; an inaccessible profile stays visible as pending while other profiles can continue saving.
-
-Tracker refreshes run in the background while the loaded panel and its counters remain visible. Stock actions pause until the refresh finishes. If the request fails, the last known counters stay visible with an error. Changing the item or profile clears unrelated data.
-
-When the API reports separate FIR inventory, the app does not invent separate stock fields or send undocumented updates. Market stock updates are disabled in that case. Variants sharing the same item ID appear in separate Items Tracker panels, each with its own API name, stock, requirements and completion details. Panels with no active required quantity stay hidden. The documented update endpoint accepts only the shared item ID, so Add remains disabled for these variants until the API supports targeting them individually.
+- **Separate item window.** The companion opens with the main app. Closing either window closes both; unsaved Market updates trigger a warning before exit.
+- **Local English OCR and search.** Recognize an item's Inspect title automatically or manually, or search by its English name without opening an Inspect window.
+- **Market prices and progress.** Compare Flea Market and trader prices, then view the selected character's stock, requirement categories and quest/hideout details.
+- **Next Item and completed goals.** Read the expected next requirement category, current goal ratios and completed checkmarks. Copy item or goal names with the small brown icons.
+- **Stock controls.** Add or remove one item with buttons or configurable global shortcuts. Eligible changes appear immediately and save to Tarkov Market in the background.
+- **Local settings.** The API key is encrypted with Windows DPAPI. Inventory, goal progress and pending stock changes are used in memory rather than saved as a local inventory.
 
 ## Installation
 
 1. Obtain this fork's Windows x64 ZIP, named `TarkovPilotPlus-<version>-windows-x64.zip`, from its [releases](https://github.com/ColorsASD/TarkovPilotPlus/releases).
 2. Extract the complete ZIP to a writable folder. Keep `TarkovPilotPlus.exe`, `versions.json` and the entire `ocr` folder together.
 3. Run `TarkovPilotPlus.exe`. Configure the original Pilot connection key and game folders in the main window if you use its map and log features.
-4. In the item window, open **Settings**, enter your Tarkov Market API key and click **Save**. This API key is separate from the original Pilot connection key.
-5. Select a character/game mode and use English item names in the game. Use windowed or borderless mode for Inspect scanning.
+4. In the item window, open **Settings**, enter your Tarkov Market API key and click **Save**. This key is separate from the original Pilot connection key. Tracked Items requires the appropriate API PRO access.
+5. Select a character and game mode. Characters use unique IDs, so matching names do not merge their inventories. Selecting a character also selects its PVP, PVE or SEASON mode.
+6. Use English item names in the game and windowed or borderless mode for Inspect scanning. Leave the complete `ocr` folder beside the EXE.
 
 The local OCR helper requires Windows PowerShell 5.1, .NET Framework 4.8 and the Microsoft Visual C++ 2015–2022 x64 runtime. OCR DLLs, the English model and their licence files are included in the ZIP; the system runtimes are not.
+
+The saved API key is masked by default. The eye icon explicitly shows or hides it; ordinary frontend state does not contain the key.
+
+## How it works?
+
+The in-app help provides a short control reference. The sections below explain the counters and the differences between collected stock, an active requirement and a completed goal.
+
+### Find an item
+
+Name scanning always uses English. Open the item's **Inspect** window in the game and keep its title visible.
+With **Automatic scanning** enabled, the app checks the foreground game window after a left-click and reads the detected Inspect title with bundled Tesseract.
+It does not use Windows OCR or continuously search the whole screen for names.
+
+For a manual scan, click **Scan now**, switch back to the game within **3 seconds** and keep Inspect open.
+Manual scanning remains available when Automatic scanning is off.
+To search without Inspect, enter the English item name and click **Search**; this also works with Automatic scanning off.
+
+**Scan details** shows the detected Inspect windows, recognized titles and result.
+The catalog timestamp uses local `YYYY.MM.DD. HH:mm:ss` formatting, for example `2026.10.11. 00:30:23`.
+If recognition misses a short title or the wrong item is selected, inspect these details or use manual name search.
+
+### Read prices
+
+**Flea Market** shows the current **Best price** and **24-hour average price**.
+**Trader** shows the best trader price and the trader's name, using that trader's own currency.
+Each available price includes its price per inventory slot in parentheses. Missing or unavailable prices display `—`.
+Prices use the selected character's game mode.
+
+Names, prices, images, characters and progress come from the [Tarkov Market API](https://tarkov-market.com/dev/api).
+The public catalog is cached locally for five minutes. Requests respect API rate limits and server retry delays; character and inventory responses are not written to that catalog cache.
+
+### Read Items Tracker
+
+The tracker uses the selected character's Tarkov Market data. **Stock** is the item's inventory; the rows beneath it describe requirements that can use that inventory.
+The same piece must not be counted independently in every row.
+
+| Row | Meaning | How to read it |
+|---|---|---|
+| **Stock** | The selected item's available quantity and current collection target. Pending additions and removals are included immediately. | `2/5` means 2 available against a target of 5. Other eligible items can reduce a Shared collection target. |
+| **Regular** | Fixed requirements that do not require Found in Raid according to the API. | Uses the confirmed stock left after group reservations and fixed FiR allocation. It is not a separate inventory. |
+| **Found in Raid** | Fixed requirements marked FiR by the API. | Uses the applicable confirmed stock after Shared reservations. The label describes the requirement, not a detected quality of the scanned item. |
+| **Shared** | Group progress across eligible alternative items without a FiR requirement. | `3/8` is shared group progress; other item types can supply part of the 3. |
+| **Shared (FiR)** | Group progress across eligible alternatives for a FiR requirement. | `6/15` is the group's confirmed progress, not necessarily 6 copies of the selected item. |
+| **`—/required`** | The requirement amount is known, but available API data does not establish an unambiguous allocation. | Read it as unknown allocation rather than zero stock. |
+
+Shared rows summarize confirmed API group progress, separately for FiR and non-FiR groups.
+The collection target credits other eligible items and their pending changes without subtracting the selected item's own stock twice.
+Overlapping groups share one allocation of stock rather than claiming the same piece repeatedly.
+
+For fixed rows, the display reserves confirmed stock for Shared progress first, then allocates the remainder to Found in Raid and Regular, in that order.
+This display rule does not promise to reproduce every undocumented Market priority for overlapping goals.
+Pending stock reaches requirement and Shared counters after confirmation; the Stock row can therefore update before those counters.
+
+When a collection target is covered and no other requirement remains, Stock can show its available quantity as a complete ratio, such as `2/2` or `0/0`, while a Shared row retains its group ratio.
+An active row can remain visible at `10/10`: enough collected items does not complete the associated quest or hideout upgrade.
+
+### Read Next Item and goal details
+
+**Next Item** shows the expected category on the right: **Regular**, **Found in Raid**, **Shared** or **Shared (FiR)**.
+It comes from a local virtual **+1** calculation over the current API stock and quest/hideout requirements. Calculating it never adds an item or sends an inventory update.
+The model uses API availability and checks modeled Shared progress against the current counters, but exact Market horizon depths and priority metadata are unavailable.
+Treat the category as an estimate, not a guaranteed ordering or recognition of the item's in-game FiR status.
+
+If the calculation does not identify one of these four categories, the header displays `—` and retains the available goal details.
+When all known ratios are covered, no raw requirement gap remains and Add is ineligible, the category becomes blank.
+The app does not display a guessed Regular category as a fallback.
+
+Below the header, quest lists appear before hideout module lists.
+The headings use **Quest** for one quest and **Quests** for several; **Hideout Module** for one module and **Hideout Modules** for several.
+Each name is on the left, with its current ratio in parentheses at the right edge, for example **(0/5)**.
+These are the current requirements for this item or its Shared group, not virtual +1 results or the total of every item needed by the whole quest.
+A Shared ratio can include other eligible items. Unknown allocations display **(—/5)**.
+
+The lists include the item's mandatory quest and hideout source records, including completed goals.
+Canceled, optional and zero-amount sources do not contribute to these ratios.
+A small brown checkmark marks a goal reported as completed; its full ratio, such as **(5/5)**, stays visible.
+An active requirement that happens to be full does not acquire a completion checkmark.
+Other unfinished goals retain their own counters when one goal is completed.
+
+Small brown copy icons appear beside the item name in the header and beside each quest/hideout name.
+Click an icon to copy **only that name**, without its ratio, group heading or completion mark.
+In a completed goal row, the copy icon appears before the brown checkmark. The controls are recreated from the current names after refreshes.
+
+When every associated target belongs to completed sources, the raw requirement is zero and Add is ineligible, the confirmed section becomes **Completed Item**.
+The goal names, copy controls, completed checkmarks and full ratios remain, while the Stock summary, Regular/FiR/Shared rows, gray divider and Add/Remove buttons are hidden.
+This is a presentation change: it does not deduct or overwrite stored stock, complete another goal or rewrite stock-action eligibility.
+An active filled goal or a mixture of active and completed goals stays under **Next Item**, with its current Stock and stock controls.
+
+New quest, hideout, group and inventory responses automatically rebuild these details and recalculate the category.
+The app uses source IDs and returned goal data rather than a hardcoded list of item or quest names.
+
+### Add or remove stock
+
+Click **Add item** to reserve one additional item for the selected character, or **Remove item** to remove one available item.
+Both actions change the same shared Market stock. They do not assign Regular/FiR quality, hand an item to a particular quest or mark a goal complete.
+Add stops when no eligible active requirement can use another item. Remove requires a supported, unambiguous item with positive available stock; it does not require an unfinished goal.
+Unsupported or temporarily unavailable actions are disabled. Completed Item presentation hides both buttons as described above.
+
+### Set the stock shortcuts
+
+By default, **F1** adds one item and **F2** removes one, using the same underlying stock checks as the buttons.
+In **Settings**, focus a shortcut field and press the desired key or key combination. Use **Disable** to release that shortcut.
+The two actions require different shortcuts; capturing a shortcut temporarily suspends stock actions.
+
+Supported keys are **F1–F12**, letters, numbers, **Space**, **Insert**, **Delete**, **Home**, **End**, **PageUp** and **PageDown**, optionally combined with **Ctrl**, **Alt** and **Shift**.
+Each accepted physical press binds to the loaded item and character and changes stock at most once. Holding the key does not repeat the action.
+Further presses can reserve eligible changes while earlier saves run in the background; item, profile or settings changes invalidate unrelated shortcut requests.
+
+Enabled shortcuts are consumed globally for normal Windows keyboard input, including when the stock action is unavailable.
+Other keys and modifier combinations keep their normal behavior. Games using direct keyboard input or another higher-priority input handler may still receive the key.
+The app does not guarantee exclusive interception of every game's input path.
+
+### Refresh and background saves
+
+Use **Settings → Refresh progress** after changing inventory or goal completion on Tarkov Market.
+Refresh reloads the current Market state; it does not add or remove stock by itself.
+Loaded counters and the latest same-item goal details remain visible while tracking data refreshes, including an existing Completed Item section.
+Stock actions pause until refresh finishes. The last known counters remain with an error if refreshing fails; unavailable forecast details may be hidden.
+Changing the item, item ID, character or mode clears unrelated forecast details rather than showing another profile's data.
+
+Stock actions reserve their change immediately, then a background worker reads fresh stock and its revision before sending documented absolute updates in order.
+Pending pieces participate in collection limits and cannot be removed below zero.
+The scanner status and main Events log heading show the pending count, for example **(3 items waiting for API save)**.
+
+A definite rejection removes the rejected pending change and shows the error. A network outage keeps pending work in memory.
+If a write outcome is uncertain, the app checks Market through read-back before any retry; it does not blindly repeat a possibly successful update.
+A successful acknowledgement remains valid if another client changes stock before the next read, and the app does not apply its saved change a second time.
+
+Pending updates keep their order within each API-key, character and game-mode profile. An inaccessible profile remains pending while other profiles can continue saving.
+Closing either window with unsaved work shows a warning. Confirming exit discards changes that have not reached Market.
+Inventory, requirements and the pending queue are not written to disk; unsaved work is not restored or replayed after restart.
+
+### Same-ID variants and separate FiR inventory
+
+Variants sharing an item ID appear in separate tracker panels with their own API names, stock and requirement types.
+Their confirmed stock contributes to the correct Shared groups according to their source records, including when another candidate is selected.
+The documented stock endpoint accepts only the common item ID, so Add and Remove are disabled when that ID cannot identify the intended variant.
+The app does not combine these inventories merely to make an update possible.
+
+If the API reports separate FiR inventory, unsupported stock updates are also disabled instead of inventing undocumented quality fields.
+Existing stock and supported requirement details can still be displayed. Ambiguous variants and unsupported inventory layouts can omit the Next Item forecast.
 
 ## Building
 
@@ -54,7 +179,7 @@ cd app
 
 The frontend consists of static HTML, CSS and JavaScript. A Node/npm frontend build is not required.
 
-The build prepares OCR dependencies from pinned official sources and verifies their SHA256 hashes. Every build creates the complete `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` package, containing `TarkovPilotPlus.exe`, the matching `ocr` folder and `versions.json`. It also creates `TarkovPilotPlus-<version>-windows-x64.zip` and its `.sha256` file. The current package uses version `1.2.1`. OCR does not download models or call an external OCR service at runtime.
+The build prepares OCR dependencies from pinned official sources and verifies their SHA256 hashes. Every build creates the complete `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` package, containing `TarkovPilotPlus.exe`, the matching `ocr` folder and `versions.json`. It also creates `TarkovPilotPlus-<version>-windows-x64.zip` and its `.sha256` file. The current package uses version `1.3.0`. OCR does not download models or call an external OCR service at runtime.
 
 The default compiler output is `TarkovPilotPlus.exe`. Even when a custom `-OutputFilename` is supplied, the executable is moved into the complete package under the name `TarkovPilotPlus.exe`; the same name is used inside the ZIP. No extra standalone compiler EXE remains in `app/build/bin` after a successful build.
 
@@ -122,9 +247,7 @@ Original Pilot settings remain in `%APPDATA%\TarkovPilot`. Item scanner settings
 
 Stock and quest/hideout progress are saved only on Tarkov Market. Character inventory, requirements, completion responses and additions awaiting a Market save are used in memory while the app runs. Local files contain the encrypted API key, scanner settings and item-price catalog cache. Previous local stock files and operation journals are not loaded or uploaded.
 
-The Add item button and its default F1 shortcut accept only an eligible active Market requirement and increase the shared stock. Remove item and F2 decrease available stock even when no active requirement remains. Shared collection targets use the API's reported group progress and other eligible items, including their pending changes. Own stock is counted once. Active group progress is summarized in one Shared (FiR) row and one Shared row. Regular and Found in Raid use the source requirements and confirmed API stock; pending changes appear immediately in Stock and reach requirement rows after confirmation. Covered groups remain visible until their goals are completed or canceled. This display summary does not change Market stock.
-
-Shared row tooltips show each group's quest, category and progress from the documented [Tarkov Market API](https://tarkov-market.com/dev/api) `groups` and `questGroup` sources.
+The copy controls write only the selected displayed name to the Windows clipboard when clicked. Copying a name does not submit an inventory or goal update.
 
 ## Updates and licences
 

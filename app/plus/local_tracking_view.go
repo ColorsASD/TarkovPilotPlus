@@ -37,7 +37,7 @@ type localTrackingDisplayBucket struct {
 // simplifyLocalTrackingView csak a nézetet alakítja át. A fix követelmények
 // külön maradnak a globális Any arányoktól; a csoportok belső azonossága és
 // készletkiosztása nem változik a megjelenítéshez használt összevonástól.
-func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot) {
+func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot, confirmed ...localprogress.RequirementStock) {
 	if view == nil {
 		return
 	}
@@ -67,6 +67,11 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 		}
 		group := groups[source.GroupID]
 		knownGroup := group != nil && group.valid
+		if !knownGroup {
+			if explicit := singleCandidateTrackingGroup(source, row, snapshot); explicit != nil {
+				group, knownGroup = explicit, true
+			}
+		}
 		if source.Completed {
 			if knownGroup && group.completed {
 				if !seenCompleted[group.id] {
@@ -106,6 +111,7 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 				bucket.sources = append(bucket.sources, ItemTrackingAnySource{
 					GroupID: group.id, QuestName: group.questName, Category: group.category,
 					AvailableQuantity: available, RequiredQuantity: group.count,
+					Items: sharedTrackingItems(snapshot, group.id),
 				})
 				bucket.required += group.count
 				bucket.available += available
@@ -121,16 +127,28 @@ func simplifyLocalTrackingView(view *ItemTrackingState, row localprogress.Item, 
 		}
 	}
 	if confirmedMarketStock {
-		// Az API egy közös készletet ad, külön típusonkénti darabszámot nem.
-		// A még nem visszaigazolt Add csak a Stock számlálóját növeli.
-		firAvailable, regularAvailable = row.MarketAvailableQuantity, row.MarketAvailableQuantity
+		if len(confirmed) == 0 {
+			stocks := localprogress.ConfirmedRequirementStock(snapshot)
+			for i, candidate := range snapshot.Items {
+				if candidate.ItemID == row.ItemID {
+					confirmed = []localprogress.RequirementStock{stocks[i]}
+					break
+				}
+			}
+		}
+		// A visszaigazolt Shared célhoz lefoglalt darab nem jelenhet meg
+		// még egyszer a fix követelménysorban. Pending csak a Stock része.
+		if len(confirmed) > 0 {
+			firAvailable, regularAvailable = confirmed[0].FIR, confirmed[0].Regular
+		}
 	}
+	allocationUnknown := confirmedMarketStock && (len(confirmed) == 0 || !confirmed[0].Known)
 	view.Requirements = []ItemTrackingRequirement{}
 	if firRequired > 0 {
-		view.Requirements = append(view.Requirements, ItemTrackingRequirement{Kind: "fir", RequiredQuantity: firRequired, AvailableQuantity: min(firRequired, firAvailable)})
+		view.Requirements = append(view.Requirements, ItemTrackingRequirement{Kind: "fir", RequiredQuantity: firRequired, AvailableQuantity: min(firRequired, firAvailable), AllocationUnknown: allocationUnknown})
 	}
 	if regularRequired > 0 {
-		view.Requirements = append(view.Requirements, ItemTrackingRequirement{Kind: "regular", RequiredQuantity: regularRequired, AvailableQuantity: min(regularRequired, regularAvailable)})
+		view.Requirements = append(view.Requirements, ItemTrackingRequirement{Kind: "regular", RequiredQuantity: regularRequired, AvailableQuantity: min(regularRequired, regularAvailable), AllocationUnknown: allocationUnknown})
 	}
 	view.Requirement = "unknown"
 	switch {

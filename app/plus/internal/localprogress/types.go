@@ -67,6 +67,14 @@ type Snapshot struct {
 	Revision             string `json:"revision"`
 	FIRInventorySeparate bool   `json:"firInventorySeparate"`
 	Items                []Item `json:"items"`
+	// Az eredeti csoportadat a több készletváltozathoz kapcsolódó, csak
+	// olvasható nézetben is megmarad; a készletkiosztás nem használja.
+	MarketGroups []market.TrackedGroup `json:"marketGroups,omitempty"`
+	// A következő darab helyi előrejelzése ugyanannak a revíziónak a teljes
+	// célállapotát használja; az API-ból érkező új célok is itt jelennek meg.
+	MarketQuests     []market.Quest          `json:"marketQuests,omitempty"`
+	MarketHideout    []market.HideoutUpgrade `json:"marketHideout,omitempty"`
+	MetadataComplete bool                    `json:"metadataComplete"`
 }
 
 // Clone a hívó kezében lévő pillanatképet a forráslistákig másolja.
@@ -75,6 +83,15 @@ func Clone(snapshot Snapshot) Snapshot {
 	for i := range snapshot.Items {
 		snapshot.Items[i].Sources = append([]Source{}, snapshot.Items[i].Sources...)
 	}
+	snapshot.MarketGroups = append([]market.TrackedGroup(nil), snapshot.MarketGroups...)
+	for i := range snapshot.MarketGroups {
+		snapshot.MarketGroups[i].ItemIDs = append([]string(nil), snapshot.MarketGroups[i].ItemIDs...)
+	}
+	snapshot.MarketQuests = append([]market.Quest(nil), snapshot.MarketQuests...)
+	for i := range snapshot.MarketQuests {
+		snapshot.MarketQuests[i].QuestIDAliases = append([]string(nil), snapshot.MarketQuests[i].QuestIDAliases...)
+	}
+	snapshot.MarketHideout = append([]market.HideoutUpgrade(nil), snapshot.MarketHideout...)
 	return snapshot
 }
 

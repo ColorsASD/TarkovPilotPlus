@@ -27,7 +27,7 @@
     <main class="wrap">
         <div id="preview-label" class="preview-label hidden">Preview · Sample data</div>
 
-        <section class="item-panel" aria-labelledby="item-name">
+        <section class="item-panel" aria-labelledby="item-name-text">
             <div id="item-image-wrap" class="item-image-wrap">
                 <img id="item-image" class="hidden" alt="" referrerpolicy="no-referrer" />
                 <svg id="item-image-placeholder" class="item-image-placeholder" viewBox="0 0 48 48" aria-hidden="true">
@@ -35,7 +35,7 @@
                 </svg>
             </div>
             <div class="item-heading">
-                <h1 id="item-name">Waiting for item</h1>
+                <h1 id="item-name"><span id="item-name-text">Waiting for item</span> <button id="btn-copy-item" class="name-copy-button hidden" type="button" title="Copy item name" aria-label="Copy item name"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h8v8H5ZM10 5V2H2v8h3" /></svg></button></h1>
                 <div id="item-meta" class="item-meta">Open the item's Inspect window in the game.</div>
             </div>
         </section>
@@ -71,7 +71,10 @@
                 <p data-tracked="variant-name" class="tracked-variant-name hidden"></p>
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
-                <dl data-tracked="completed-sources" class="tracked-completed-sources hidden" aria-label="Completed requirements"></dl>
+                <div data-tracked="next-item" class="tracked-next-item hidden">
+                    <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Item</span><span data-tracked="next-item-category" class="tracked-next-item-category"></span></div>
+                    <div data-tracked="next-item-targets" class="tracked-next-item-targets"></div>
+                </div>
                 <button data-tracked="add" class="tracked-add-button" type="button" disabled
                     title="Add 1 item to shared Tracked Items stock for the selected character"><span>Add item</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
                 <button data-tracked="remove" class="tracked-add-button" type="button" disabled
@@ -180,47 +183,29 @@
         </details>
 
         <details class="help-panel">
-            <summary>How it works</summary>
+            <summary>How it works?</summary>
             <div class="help-content">
-                <p>In Settings, enter your Tarkov Market API key and click Save.
-                    The key is hidden by default; use the eye icon to show or hide it.</p>
-                <p>Choose a game mode: PVP, PVE or SEASON. If you have multiple characters, select one.
-                    Item prices use the game mode of the selected character.</p>
-                <p>Name scanning always uses English. Use English item names in the game and open the item's Inspect window.
-                    With Automatic scanning enabled, the app checks the title after a left-click while the game is in the foreground.
-                    It does not scan item names without an Inspect window.</p>
-                <p>After clicking Scan now, switch back to the game within 3 seconds and keep the item's Inspect window open.
-                    Manual scanning also works when Automatic scanning is off.</p>
-                <p>To search by name, enter the item's English name and click Search.
-                    This does not require an open Inspect window or Automatic scanning.</p>
-                <p>Flea Market shows Best price and 24-hour average price. Trader shows the best trader price.
-                    The price per slot appears in parentheses. Trader prices use the trader's own currency.</p>
-                <p>Items Tracker uses only Tarkov Market progress and appears when the selected character has an active mandatory requirement or remaining stock for the item.
-                    Filled requirements remain visible, for example 10/10, until the associated goal is completed.
-                    Refreshes keep the loaded panel visible while data updates in the background; stock actions pause until the refresh finishes.
-                    The Add item button and shortcut stop adding when no eligible requirement needs another item.</p>
-                <p>Stock always shows available stock / required quantity, for example 2/5.
-                    When the collection target is covered and no other item requirement remains, Stock shows your available stock as complete, for example 2/2 or 0/0.
-                    Found in Raid and Regular requirements appear on separate rows, but share the same stock.</p>
-                <p>Shared and Shared (FiR) show the latest group progress confirmed by Tarkov Market, including stock from other eligible items.
-                    Stock includes pending additions and removals immediately; Shared progress updates after the API confirms it.
-                    The collection target takes other eligible items into account without subtracting the selected item's own stock twice.</p>
-                <p>Click Add item or press F1 to add one item to the selected character's shared stock.
-                    Click Remove item or press F2 to remove one item when stock is available.
-                    Found in Raid and Regular labels describe the API requirements; adding does not assign an item quality.
-                    Each shortcut works while the game is in the foreground, but only when the loaded item's corresponding button is available.
-                    Each physical press changes stock by at most one item; holding the key does not repeat.
-                    Stock changes immediately while the update is sent to Tarkov Market in the background.
-                    The status log shows how many stock changes are waiting for the API save. A rejected update restores the confirmed stock. Network errors keep pending changes in memory; uncertain saves are checked before retrying.
-                    Pending updates are kept only while the app runs; closing with unsaved items shows a warning.</p>
-                <p>F1 adds and F2 removes by default. Change each shortcut separately in Settings, or use Disable to release it.
-                    While enabled, the keys are reserved globally for normal Windows keyboard input even when the corresponding stock action is unavailable.
-                    Apps that use direct keyboard input may still receive the keys.</p>
-                <p>Completed quest and hideout requirements appear on separate rows, for example 4 items completed.
-                    These quantities indicate completion and do not increase stock.</p>
-                <p>Text recognition runs locally on screenshots. The app does not read or modify the game's memory
-                    and does not send screenshots to external services. Item prices and data come from the Tarkov Market API.</p>
-                <p>Closing either app window closes both windows.</p>
+                <p><strong>Setup.</strong> Save your Tarkov Market API key in Settings and select a character.
+                    Prices follow that character's PVP, PVE or SEASON mode.</p>
+                <p><strong>Find an item.</strong> Use English item names and open Inspect in the game.
+                    Automatic scanning checks it after a left-click. Or click Scan now and return to the game within
+                    3 seconds, or enter an English name and click Search.</p>
+                <p><strong>Prices.</strong> Flea Market shows the best and 24-hour average prices.
+                    Trader shows the best trader price. Values in parentheses are prices per slot.</p>
+                <p><strong>Stock.</strong> Stock shows available quantity / collection target.
+                    Regular and Found in Raid show fixed requirements.
+                    Shared and Shared (FiR) include other eligible items. Add item adds one piece;
+                    Remove item removes one. F1/F2 are the defaults and reserve those keys while enabled;
+                    change or disable them in Settings.</p>
+                <p><strong>Goals.</strong> Next Item estimates the next piece's category from current Market progress.
+                    The quest and hideout lists show the item's goals and current ratios. Brown checkmarks mark completed goals.</p>
+                <p><strong>Completed Item.</strong> When all listed goals are completed and no active item requirement remains,
+                    only the completed goal list is shown. Stock, requirement rows and Add/Remove buttons are hidden.</p>
+                <p><strong>Names and refresh.</strong> The brown copy icons copy only the item, quest or hideout name.
+                    Refresh progress reloads Market data. The last goal details stay visible during refreshes.</p>
+                <p><strong>Saving.</strong> Stock updates immediately and saves to Market in the background.
+                    Wait for pending saves before exiting. Closing either window closes both; unsaved changes cannot
+                    be restored after restart. Text recognition runs locally.</p>
             </div>
         </details>
     </main>

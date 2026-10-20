@@ -10,12 +10,14 @@ in the [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/READM
 - `item_window.go` — Item Scanner Wails window, encrypted API key, settings, English title OCR and manual search
 - `item_tracking.go` — character selection, Items Tracker and inventory updates
 - `local_progress.go` — coherent Market quest/hideout progress loading and the existing Items Tracker view
+- `local_tracking_view.go`, `variant_tracking_view.go` and `shared_tracking_items.go` — display projections for fixed requirements, separately identified variants and Shared group details
 - `item_hotkey.go` — Add availability, immutable item/character targets and a worker shared with the Add button's stock operation
 - `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable Add item shortcut, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
 - `inspect_clicks_windows.go` — automatic scan trigger after a click
 - `paired_windows.go` — companion window startup, display and shutdown; a callback requests shutdown of the main application
 - `internal/market` — catalog, prices, characters, requirements and the documented inventory update operation
 - `internal/localprogress` — pure Market requirement allocation and alternative-group calculations
+- `internal/nextitem` — pure virtual +1 allocation estimates, current goal ratios and source-based completion flags
 - `internal/scanner` and `ocr` — local Tesseract engine, Inspect detection and OCR
 - `frontend/dist` — Item Scanner frontend only; its Wails binding is `window.go.plus.ItemWindowApp`
 - `update.go` — Plus release page and the update policy that prevents upstream EXE replacement
@@ -34,7 +36,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.2.1`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.3.0`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -45,7 +47,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.2.1`.
+version is `1.3.0`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -109,8 +111,10 @@ as the corresponding button. The displayed stock changes immediately. A separate
 worker checks fresh stock and its revision, sends the update and verifies the
 result. Pending additions and removals count toward stock and Add eligibility without blocking
 further eligible changes while the network request runs.
-Both buttons remain usable when their shortcuts are disabled or
-their hooks cannot start.
+Disabling a shortcut or failing to start its hook does not disable the
+corresponding eligible button. The confirmed Completed Item display hides both
+stock buttons; their visibility is separate from the stock worker and shortcut
+eligibility.
 
 Windows hook consumption does not guarantee priority over every input path.
 Applications using direct input, protected system input or another input handler
@@ -160,14 +164,99 @@ Add actions remain available while prior saves are pending if another eligible
 requirement still needs a piece. Closing either window with unsaved work shows
 a native warning; confirming exit discards updates that have not reached Market.
 
-The Items Tracker card and its Found in Raid, Regular, Shared (FiR) and Shared rows
-remain visible when stock covers their requirements, for example 10/10. The
-Add item button and shortcut stop when no eligible requirement needs another item.
+For active or mixed goals, the Items Tracker card and its Found in Raid, Regular,
+Shared (FiR) and Shared rows remain visible when stock covers their requirements,
+for example 10/10. The Add item button and shortcut stop when no eligible
+requirement needs another item.
 Completing or canceling the associated goal removes its active requirement.
 Once the collection target is covered and no other requirement remains,
 Stock displays the item's available quantity as a complete ratio, such as 2/2
 or 0/0, while Shared can remain 8/8. This display convention changes neither Market
 stock nor Add eligibility.
+
+The compact Next Item section shows the backend's estimated category on the right,
+followed by every requirement for the current item, including completed goals,
+under separate quest and hideout headings, in that order. One quest uses Quest;
+multiple quests use Quests. One hideout entry uses Hideout Module; multiple entries
+use Hideout Modules. Each name is on the left and its current
+available/required ratio is in parentheses at the right edge. These are current
+item-specific ratios, not virtual +1 values or the whole goal's item total. Shared
+ratios can include other eligible items. Completed goals retain their complete
+`x/x` ratios here instead of an aggregate completed-items row under Stock. An
+unknown allocation displays `—/required`.
+A gray divider separates this section from the summary rows. Requirement rows and
+the Next Item category have no descriptive hover help; Add/Remove and copy-button
+tooltips and help elsewhere remain.
+If the calculation does not identify one of the four stock categories, the header
+shows `—` while retaining the current requirement details.
+When every target has a known complete ratio, no raw requirement gap remains and
+Add is no longer eligible, the category is blank while the headings and goal list
+remain. A refresh retains the previous category until that final state is confirmed.
+When every target belongs only to completed sources, Add is ineligible and the raw
+requirement is zero, the confirmed display becomes Completed Item. The Stock
+summary, divider, Add/Remove buttons and Regular, Found in Raid and Shared summary rows are hidden, and the
+quest/hideout list retains its complete `x/x` ratios. This changes only the display;
+raw stock and Remove eligibility remain unchanged. Filled active or mixed goals
+still use Next Item with their current Stock. A refresh retains the complete last
+display state until the new data is confirmed.
+The backend's `Target.Completed` flag is true only when the displayed target's
+requirements come from completed sources, a completed quest, a completed or
+prebuilt module, or an explicitly completed Shared group. Completed fixed sources
+use their original `Amount/Amount`; Shared sources use the explicit group amount
+once per group. Repeated fixed API sources retain their reported total. A mixed
+goal stays active even at `10/10`, and a positive source amount with zero remaining
+quantity does not by itself prove completion. Optional and canceled sources do
+not contribute to these details. These flags affect rendering only; they do not
+complete quests, consume inventory or clear Market stock.
+Completed goal names have a small brown checkmark without hover help.
+Small brown copy buttons follow the item, quest and hideout names; completed goal
+rows place the copy button before the checkmark. Each button copies only its
+displayed name through the native clipboard, including during progress refreshes.
+The desktop frontend calls `window.runtime.ClipboardSetText(name)` directly and
+awaits its `Promise<boolean>`; a failed call shows feedback. It uses no extra Go
+binding and never reads the clipboard. Browser-only previews can use
+`navigator.clipboard.writeText`; the desktop path uses the Wails runtime.
+The latest result stays visible during refreshes and stock updates for the same
+item, item ID, character and game mode. Switching that context, an error, separate
+FiR inventory or an ambiguous variant clears it. A finished calculation with no
+target details also clears it. Completed targets remain visible while Add is
+unavailable.
+New quest, hideout and inventory responses automatically update the section. The
+category comes from a local virtual +1 calculation using API availability; missing
+Market horizon and priority metadata mean it remains an estimate. The calculation
+never submits its virtual +1 and changes neither stock, action eligibility nor the
+Add and Remove shortcuts. Requirement categories do not identify the item's
+in-game Found in Raid status.
+
+`internal/nextitem.Calculate` uses the complete confirmed inventory and its
+current quest and hideout sources, including canonical quest IDs, their aliases
+and module upgrade keys. Newly returned goals need no item-specific rules. The
+engine compares allocations before and after a virtual one-item addition and
+filters candidate priority models against the current explicit API Shared
+counters. The first matching model supplies the estimate. Alternatives test
+near/future assignments and stable order within the component connected by the
+selected item and positive stock; up to six unknown goals receive all binary
+assignments in both tested orders, while larger components use bounded probes.
+The API's complete horizon, stage and tie order remain unavailable, so a matching
+baseline is not a guarantee of Market's next allocation.
+
+The forecast DTO carries `status`, `category`, `possibleCategories`, `goalName`,
+net goal/category `changes`, explanatory `reason` and the current `targets`.
+Target ratios include only needs accepting the selected physical item, aggregated
+once per goal; other item needs still influence the allocation engine. Fixed
+current ratios come from the selected model's before allocation; Shared ratios
+use the confirmed API group counters. If no model reproduces those counters,
+fixed target allocations are marked unknown while explicit Shared and completed
+ratios remain available. Existing stock can move between needs after +1, so the
+backend can report `Reallocated`; an unused addition is `Stock only`. The compact
+frontend renders only Regular, Found in Raid, Shared and Shared (FiR) as category
+labels, using `—` for other unresolved outcomes while retaining available target
+details. Missing or inconsistent metadata, pending stock changes, separate FiR
+inventory and duplicate target item IDs prevent a new supported estimate.
+
+The concise How it works? section describes the visible controls. The allocation
+models, DTO fields and refresh-cache rules above are implementation details; they
+are not additional in-game item statuses or stock operations.
 
 Shared collection targets use the explicit API group progress and other eligible
 items. Other items' confirmed contribution is capped by reported group availability;
@@ -178,17 +267,30 @@ across overlapping groups. Legacy inferred groups retain their local allocation
 fallback. Groups are summarized in one Shared (FiR) row and one Shared row while
 preserving their individual identities and eligible items. Covered groups stay
 visible until their goals are completed. Shared rows report confirmed API group
-progress. Found in Raid and Regular use source requirements and confirmed shared
-API stock independently for each requirement type. Stock includes pending changes
-immediately; requirement rows update after confirmation. Stock actions change only
-the shared Market stock; the app does not assign or keep item-quality annotations.
+progress. For fixed requirement rows, confirmed Shared group progress reserves
+stock first. The remaining confirmed stock goes to Found in Raid and then Regular;
+each piece is counted only once across these rows and Shared groups. Where the API
+data cannot establish an unambiguous allocation, the fixed row shows `—/required`.
+This display rule does not claim
+to reproduce Market's unspecified priorities for complex overlapping goals. Stock
+includes pending changes immediately; requirement rows update after confirmation.
+The display allocation changes neither raw Market stock, collection limits nor Add
+eligibility. Stock actions change only the shared Market stock; the app does not
+assign or keep item-quality annotations.
 
-Shared row tooltips preserve each group's quest, category and progress from the
-[Tarkov Market API](https://tarkov-market.com/dev/api) `groups` and `questGroup` sources.
+Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
+`groups` and `questGroup` sources, including separately identified variants.
+A variant's confirmed stock reduces other candidates' collection
+targets when its own source identifies the same group, even while its stock updates
+remain disabled. The same stock is credited only once across overlapping groups.
 
 The encrypted API key, scanner settings and item-price catalog cache are the
 remaining local files. Inventory, quest/hideout progress and pending stock are
 not persisted locally. Previous local stock files and operation journals are
 not loaded or uploaded. Separate FiR inventory and multiple variants sharing
-one item ID keep unsupported Market updates disabled; the app does not invent
-undocumented update fields.
+one item ID keep unsupported Market updates disabled. Each variant still displays
+its own stock and Found in Raid, Regular, Shared (FiR) or Shared requirements,
+including confirmed group progress when its own collection target is already covered.
+Their ambiguous item IDs also prevent Next Item and Completed Item details from
+being displayed; the variant stock and requirement rows remain the supported view.
+The app does not invent undocumented update fields.

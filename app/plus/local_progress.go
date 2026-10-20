@@ -9,6 +9,7 @@ import (
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/nextitem"
 )
 
 type characterProgressAPI interface {
@@ -88,10 +89,12 @@ func marketProgressOnly(snapshot market.TrackedSnapshot) localprogress.Snapshot 
 		market.QuestSnapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision, Quests: []market.Quest{}},
 		market.HideoutSnapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision, Modules: []market.HideoutUpgrade{}})
 	if err == nil {
+		merged.MetadataComplete = false
 		return merged
 	}
 	result := localprogress.Snapshot{CharUID: snapshot.CharUID, GameMode: snapshot.GameMode, Revision: snapshot.Revision,
 		FIRInventorySeparate: snapshot.FIRInventorySeparate, Items: []localprogress.Item{}}
+	result.MarketGroups = cloneTrackedSnapshot(snapshot).Groups
 	for _, item := range snapshot.Items {
 		row := localprogress.Item{ItemID: item.ItemID, Name: item.Name, ShortName: item.ShortName, Slots: item.Slots, Icon: item.Icon,
 			RequiredQuantity: item.RequiredQuantity, SpentQuantity: item.SpentQuantity, AvailableQuantity: item.AvailableQuantity,
@@ -116,8 +119,28 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 	if allocated, err := localprogress.Allocate(snapshot); err == nil {
 		snapshot = allocated
 	}
+	confirmedRequirements := localprogress.ConfirmedRequirementStock(snapshot)
 	view := trackedView(item, localMarketSnapshot(snapshot))
 	view.Storage = "market"
+	if len(view.Variants) != 0 {
+		// trackedView tartja a Market eredeti sorsorrendjét. Név vagy az első
+		// közös ID helyett minden panelt a saját rekordjához kötünk.
+		index := 0
+		for rowIndex, row := range snapshot.Items {
+			if row.ItemID != item.BSGID {
+				continue
+			}
+			variant := view.Variants[index]
+			populateVariantTrackingView(variant, row, snapshot, confirmedRequirements[rowIndex])
+			if view.Tracked && view.VariantName == variant.VariantName {
+				variants, message := view.Variants, view.Error
+				*view = *cloneTrackingState(variant)
+				view.Variants, view.Error = variants, message
+			}
+			index++
+		}
+		return view
+	}
 	for _, row := range snapshot.Items {
 		if row.ItemID == item.BSGID {
 			view.Storage = "market"
@@ -134,15 +157,8 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 			break
 		}
 	}
-	if len(view.Variants) != 0 {
-		for _, variant := range view.Variants {
-			variant.Storage = view.Storage
-		}
-		return view
-	}
-
 	notes := make(map[string]bool)
-	for _, row := range snapshot.Items {
+	for rowIndex, row := range snapshot.Items {
 		if row.ItemID != item.BSGID {
 			continue
 		}
@@ -162,11 +178,15 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 				}
 			}
 		}
-		simplifyLocalTrackingView(view, row, snapshot)
+		simplifyLocalTrackingView(view, row, snapshot, confirmedRequirements[rowIndex])
 		if !view.InventorySeparate && view.Error == "" {
 			view.AddAllowed, _ = localprogress.AddAllowed(snapshot, item.BSGID)
 		}
 		break
+	}
+	if view.Tracked && view.Error == "" && !view.InventorySeparate {
+		forecast := nextitem.Calculate(snapshot, item.BSGID)
+		view.NextItem = &forecast
 	}
 	return view
 }

@@ -130,12 +130,12 @@ func TestAnyMarketProgressAquariusKeepsCollectorAndThriftyAllocation(t *testing.
 		id, kind                                   string
 		stock, required, fixedStock, fixedRequired int64
 	}{
-		{marketAnyYMXC, "fir", 1, 4, 1, 1},
+		{marketAnyYMXC, "fir", 1, 4, 0, 1},
 		{marketAnyWater, "regular", 0, 4, 0, 2},
 	} {
 		view := marketAnyProgressViewForTest(target.id, snapshot)
 		if view.AvailableQuantity != target.stock || view.RequiredQuantity != target.required || len(view.Requirements) != 1 ||
-			view.Requirements[0].Kind != target.kind || view.Requirements[0].AvailableQuantity != target.fixedStock || view.Requirements[0].RequiredQuantity != target.fixedRequired || !view.AddAllowed {
+			view.Requirements[0].Kind != target.kind || view.Requirements[0].AvailableQuantity != target.fixedStock || view.Requirements[0].RequiredQuantity != target.fixedRequired || view.Requirements[0].AllocationUnknown || !view.AddAllowed {
 			t.Fatalf("Market progress changed fixed stock, target or Add eligibility for %s: %+v", target.id, view)
 		}
 		group := assertMarketAnyProgressForTest(t, view, 1, 3)
@@ -230,7 +230,7 @@ func TestAnyMarketProgressPendingStockRetainsConfirmedAPICounter(t *testing.T) {
 	view := a.state.Tracking
 	assertMarketAnyProgressForTest(t, view, 1, 3)
 	if view.AvailableQuantity != 3 || view.MarketAvailableQuantity != 1 || view.RequiredQuantity != 4 || !view.AddAllowed ||
-		len(view.Requirements) != 1 || view.Requirements[0].AvailableQuantity != 1 || view.Requirements[0].RequiredQuantity != 1 {
+		len(view.Requirements) != 1 || view.Requirements[0].AvailableQuantity != 0 || view.Requirements[0].RequiredQuantity != 1 || view.Requirements[0].AllocationUnknown {
 		t.Fatalf("pending additions did not keep immediate stock and confirmed API progress separate: %+v", view)
 	}
 	if !reflect.DeepEqual(confirmed, a.confirmedProgress) {
@@ -283,7 +283,7 @@ func TestAnyMarketProgressCapsSurplusOnlyInPresentation(t *testing.T) {
 	}
 }
 
-func TestMarketFixedSourceRowsUseSharedConfirmedStockIndependently(t *testing.T) {
+func TestMarketFixedSourceRowsAllocateEachConfirmedItemOnce(t *testing.T) {
 	raw := market.TrackedSnapshot{CharUID: "fixture-character", GameMode: "PVP", Revision: "confirmed-fixed-progress", Items: []market.TrackedItem{{
 		ItemID: "mixed-fixed-item", Name: "Shared stock item", RequiredQuantity: 5, AvailableQuantity: 2, RemainingQuantity: 3,
 		Sources: []market.TrackedSource{
@@ -295,9 +295,9 @@ func TestMarketFixedSourceRowsUseSharedConfirmedStockIndependently(t *testing.T)
 	snapshot := marketAnyProgressSnapshotForTest(t, raw)
 	before := localprogress.Clone(snapshot)
 	view := marketAnyProgressViewForTest("mixed-fixed-item", snapshot)
-	expected := []ItemTrackingRequirement{{Kind: "fir", AvailableQuantity: 2, RequiredQuantity: 2}, {Kind: "regular", AvailableQuantity: 2, RequiredQuantity: 3}}
+	expected := []ItemTrackingRequirement{{Kind: "fir", AvailableQuantity: 2, RequiredQuantity: 2}, {Kind: "regular", AvailableQuantity: 0, RequiredQuantity: 3}}
 	if view.AvailableQuantity != 2 || view.RequiredQuantity != 5 || !view.AddAllowed || !reflect.DeepEqual(view.Requirements, expected) {
-		t.Fatalf("fixed source rows did not use the confirmed shared stock independently: %+v", view)
+		t.Fatalf("fixed source rows counted a confirmed stock item more than once: %+v", view)
 	}
 	item := market.Item{UID: "mixed-fixed-item-uid", BSGID: "mixed-fixed-item"}
 	opts := ItemOptions{CharacterUID: raw.CharUID, Mode: "pvp", revision: 1}

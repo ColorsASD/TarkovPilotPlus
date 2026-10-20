@@ -47,7 +47,7 @@ or Wails tools are optional and are not required for the standard commands above
 ## Release
 
 The original application version remains in `version.go` (`2.1.1`), while the
-independent Plus version is in `plus/version.go` (`1.2.1`). The build script can
+independent Plus version is in `plus/version.go` (`1.3.0`). The build script can
 increment only the Plus version; it leaves the original version unchanged. It
 builds the EXE and local OCR components and writes both versions to
 `versions.json`. The upstream repository, commit and version are recorded in
@@ -57,7 +57,7 @@ in [plus/README.md](plus/README.md).
 Every build creates `build/bin/TarkovPilotPlus-<version>-windows-x64/`, containing
 `TarkovPilotPlus.exe`, `versions.json` and the complete `ocr` directory. The build
 also produces `build/bin/TarkovPilotPlus-<version>-windows-x64.zip` with the same
-distribution files and its `.sha256` file. The current package version is `1.2.1`.
+distribution files and its `.sha256` file. The current package version is `1.3.0`.
 
 The default compiler output filename is `TarkovPilotPlus.exe`. A custom
 `-OutputFilename` changes the compiler output name, but the executable is moved
@@ -86,18 +86,30 @@ notification. Keep the matching `ocr` directory beside the EXE when updating.
 ## Item Scanner
 
 - `plus/item_window.go` — separate Wails window, encrypted API key with explicit reveal, local catalog and scan state; one automatic scan toggle, independent manual scanning and search by name
-- `plus/item_tracking.go` — character selection by unique ID, separate Found in Raid and Regular Tracked Items requirements for the recognized item, completed quest and hideout sources reported by the API, and explicit actions that add or remove one item from the latest shared stock; revision conflicts trigger a refresh, uncertain writes trigger verification only, and variants with a shared BSG ID retain separate stock data while ambiguous stock changes are blocked
+- `plus/item_tracking.go` — character selection by unique ID, separate Found in Raid and Regular Tracked Items requirements for the recognized item, completed quest and hideout sources reported by the API, and explicit actions that add or remove one item from the latest shared stock; confirmed Shared group progress reserves stock before fixed Found in Raid and Regular rows, each piece is counted once, and ambiguous fixed allocations show `—/required`; revision conflicts trigger a refresh, uncertain writes trigger verification only, and variants with a shared BSG ID retain their own stock, requirement types and confirmed Shared progress while ambiguous stock changes are blocked
 - `plus/item_hotkey.go` and `plus/tracked_hotkey*.go` — default F1 Add item and F2 Remove item global shortcuts, each configurable with a supported key or Ctrl/Alt/Shift combination or Disabled, with the same target checks and shared-stock API operation as its button; dedicated keyboard hook threads consume matching key events and send bound requests to the stock worker without waiting for network requests
 - `plus/paired_windows.go` — paired startup and shutdown; each window runs in its own Wails process
 - `plus/internal/market` — Tarkov Market API only, five-minute catalog cache, full Inspect title matching by edit distance and separate manual name search; private character and inventory data use a separate API rate limit and are not cached to disk
+- `plus/internal/nextitem` — read-only estimates from coherent Market progress, current item-specific quest/hideout details and explicit completion flags; the calculation never submits its virtual extra item
 - `plus/internal/scanner` and `plus/ocr/name-scan.ps1` — Inspect window detection after a left click, followed by local English title OCR with the bundled Tesseract engine; OCR runs only for a detected Inspect window and can run again after another click
 - `plus/ocr/prepare.ps1` — pinned OCR dependency downloads and SHA256 verification at build time
-- `plus/frontend/dist/item.*` — compact English Item Scanner with a "How it works" section, Flea Market and Trader prices, per-slot values in parentheses, an Items Tracker panel shown only for active required items, stock progress with separate Found In Raid and Regular requirement rows, explicit additions and details of the recognized title
+- `plus/frontend/dist/item.*` — compact English Item Scanner with a "How it works?" section, Flea Market and Trader prices, per-slot values in parentheses and Items Tracker; active items show stock, requirement rows and Next Item details, while confirmed completed-only items show Completed Item with their complete quest/hideout ratios; small brown buttons copy the displayed item and goal names
 
 Automatic scanning checks for an Inspect window 200 milliseconds after a left
 click; it does not continuously OCR the full screen. Manual scanning allows three
 seconds to switch back to the game and reads an open Inspect window. The frontend
 uses the `window.go.plus.ItemWindowApp` binding and receives `item-state` events.
+
+Items Tracker uses the selected character's Market inventory and progress in
+memory; it does not persist stock or replay pending changes after restart.
+Next Item remains an estimate because the API does not expose all Market
+priorities. Completed Item is a display state based on explicit source completion,
+not merely a filled stock ratio, and does not change stored stock or shortcut
+eligibility. Variants sharing an item ID retain their own stock and requirement
+rows, with ambiguous writes and next-item details unavailable. Goal headings use
+Quest/Quests and Hideout Module/Hideout Modules according to the number of displayed
+entries in each group. The allocation, completion, refresh and native clipboard
+behavior are documented in [plus/README.md](plus/README.md#market-progress).
 
 Keep the `ocr` directory beside the built application. The API key is protected
 with Windows DPAPI, and the Item Scanner stores its key and settings under

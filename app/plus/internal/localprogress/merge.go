@@ -39,6 +39,12 @@ func Merge(tracked market.TrackedSnapshot, quests market.QuestSnapshot, hideout 
 		upgrades[upgrade.UpgradeKey] = upgrade
 	}
 	out := Snapshot{CharUID: tracked.CharUID, GameMode: tracked.GameMode, Revision: tracked.Revision, FIRInventorySeparate: tracked.FIRInventorySeparate, Items: make([]Item, 0, len(tracked.Items))}
+	out.MarketQuests = append([]market.Quest(nil), quests.Quests...)
+	for i := range out.MarketQuests {
+		out.MarketQuests[i].QuestIDAliases = append([]string(nil), quests.Quests[i].QuestIDAliases...)
+	}
+	out.MarketHideout = append([]market.HideoutUpgrade(nil), hideout.Modules...)
+	out.MetadataComplete = true
 	rows := make(map[string][]int)
 	for _, item := range tracked.Items {
 		local := Item{ItemID: item.ItemID, MarketTracked: true, MarketRequiredQuantity: item.RequiredQuantity, MarketAvailableQuantity: item.AvailableQuantity, Name: item.Name, ShortName: item.ShortName, Slots: item.Slots, Icon: item.Icon, RequiredQuantity: item.RequiredQuantity, SpentQuantity: item.SpentQuantity, AvailableQuantity: item.AvailableQuantity, RemainingQuantity: item.RemainingQuantity, Sources: make([]Source, 0, len(item.Sources))}
@@ -72,6 +78,17 @@ func Merge(tracked market.TrackedSnapshot, quests market.QuestSnapshot, hideout 
 			}
 			members[id] = true
 		}
+		// Az azonos ID-jű változatok készletét nem osztjuk ki, de a forrásukhoz
+		// kötött Shared sorhoz szükséges eredeti csoportarányt megőrizzük.
+		displayGroup := group
+		displayGroup.ItemIDs = append([]string(nil), group.ItemIDs...)
+		if quest, exists := questIndex[group.QuestID]; exists {
+			status := Source{TrackedSource: market.TrackedSource{}}
+			closeQuestSource(&status, quest)
+			displayGroup.Completed = displayGroup.Completed || status.Completed
+			displayGroup.Canceled = displayGroup.Canceled || status.Canceled
+		}
+		out.MarketGroups = append(out.MarketGroups, displayGroup)
 		// Több változat közül a Market csoport sem azonosít egy konkrét sort.
 		// Csak ezt a jelöltet hagyjuk ki a kiosztásból; a csoport többi
 		// egyértelmű jelöltje továbbra is fedezheti a közös követelményt.

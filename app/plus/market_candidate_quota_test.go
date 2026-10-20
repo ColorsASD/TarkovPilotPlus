@@ -37,8 +37,29 @@ func assertMarketCandidateQuota(t *testing.T, state ItemState, stock, target, ap
 	if len(v.AnyGroups) != 1 || v.AnyGroups[0].AvailableQuantity != apiAny || v.AnyGroups[0].RequiredQuantity != 3 {
 		t.Fatalf("candidate target changed the explicit API Any %d/3: %+v", apiAny, v)
 	}
-	if available, required := requirementStock(t, state, "regular"); available != min(v.MarketAvailableQuantity, 2) || required != 2 {
+	if len(v.Requirements) != 1 || v.Requirements[0].Kind != "regular" || v.Requirements[0].RequiredQuantity != 2 {
 		t.Fatalf("fixed two-water requirement changed: %+v", v)
+	}
+	if len(v.AnyGroups[0].Sources) != 1 {
+		t.Fatalf("the two-candidate fixture lost its explicit shared source: %+v", v.AnyGroups[0])
+	}
+	// Két jelöltnél a saját csoporthozzájárulás alsó és felső korlátja
+	// közvetlenül kiszámítható az API megerősített készleteiből. Nem
+	// hívjuk a megjelenítés kiosztóját, és nem választunk tetszőleges tervet.
+	confirmedOwn := v.MarketAvailableQuantity
+	var confirmedOther int64
+	for _, item := range v.AnyGroups[0].Sources[0].Items {
+		if item.ItemID != v.ItemID {
+			confirmedOther += item.AvailableQuantity
+		}
+	}
+	minOwnShared, maxOwnShared := max(0, apiAny-confirmedOther), min(confirmedOwn, apiAny)
+	minRegular := min(int64(2), max(0, confirmedOwn-maxOwnShared))
+	maxRegular := min(int64(2), max(0, confirmedOwn-minOwnShared))
+	unknown := minOwnShared > maxOwnShared || minRegular != maxRegular
+	row := v.Requirements[0]
+	if row.AllocationUnknown != unknown || !unknown && row.AvailableQuantity != minRegular {
+		t.Fatalf("fixed progress must follow all feasible two-candidate allocations (own=%d other=%d shared=%d regular=%d..%d unknown=%v): %+v", confirmedOwn, confirmedOther, apiAny, minRegular, maxRegular, unknown, row)
 	}
 }
 
