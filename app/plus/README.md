@@ -151,10 +151,12 @@ Tarkov Market remains authoritative for each item's total stock. The local save
 distinguishes Found in Raid, Regular and Uncategorized quantities within that
 total, separately for each API-key, character and game-mode profile. Existing
 stock and external increases start as Uncategorized; those pieces do not cover
-any goal until the user classifies them. The card explains unclassified stock
-and points to Settings → Items Tracker inventory.
+any goal until the user classifies them in the separate Items Tracker panel.
 
-The searchable inventory editor lists items with positive stock. The API total
+The searchable Items Tracker inventory editor is a separate collapsible panel
+above Settings. It lists items with positive stock, with a thumbnail and a small
+brown name-copy button after each displayed item name. Failed or unavailable
+images use the existing placeholder. The API total
 is read-only. Found in Raid and Regular accept nonnegative whole numbers whose
 sum cannot exceed that total; the remainder is Uncategorized. Save classification
 locally changes only the local quality split and does not make a Market stock
@@ -262,7 +264,8 @@ never reads the clipboard. Browser-only previews can use
 
 The latest result stays visible during refreshes and stock updates for the same
 item, item ID, character and game mode. Switching that context, an error, separate
-API FiR inventory or an ambiguous variant clears it. A finished calculation with
+API FiR inventory or an indistinguishable variant clears it. Distinct variants
+use independent row calculations and do not share cached goal details. A finished calculation with
 no target details also clears it. Completed targets remain visible while adding
 is unavailable. New quest, hideout and inventory responses automatically update
 the section.
@@ -314,10 +317,10 @@ fields. Confirmed quality and the small write-recovery journal survive restart,
 but unsent stock deltas do not. Older unrelated local stock formats are not
 loaded or uploaded.
 
-Multiple variants sharing one item ID and the API's separate FiR inventory keep
-unsupported stock updates and local quality editing disabled. Each variant still
-displays its own API stock and supported Found in Raid, Regular, Shared (FiR) or
-Shared requirements, including confirmed group progress when its own collection
-target is already covered. Ambiguous item IDs also prevent Next Item and
-Completed Item details from being displayed; variant stock and requirement rows
-remain the supported view. The app does not invent undocumented update fields.
+Multiple variants sharing one item ID keep unsupported API stock updates disabled,
+while their local quality is editable independently. Stable row keys use the
+item ID, variant name and source identifiers; source order, quantities and goal
+progress do not identify a variant. Each distinct row retains its own API total,
+local classification and typed quest/Shared ratios after reordering or restart.
+Rows with indistinguishable identities remain read-only, as does the API's
+separate FiR inventory. The app does not invent undocumented update fields.

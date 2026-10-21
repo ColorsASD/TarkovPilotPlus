@@ -211,13 +211,15 @@ select option:disabled { color: #737373; }
 .subtle-button { border-color: #4d4d4d; color: var(--muted); }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.4; margin: 0; }
 .hint.error { color: var(--error); }
-.tracked-inventory-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.tracker-inventory { border-top: 1px solid var(--border); padding-top: 4px; }
-.tracker-inventory > summary { padding: 6px 0; font-size: 11px; }
-.tracker-inventory-content { display: flex; flex-direction: column; gap: 8px; padding-top: 3px; }
+.tracker-inventory-content { display: flex; flex-direction: column; gap: 8px; padding: 3px 9px 11px; }
 .inventory-rows { display: flex; flex-direction: column; gap: 9px; max-height: 410px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4a4337 var(--bg); }
 .inventory-row { padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-.inventory-name { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
+.inventory-item-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.inventory-item-image { display: grid; position: relative; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; overflow: hidden; border: 1px solid #5d6262; background: #282b2a; }
+.inventory-item-image img { display: block; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.inventory-image-pending { visibility: hidden; }
+.inventory-item-image .item-image-placeholder { width: 23px; height: 23px; }
+.inventory-name { flex: 1; min-width: 0; margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
 .inventory-quantities { display: flex; justify-content: space-between; gap: 6px; margin: 5px 0 7px; color: var(--muted); font-size: 11px; flex-wrap: wrap; }
 .inventory-quality-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
 .inventory-quality-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--muted); font-size: 11px; }

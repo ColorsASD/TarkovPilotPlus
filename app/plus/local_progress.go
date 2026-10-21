@@ -128,6 +128,7 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 		// trackedView tartja a Market eredeti sorsorrendjét. Név vagy az első
 		// közös ID helyett minden panelt a saját rekordjához kötünk.
 		index := 0
+		qualityKeys, identities := qualitySnapshotKeys(snapshot)
 		for rowIndex, row := range snapshot.Items {
 			if row.ItemID != item.BSGID {
 				continue
@@ -135,7 +136,11 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 			variant := view.Variants[index]
 			populateVariantTrackingView(variant, row, snapshot, confirmedRequirements[rowIndex])
 			if row.QualityKnown {
-				markTypedAllocationUnknown(variant)
+				if identities[qualityKeys[rowIndex]] == 1 {
+					applyTypedTrackingRow(variant, row, snapshot, rowIndex)
+				} else {
+					markTypedAllocationUnknown(variant)
+				}
 			}
 			if view.Tracked && view.VariantName == variant.VariantName {
 				variants, message := view.Variants, view.Error

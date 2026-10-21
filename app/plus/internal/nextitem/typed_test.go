@@ -237,3 +237,157 @@ func TestTypedSameQualityKeepsExistingGoalPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestTypedPhysicalVariantRowsKeepTheirOwnQualityAndFixedTargets(t *testing.T) {
+	for _, sameName := range []bool{false, true} {
+		for _, reverse := range []bool{false, true} {
+			snapshot := forecastSnapshot()
+			snapshot.MarketQuests = []market.Quest{
+				{QuestID: "fir-variant", Name: "FiR variant goal", Status: "available"},
+				{QuestID: "regular-variant", Name: "Regular variant goal", Status: "available"},
+			}
+			firRow := typedItem("same-item-id", 2, 0, 0, fixedSource("fir-variant", 3, true))
+			regularRow := typedItem("same-item-id", 0, 1, 0, fixedSource("regular-variant", 2, false))
+			firRow.Name, regularRow.Name = "MF-UNTAR FiR variant", "MF-UNTAR Regular variant"
+			if sameName {
+				firRow.Name, regularRow.Name = "MF-UNTAR", "MF-UNTAR"
+			}
+			snapshot.Items = []localprogress.Item{firRow, regularRow}
+			if reverse {
+				snapshot.Items[0], snapshot.Items[1] = snapshot.Items[1], snapshot.Items[0]
+			}
+			before, _ := json.Marshal(snapshot)
+			for index, row := range snapshot.Items {
+				view := CalculateTypedRow(snapshot, index, true)
+				wantStock := localprogress.RequirementStock{Known: true, FIR: row.FIRQuantity, Regular: row.RegularQuantity}
+				wantAmount := int64(2)
+				if row.Sources[0].FIR {
+					wantAmount = 3
+				}
+				if !view.Known || view.FixedStock != wantStock || view.AddFIRAllowed || view.AddRegularAllowed ||
+					len(view.Forecast.Targets) != 1 || view.Forecast.Targets[0].GoalKey != "quest:"+row.Sources[0].QuestID ||
+					view.Forecast.Targets[0].AvailableQuantity != row.AvailableQuantity || view.Forecast.Targets[0].RequiredQuantity != wantAmount {
+					t.Fatalf("physical same-ID variant borrowed another row's stock or targets: sameName=%v reverse=%v index=%d view=%+v targets=%+v", sameName, reverse, index, view, view.Forecast.Targets)
+				}
+			}
+			if view := CalculateTyped(snapshot, "same-item-id", true); view.Known || view.AddFIRAllowed || view.AddRegularAllowed {
+				t.Fatalf("item-ID wrapper accepted an ambiguous API stock target: %+v", view)
+			}
+			after, _ := json.Marshal(snapshot)
+			if string(before) != string(after) {
+				t.Fatal("physical variant calculations mutated the input")
+			}
+		}
+	}
+}
+
+func TestTypedPhysicalVariantSharedMembershipUsesItsOwnSources(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		snapshot := forecastSnapshot()
+		snapshot.MarketQuests = []market.Quest{
+			{QuestID: "shared", Name: "FiR shared goal", Status: "available"},
+			{QuestID: "regular", Name: "Regular fixed goal", Status: "available"},
+		}
+		snapshot.Items = []localprogress.Item{
+			typedItem("same-item-id", 2, 0, 0, sharedSource("shared", "any", true)),
+			typedItem("same-item-id", 0, 1, 0, fixedSource("regular", 2, false)),
+		}
+		snapshot.Items[0].Name, snapshot.Items[1].Name = "Same name", "Same name"
+		snapshot.MarketGroups = []market.TrackedGroup{{QuestID: "shared", RequirementID: "any", FIR: true,
+			Amount: 3, RequiredQuantity: 3, AvailableQuantity: 3, ItemIDs: []string{"same-item-id"}}}
+		if reverse {
+			snapshot.Items[0], snapshot.Items[1] = snapshot.Items[1], snapshot.Items[0]
+		}
+		for index, row := range snapshot.Items {
+			view := CalculateTypedRow(snapshot, index, true)
+			if !view.Known || len(view.Forecast.Targets) != 1 || view.AddFIRAllowed || view.AddRegularAllowed {
+				t.Fatalf("variant-row shared view is unavailable or contains extra targets: %+v", view)
+			}
+			if row.Sources[0].FIR {
+				group := view.Groups["quest:shared:any"]
+				if group.AvailableQuantity != 2 || group.AllocatedQuantity != 2 || group.Contributions["same-item-id"] != 2 ||
+					view.FixedStock.FIR != 0 || view.FixedStock.Regular != 0 || view.Forecast.Targets[0].AvailableQuantity != 2 {
+					t.Fatalf("shared physical variant mixed in the fixed variant or API counter: %+v", view)
+				}
+			} else if len(view.Groups) != 0 || view.FixedStock.Regular != 1 || view.Forecast.Targets[0].GoalKey != "quest:regular" ||
+				view.Forecast.Targets[0].AvailableQuantity != 1 {
+				t.Fatalf("fixed physical variant inherited shared membership from its duplicate ID: %+v", view)
+			}
+		}
+	}
+}
+
+func TestTypedPhysicalRowIndexRequiresAnExistingTrackedRecord(t *testing.T) {
+	snapshot := forecastSnapshot()
+	snapshot.Items = []localprogress.Item{typedItem("item", 0, 0, 0)}
+	for _, index := range []int{-1, 1} {
+		if view := CalculateTypedRow(snapshot, index, true); view.Known || view.AddFIRAllowed || view.AddRegularAllowed {
+			t.Fatalf("invalid physical row was accepted: index=%d view=%+v", index, view)
+		}
+	}
+	snapshot.Items[0].MarketTracked = false
+	if view := CalculateTypedRow(snapshot, 0, true); view.Known || view.AddFIRAllowed || view.AddRegularAllowed {
+		t.Fatalf("untracked physical row was accepted: %+v", view)
+	}
+}
+
+func TestTypedRequiredQuantityUsesLocalSharedCoverageAndKeepsOwnAllocation(t *testing.T) {
+	for _, test := range []struct {
+		name                         string
+		own, other, fixed, apiShared int64
+		wantRequired                 int64
+		wantAdd                      bool
+	}{
+		{"own two and other six complete eight", 2, 6, 0, 8, 2, false},
+		{"API completed but local stock unclassified", 0, 0, 0, 8, 8, true},
+		{"own two is not subtracted twice", 2, 0, 0, 0, 8, true},
+		{"fixed demand and remaining shared demand", 2, 3, 4, 8, 9, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := forecastSnapshot()
+			snapshot.MarketQuests = []market.Quest{
+				{QuestID: "shared", Name: "Shared", Status: "available"},
+				{QuestID: "fixed", Name: "Fixed", Status: "locked"},
+			}
+			sources := []localprogress.Source{sharedSource("shared", "any", false)}
+			if test.fixed > 0 {
+				sources = append(sources, fixedSource("fixed", test.fixed, false))
+			}
+			snapshot.Items = []localprogress.Item{
+				typedItem("selected", 0, test.own, 0, sources...),
+				typedItem("other", 0, test.other, 0, sharedSource("shared", "any", false)),
+			}
+			if test.apiShared > 0 && test.own == 0 {
+				// A teljes API-készlet ismert, de a minősége még nincs besorolva.
+				snapshot.Items[0].AvailableQuantity, snapshot.Items[0].MarketAvailableQuantity = test.apiShared, test.apiShared
+			}
+			snapshot.Items[0].CollectionCalculated = true
+			snapshot.Items[0].CollectionRequiredQuantity = 0
+			snapshot.MarketGroups = []market.TrackedGroup{{QuestID: "shared", RequirementID: "any", Amount: 8,
+				RequiredQuantity: 8, AvailableQuantity: test.apiShared, ItemIDs: []string{"selected", "other"}}}
+			view := CalculateTyped(snapshot, "selected", true)
+			if !view.Known || view.RequiredQuantity != test.wantRequired || view.AddRegularAllowed != test.wantAdd || view.AddFIRAllowed != test.wantAdd {
+				t.Fatalf("typed collection quota used API counters or subtracted own stock twice: %+v", view)
+			}
+		})
+	}
+}
+
+func TestTypedRequiredQuantityIncludesBothFixedQualitiesAndCapsTheTotal(t *testing.T) {
+	snapshot := forecastSnapshot()
+	snapshot.MarketQuests = []market.Quest{
+		{QuestID: "fir", Name: "FiR", Status: "available"},
+		{QuestID: "regular", Name: "Regular", Status: "available"},
+	}
+	snapshot.Items = []localprogress.Item{typedItem("vodka", 0, 1, 0,
+		fixedSource("fir", 10, true), fixedSource("regular", 4, false))}
+	if view := CalculateTyped(snapshot, "vodka", true); !view.Known || view.RequiredQuantity != 14 {
+		t.Fatalf("fixed quality requirements lost the full vodka denominator: %+v", view)
+	}
+	snapshot.Items[0].Sources = []localprogress.Source{
+		fixedSource("fir", localprogress.MaxQuantity, true), fixedSource("regular", localprogress.MaxQuantity, false),
+	}
+	if view := CalculateTyped(snapshot, "vodka", true); !view.Known || view.RequiredQuantity != localprogress.MaxQuantity {
+		t.Fatalf("typed collection quota exceeded the supported quantity limit: %+v", view)
+	}
+}

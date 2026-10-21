@@ -17,6 +17,7 @@ func unknownQualitySnapshot(snapshot localprogress.Snapshot) localprogress.Snaps
 }
 
 func markTypedAllocationUnknown(view *ItemTrackingState) {
+	view.QualityKnown = false
 	view.FIRQuantity, view.RegularQuantity, view.UncategorizedQuantity = 0, 0, view.AvailableQuantity
 	view.AddFIRAllowed, view.AddRegularAllowed, view.RemoveFIRAllowed, view.RemoveRegularAllowed = false, false, false, false
 	for i := range view.Requirements {
@@ -35,11 +36,25 @@ func markTypedAllocationUnknown(view *ItemTrackingState) {
 }
 
 func applyTypedTrackingView(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot) {
+	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTyped(snapshot, row.ItemID, true))
+}
+
+func applyTypedTrackingRow(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot, index int) {
+	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTypedRow(snapshot, index, true))
+	view.AddAllowed, view.RemoveAllowed = false, false
+	view.AddFIRAllowed, view.AddRegularAllowed, view.RemoveFIRAllowed, view.RemoveRegularAllowed = false, false, false, false
+}
+
+func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot, typed nextitem.TypedView) {
+	view.QualityKnown = typed.Known
+	if typed.Known {
+		view.RequiredQuantity = typed.RequiredQuantity
+		view.RemainingQuantity = max(0, typed.RequiredQuantity-row.AvailableQuantity)
+	}
 	view.FIRQuantity, view.RegularQuantity = row.FIRQuantity, row.RegularQuantity
 	view.UncategorizedQuantity = max(0, row.AvailableQuantity-row.FIRQuantity-row.RegularQuantity)
 	view.RemoveFIRAllowed = view.RemoveAllowed && row.FIRQuantity > 0
 	view.RemoveRegularAllowed = view.RemoveAllowed && row.RegularQuantity > 0
-	typed := nextitem.CalculateTyped(snapshot, row.ItemID, true)
 	view.NextItem = &typed.Forecast
 	view.AddFIRAllowed, view.AddRegularAllowed = typed.Known && typed.AddFIRAllowed, typed.Known && typed.AddRegularAllowed
 	view.AddAllowed = view.AddFIRAllowed || view.AddRegularAllowed

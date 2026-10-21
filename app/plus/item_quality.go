@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/nextitem"
 )
 
@@ -26,6 +27,7 @@ type qualityRecord struct {
 
 type qualityOperation struct {
 	Profile, Item, BeforeRevision string
+	RowKey                        string `json:"rowKey,omitempty"`
 	Before                        qualityRecord
 	Delta                         int64
 	FIR                           bool
@@ -46,6 +48,36 @@ type qualityStore struct {
 func qualityProfile(key string, opts ItemOptions) string {
 	digest := sha256.Sum256([]byte(key + "\x00" + opts.CharacterUID + "\x00" + strings.ToUpper(opts.Mode)))
 	return hex.EncodeToString(digest[:])
+}
+
+// A változat azonossága nem függ a sorrendtől, a készlettől vagy a cél
+// előrehaladásától. A név és a stabil forrásazonosítók különítik el a sorokat.
+func qualityRowKey(row localprogress.Item) string {
+	identities := make(map[string]bool)
+	for _, source := range row.Sources {
+		encoded, _ := json.Marshal([]string{strings.ToLower(source.Type), source.QuestID, source.RequirementID, source.UpgradeKey})
+		identities[string(encoded)] = true
+	}
+	sources := make([]string, 0, len(identities))
+	for identity := range identities {
+		sources = append(sources, identity)
+	}
+	sort.Strings(sources)
+	encoded, _ := json.Marshal(struct {
+		ID, Name string
+		Sources  []string
+	}{row.ItemID, strings.ToLower(strings.TrimSpace(row.Name)), sources})
+	digest := sha256.Sum256(encoded)
+	return "row:" + hex.EncodeToString(digest[:])
+}
+
+func qualitySnapshotKeys(snapshot localprogress.Snapshot) ([]string, map[string]int) {
+	keys, counts := make([]string, len(snapshot.Items)), make(map[string]int)
+	for i, row := range snapshot.Items {
+		keys[i] = qualityRowKey(row)
+		counts[keys[i]]++
+	}
+	return keys, counts
 }
 
 func (a *ItemWindowApp) qualityStoreLocked() (*qualityStore, error) {
@@ -159,7 +191,11 @@ func applyQualityOperation(data *qualityData, id string, op qualityOperation) {
 	} else {
 		row.Regular += op.Delta
 	}
-	qualityRows(data, op.Profile)[op.Item] = clampQuality(row, max(0, row.Total))
+	key := op.RowKey
+	if key == "" {
+		key = op.Item
+	}
+	qualityRows(data, op.Profile)[key] = clampQuality(row, max(0, row.Total))
 	data.Applied[id] = true
 	if len(data.Applied) > 4096 {
 		data.Applied = map[string]bool{id: true}
@@ -189,6 +225,7 @@ func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOpti
 	for _, row := range snapshot.Items {
 		counts[row.ItemID]++
 	}
+	keys, identities := qualitySnapshotKeys(snapshot)
 	active := map[string]bool{}
 	for _, entry := range a.pendingAddQueue {
 		if entry.Typed {
@@ -197,24 +234,32 @@ func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOpti
 	}
 	err = store.update(func(data *qualityData) error {
 		rows := qualityRows(data, profile)
+		for i, row := range snapshot.Items {
+			if legacy, exists := rows[row.ItemID]; exists {
+				if _, saved := rows[keys[i]]; !saved && counts[row.ItemID] == 1 {
+					rows[keys[i]] = legacy
+				}
+				delete(rows, row.ItemID)
+			}
+		}
 		for id, op := range data.Pending {
 			if op.Profile != profile || active[id] {
 				continue
 			}
-			for _, row := range snapshot.Items {
-				if row.ItemID != op.Item || counts[row.ItemID] != 1 {
+			for i, row := range snapshot.Items {
+				if row.ItemID != op.Item || identities[keys[i]] != 1 || (op.RowKey != "" && op.RowKey != keys[i]) || (op.RowKey == "" && counts[row.ItemID] != 1) {
 					continue
 				}
 				if row.MarketAvailableQuantity != op.Before.Total || snapshot.Revision != op.BeforeRevision {
 					// Megszakadt kérés után bizonytalan a darab minősége.
 					// Új API-írás helyett a helyi besorolást hagyjuk nyitva.
-					rows[row.ItemID] = qualityRecord{Total: row.MarketAvailableQuantity}
+					rows[keys[i]] = qualityRecord{Total: row.MarketAvailableQuantity}
 				}
 				delete(data.Pending, id)
 			}
 		}
-		for _, row := range snapshot.Items {
-			if counts[row.ItemID] != 1 {
+		for i, row := range snapshot.Items {
+			if identities[keys[i]] != 1 {
 				continue
 			}
 			held := false
@@ -224,7 +269,7 @@ func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOpti
 				}
 			}
 			if !held {
-				rows[row.ItemID] = clampQuality(rows[row.ItemID], row.MarketAvailableQuantity)
+				rows[keys[i]] = clampQuality(rows[keys[i]], row.MarketAvailableQuantity)
 			}
 		}
 		return nil
@@ -235,11 +280,11 @@ func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOpti
 	out := localprogress.Clone(snapshot)
 	for i := range out.Items {
 		row := &out.Items[i]
-		if counts[row.ItemID] != 1 {
+		if identities[keys[i]] != 1 {
 			row.QualityKnown, row.FIRQuantity, row.RegularQuantity = true, 0, 0
 			continue
 		}
-		quality := clampQuality(store.data.Profiles[profile][row.ItemID], row.MarketAvailableQuantity)
+		quality := clampQuality(store.data.Profiles[profile][keys[i]], row.MarketAvailableQuantity)
 		row.QualityKnown, row.FIRQuantity, row.RegularQuantity = true, quality.FIR, quality.Regular
 	}
 	return out, nil
@@ -292,11 +337,16 @@ func (a *ItemWindowApp) qualityMarkSentLocked(entry pendingMarketAdd) error {
 		return err
 	}
 	id, profile := a.qualityOperationIDLocked(entry), qualityProfile(entry.Key, entry.Opts)
+	row, unique := stockItem(entry.Progress, entry.Item.BSGID)
+	if !unique {
+		return errors.New("The stock quality reservation has no unambiguous item row.")
+	}
+	rowKey := qualityRowKey(row)
 	return store.update(func(data *qualityData) error {
 		if data.Applied[id] {
 			return nil
 		}
-		before := clampQuality(qualityRows(data, profile)[entry.Item.BSGID], entry.Before)
+		before := clampQuality(qualityRows(data, profile)[rowKey], entry.Before)
 		after := before
 		after.Total += pendingMarketDelta(entry)
 		if entry.FIR {
@@ -307,7 +357,7 @@ func (a *ItemWindowApp) qualityMarkSentLocked(entry pendingMarketAdd) error {
 		if !validQualityRecord(after) {
 			return errors.New("The selected stock quality is no longer available.")
 		}
-		data.Pending[id] = qualityOperation{Profile: profile, Item: entry.Item.BSGID, BeforeRevision: entry.BeforeRevision, Before: before, Delta: pendingMarketDelta(entry), FIR: entry.FIR}
+		data.Pending[id] = qualityOperation{Profile: profile, Item: entry.Item.BSGID, RowKey: rowKey, BeforeRevision: entry.BeforeRevision, Before: before, Delta: pendingMarketDelta(entry), FIR: entry.FIR}
 		return nil
 	})
 }
@@ -348,7 +398,9 @@ func (a *ItemWindowApp) qualityCancelPendingLocked(entry pendingMarketAdd) error
 
 type TrackerQualityRow struct {
 	ItemID        string `json:"itemId"`
+	RowKey        string `json:"rowKey"`
 	Name          string `json:"name"`
+	Icon          string `json:"icon"`
 	Total         int64  `json:"total"`
 	FIR           int64  `json:"fir"`
 	Regular       int64  `json:"regular"`
@@ -377,11 +429,8 @@ func (a *ItemWindowApp) GetTrackerInventory() TrackerQualityInventory {
 		return result
 	}
 	result.Profile, result.Revision = qualityProfile(a.apiKey, a.state.ItemOptions), snapshot.Revision
-	counts := map[string]int{}
-	for _, row := range snapshot.Items {
-		counts[row.ItemID]++
-	}
-	for _, row := range snapshot.Items {
+	keys, identities := qualitySnapshotKeys(snapshot)
+	for i, row := range snapshot.Items {
 		if row.MarketAvailableQuantity <= 0 {
 			continue
 		}
@@ -391,9 +440,9 @@ func (a *ItemWindowApp) GetTrackerInventory() TrackerQualityInventory {
 				pending = true
 			}
 		}
-		result.Rows = append(result.Rows, TrackerQualityRow{ItemID: row.ItemID, Name: row.Name, Total: row.MarketAvailableQuantity,
+		result.Rows = append(result.Rows, TrackerQualityRow{ItemID: row.ItemID, RowKey: keys[i], Name: row.Name, Icon: market.SafeImageURL(row.Icon), Total: row.MarketAvailableQuantity,
 			FIR: row.FIRQuantity, Regular: row.RegularQuantity, Uncategorized: row.MarketAvailableQuantity - row.FIRQuantity - row.RegularQuantity,
-			ReadOnly: counts[row.ItemID] != 1 || snapshot.FIRInventorySeparate || pending})
+			ReadOnly: identities[keys[i]] != 1 || snapshot.FIRInventorySeparate || pending})
 	}
 	sort.SliceStable(result.Rows, func(i, j int) bool {
 		return strings.ToLower(result.Rows[i].Name) < strings.ToLower(result.Rows[j].Name)
@@ -405,11 +454,19 @@ func (a *ItemWindowApp) GetTrackerInventory() TrackerQualityInventory {
 // tartozik írható mező, és ez a metódus hálózati kérést sem indít.
 func (a *ItemWindowApp) SetTrackerItemQuality(profile, itemID string, expectedTotal, fir, regular int64) ItemState {
 	a.mu.Lock()
-	row, unique := stockItem(a.confirmedProgress, itemID)
+	keys, identities := qualitySnapshotKeys(a.confirmedProgress)
+	var row localprogress.Item
+	rowKey, matches := "", 0
+	for i, candidate := range a.confirmedProgress.Items {
+		if keys[i] == itemID || candidate.ItemID == itemID {
+			row, rowKey, matches = candidate, keys[i], matches+1
+		}
+	}
+	unique := matches == 1 && identities[rowKey] == 1
 	valid := a.apiKey != "" && profile == qualityProfile(a.apiKey, a.state.ItemOptions) && a.confirmedProgress.CharUID == a.state.CharacterUID && unique &&
 		!a.confirmedProgress.FIRInventorySeparate && row.MarketAvailableQuantity == expectedTotal && validQualityRecord(qualityRecord{Total: expectedTotal, FIR: fir, Regular: regular})
 	for _, entry := range a.pendingAddQueue {
-		if entry.Key == a.apiKey && entry.Opts.CharacterUID == a.state.CharacterUID && entry.Item.BSGID == itemID {
+		if entry.Key == a.apiKey && entry.Opts.CharacterUID == a.state.CharacterUID && entry.Item.BSGID == row.ItemID {
 			valid = false
 		}
 	}
@@ -421,7 +478,7 @@ func (a *ItemWindowApp) SetTrackerItemQuality(profile, itemID string, expectedTo
 		store, err = a.qualityStoreLocked()
 		if err == nil {
 			err = store.update(func(data *qualityData) error {
-				qualityRows(data, profile)[itemID] = qualityRecord{Total: expectedTotal, FIR: fir, Regular: regular}
+				qualityRows(data, profile)[rowKey] = qualityRecord{Total: expectedTotal, FIR: fir, Regular: regular}
 				return nil
 			})
 		}

@@ -50,6 +50,7 @@ type ItemTrackingState struct {
 	FIRQuantity             int64                         `json:"firQuantity"`
 	RegularQuantity         int64                         `json:"regularQuantity"`
 	UncategorizedQuantity   int64                         `json:"uncategorizedQuantity"`
+	QualityKnown            bool                          `json:"qualityKnown"`
 	MarketTracked           bool                          `json:"marketTracked"`
 	AlternativeNotes        []string                      `json:"alternativeNotes,omitempty"`
 	AnyGroups               []ItemTrackingAnyGroup        `json:"anyGroups,omitempty"`

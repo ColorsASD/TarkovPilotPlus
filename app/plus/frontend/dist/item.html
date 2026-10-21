@@ -70,7 +70,6 @@
                 <div class="tracked-heading"><h2>Items Tracker</h2></div>
                 <p data-tracked="variant-name" class="tracked-variant-name hidden"></p>
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
-                <p data-tracked="inventory-note" class="tracked-inventory-note hidden"></p>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <div data-tracked="next-item" class="tracked-next-item hidden">
                     <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Item</span></div>
@@ -128,6 +127,19 @@
                 <span>Scan now</span>
             </button>
         </section>
+
+        <details id="tracker-inventory" class="settings-panel tracker-inventory">
+            <summary>Items Tracker</summary>
+            <div class="tracker-inventory-content">
+                <p class="hint">Classify existing stock locally. Saving quality does not change the total on Tarkov Market.</p>
+                <label for="inventory-search" class="sr-only">Search inventory</label>
+                <input id="inventory-search" type="search" placeholder="Search inventory…" autocomplete="off" spellcheck="false" />
+                <button id="btn-refresh-inventory" type="button">Refresh inventory</button>
+                <p id="inventory-status" class="hint" role="status" aria-live="polite"></p>
+                <p id="inventory-error" class="tracked-error hidden" role="alert"></p>
+                <div id="inventory-rows" class="inventory-rows"></div>
+            </div>
+        </details>
 
         <details id="settings" class="settings-panel">
             <summary>Settings<span id="key-indicator" class="key-indicator">API key required</span></summary>
@@ -188,18 +200,6 @@
                 <p id="characters-note" class="hint hidden"></p>
                 <button id="btn-refresh-local" type="button">Refresh progress</button>
                 <p id="local-progress-status" class="hint hidden" role="status" aria-live="polite"></p>
-                <details id="tracker-inventory" class="tracker-inventory">
-                    <summary>Items Tracker inventory</summary>
-                    <div class="tracker-inventory-content">
-                        <p class="hint">Classify existing stock locally. Saving quality does not change the total on Tarkov Market.</p>
-                        <label for="inventory-search" class="sr-only">Search inventory</label>
-                        <input id="inventory-search" type="search" placeholder="Search inventory…" autocomplete="off" spellcheck="false" />
-                        <button id="btn-refresh-inventory" type="button">Refresh inventory</button>
-                        <p id="inventory-status" class="hint" role="status" aria-live="polite"></p>
-                        <p id="inventory-error" class="tracked-error hidden" role="alert"></p>
-                        <div id="inventory-rows" class="inventory-rows"></div>
-                    </div>
-                </details>
                 <div class="api-key-section">
                     <label for="api-key">Tarkov Market API key</label>
                     <div class="api-key-field">
@@ -236,6 +236,9 @@
                     F3 removes one Found in Raid item, and F4 removes one Regular item.
                     Unavailable actions are disabled, including additions to covered requirements and removals from empty stock.
                     Change or disable these shortcuts in Settings.</p>
+                <p><strong>Items Tracker.</strong> Open Items Tracker above Settings to classify existing stock.
+                    Search for an item, enter its Found in Raid and Regular quantities, then save the classification locally.
+                    Its API total stays unchanged; the remaining stock is Uncategorized and does not cover goals.</p>
                 <p><strong>Goals.</strong> Next Item lists the item's quests and hideout upgrades.
                     Their ratios use your locally recorded Found in Raid and Regular stock.
                     Brown checkmarks mark completed goals.</p>

@@ -83,7 +83,7 @@ func TestQualityDiskFailureRefreshPublishesFreshAPITotalWithUnknownAllocation(t 
 	}
 }
 
-func TestTypedDuplicateVariantsKeepOwnAPITotalsAndUnknownReadOnlyAllocation(t *testing.T) {
+func TestTypedDuplicateVariantsKeepOwnAPITotalsAndEditableLocalQuality(t *testing.T) {
 	a, fake := newTrackingTestApp(t)
 	raw := variantArmorProgressFixture()
 	a.qualityTracking = true
@@ -107,13 +107,13 @@ func TestTypedDuplicateVariantsKeepOwnAPITotalsAndUnknownReadOnlyAllocation(t *t
 			t.Fatalf("ambiguous variant %d remained writable: %+v", i, variant)
 		}
 		for _, requirement := range variant.Requirements {
-			if !requirement.AllocationUnknown || requirement.AvailableQuantity != 0 {
-				t.Fatalf("variant fixed quality was rendered as known: %+v", requirement)
+			if requirement.AllocationUnknown || requirement.AvailableQuantity != 0 {
+				t.Fatalf("unclassified distinct variant did not retain known zero fixed progress: %+v", requirement)
 			}
 		}
 		for _, group := range variant.AnyGroups {
-			if !group.AllocationUnknown || group.AvailableQuantity != 0 || group.RequiredQuantity != 15 {
-				t.Fatalf("variant Shared quality was rendered as known or dropped its goal: %+v", group)
+			if group.AllocationUnknown || group.AvailableQuantity != 0 || group.RequiredQuantity != 15 {
+				t.Fatalf("unclassified distinct variant did not retain known zero Shared progress: %+v", group)
 			}
 		}
 	}
@@ -121,12 +121,21 @@ func TestTypedDuplicateVariantsKeepOwnAPITotalsAndUnknownReadOnlyAllocation(t *t
 		t.Fatalf("duplicate variants dropped their fixed or Shared requirement: %+v", state.Tracking.Variants)
 	}
 	inv := a.GetTrackerInventory()
-	if inv.Error != "" || len(inv.Rows) != 1 || !inv.Rows[0].ReadOnly || inv.Rows[0].Total != 2 || inv.Rows[0].Uncategorized != 2 {
-		t.Fatalf("duplicate variant editor did not preserve read-only API stock: %+v", inv)
+	if inv.Error != "" || len(inv.Rows) != 1 || inv.Rows[0].ReadOnly || inv.Rows[0].RowKey == "" || inv.Rows[0].Total != 2 || inv.Rows[0].Uncategorized != 2 {
+		t.Fatalf("distinct variant editor did not expose its local classification: %+v", inv)
 	}
-	state = a.SetTrackerItemQuality(inv.Profile, variantArmorID, 2, 1, 1)
-	if state.Local == nil || state.Local.Error == "" {
-		t.Fatal("editor accepted a quality assignment for duplicate item IDs")
+	state = a.SetTrackerItemQuality(inv.Profile, inv.Rows[0].RowKey, 2, 1, 1)
+	if state.Local == nil || state.Local.Error != "" {
+		t.Fatalf("editor rejected a stable variant identity: %+v", state.Local)
+	}
+	classified := state.Tracking.Variants[1]
+	if classified.AvailableQuantity != 2 || classified.FIRQuantity != 1 || classified.RegularQuantity != 1 || classified.UncategorizedQuantity != 0 {
+		t.Fatalf("variant local classification did not preserve API total: %+v", classified)
+	}
+	for _, variant := range state.Tracking.Variants {
+		if variant.AddAllowed || variant.RemoveAllowed || variant.AddFIRAllowed || variant.AddRegularAllowed || variant.RemoveFIRAllowed || variant.RemoveRegularAllowed {
+			t.Fatalf("local classification enabled an ambiguous API stock action: %+v", variant)
+		}
 	}
 	if _, writes := trackedHotkeyAPICalls(fake); len(writes) != 0 {
 		t.Fatalf("duplicate variant display or editor wrote API stock: %+v", writes)

@@ -207,7 +207,7 @@
         const button = document.createElement('button');
         button.className = 'name-copy-button';
         button.type = 'button';
-        button.title = kind === 'quest' ? 'Copy quest name' : 'Copy hideout name';
+        button.title = kind === 'item' ? 'Copy item name' : kind === 'quest' ? 'Copy quest name' : 'Copy hideout name';
         button.setAttribute('aria-label', 'Copy ' + name);
         button.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h8v8H5ZM10 5V2H2v8h3" /></svg>';
         button.addEventListener('click', () => copyName(name));
@@ -230,21 +230,7 @@
         }
         return key;
     };
-    const currentNextItem = (tracking, multipleVariants) => {
-        const key = nextItemContextKey();
-        const current = currentTracking();
-        const pending = state.pendingAdds && state.pendingAdds.running === true && Number.isSafeInteger(state.pendingAdds.count) && state.pendingAdds.count > 0;
-        const transient = !!tracking && (tracking.loading || tracking.adding || !!state.local && state.local.loading ||
-            isBusy() || pending || sameTrackingTarget(changingTracking));
-        const invalid = !key || !tracking || !sameTrackingTarget(tracking) ||
-            safeText(tracking.itemId) && tracking.itemId !== state.item.bsgId ||
-            tracking.firInventorySeparate === true || multipleVariants || current && Array.isArray(current.variants) && current.variants.length > 1;
-        const error = safeText(state.error) || safeText(state.local && state.local.error) || safeText(tracking && tracking.error) || sameTrackingTarget(trackingFailure);
-        if (invalid || error) {
-            nextItemCache = null;
-            return null;
-        }
-        if (transient && nextItemCache) return nextItemCache;
+    const parsedNextItem = (tracking, transient) => {
         const forecast = tracking.nextItem && typeof tracking.nextItem === 'object' && !Array.isArray(tracking.nextItem) ? tracking.nextItem : null;
         if (forecast && ['estimated', 'uncertain', 'unavailable'].includes(forecast.status)) {
             const targets = Array.isArray(forecast.targets) ? forecast.targets.filter((target) =>
@@ -258,13 +244,35 @@
             if (targets.length) {
                 const completedState = !transient && tracking.addFIRAllowed === false && tracking.addRegularAllowed === false &&
                     tracking.requiredQuantity === 0 && tracking.availableQuantity === 0 && targets.every((target) => target.completed);
-                nextItemCache = {targets, completedState};
-                return nextItemCache;
+                return {targets, completedState};
             }
         }
-        if (transient) return nextItemCache;
-        nextItemCache = null;
         return null;
+    };
+    const currentNextItem = (tracking, multipleVariants) => {
+        const key = nextItemContextKey();
+        const current = currentTracking();
+        const typedVariant = multipleVariants && tracking && tracking.qualityKnown === true;
+        const pending = state.pendingAdds && state.pendingAdds.running === true && Number.isSafeInteger(state.pendingAdds.count) && state.pendingAdds.count > 0;
+        const transient = !!tracking && (tracking.loading || tracking.adding || !!state.local && state.local.loading ||
+            isBusy() || pending || sameTrackingTarget(changingTracking));
+        const invalid = !key || !tracking || !sameTrackingTarget(tracking) ||
+            safeText(tracking.itemId) && tracking.itemId !== state.item.bsgId || tracking.firInventorySeparate === true ||
+            !typedVariant && (multipleVariants || current && Array.isArray(current.variants) && current.variants.length > 1);
+        const error = safeText(state.error) || safeText(state.local && state.local.error) ||
+            !typedVariant && safeText(tracking && tracking.error) || sameTrackingTarget(trackingFailure);
+        if (invalid || error) {
+            if (!multipleVariants) nextItemCache = null;
+            return null;
+        }
+        // Az egyértelmű variánsok lokális céljai külön DTO-ból jönnek;
+        // soha nem osztozhatnak a normál tárgy közös megjelenítési cache-én.
+        if (typedVariant) return parsedNextItem(tracking, transient);
+        if (transient && nextItemCache) return nextItemCache;
+        const parsed = parsedNextItem(tracking, transient);
+        if (parsed) nextItemCache = parsed;
+        else if (!transient) nextItemCache = null;
+        return nextItemCache;
     };
     const renderNextItem = (panel, forecast) => {
         const nextItem = panel.querySelector('[data-tracked="next-item"]');
@@ -372,11 +380,6 @@
         const stockRequiredQuantity = collectionCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
         const stockRatio = tracked ? quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
         element('ratio').textContent = stockRatio;
-        const uncategorized = Number.isSafeInteger(tracking && tracking.uncategorizedQuantity) && tracking.uncategorizedQuantity > 0;
-        element('inventory-note').textContent = uncategorized ? 'Inventory: FiR ' + quantityText(tracking.firQuantity) +
-            ' · Regular ' + quantityText(tracking.regularQuantity) + ' · Uncategorized ' + quantityText(tracking.uncategorizedQuantity) +
-            '. Classify stock in Settings → Items Tracker inventory.' : '';
-        element('inventory-note').classList.toggle('hidden', !uncategorized);
         trackingDisplayBaselines.set(panel, {stockRatio, hasRequirements: !!visibleRequirements.length || !!anyGroups.length});
         element('ratio').setAttribute('aria-label', 'Available / required quantity');
         element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
@@ -533,7 +536,7 @@
         [...$('inventory-rows').children].forEach((row) => {
             const readOnly = row.dataset.readOnly === 'true';
             row.querySelectorAll('input').forEach((input) => { input.disabled = busy || inventoryLoading || readOnly; });
-            const button = row.querySelector('button');
+            const button = row.querySelector('.inventory-save');
             if (button) button.disabled = busy || inventoryLoading || readOnly || row.dataset.valid !== 'true' || row.dataset.changed !== 'true';
         });
     };
@@ -545,7 +548,7 @@
         inventoryData = null;
         inventoryLoading = false;
         $('inventory-rows').replaceChildren();
-        $('inventory-status').textContent = state.hasAPIKey && state.characterUid ? 'Open the inventory to classify stock.' : 'Select a character to view stock.';
+        $('inventory-status').textContent = state.hasAPIKey && state.characterUid ? 'Open Items Tracker to classify stock.' : 'Select a character to view stock.';
         $('inventory-error').textContent = '';
         $('inventory-error').classList.add('hidden');
     };
@@ -559,10 +562,44 @@
             const row = document.createElement('div');
             row.className = 'inventory-row';
             row.dataset.itemId = item.itemId;
+            row.dataset.rowKey = item.rowKey || item.itemId;
             row.dataset.readOnly = String(item.readOnly === true);
+            const heading = document.createElement('div');
+            heading.className = 'inventory-item-heading';
+            const imageWrap = document.createElement('div');
+            imageWrap.className = 'inventory-item-image';
+            const placeholder = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            placeholder.classList.add('item-image-placeholder');
+            placeholder.setAttribute('viewBox', '0 0 48 48');
+            placeholder.setAttribute('aria-hidden', 'true');
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'm24 5 17 10v18L24 43 7 33V15Z M7 15l17 10 17-10M24 25v18M16 10l17 10');
+            placeholder.append(path);
+            imageWrap.append(placeholder);
+            const imageURL = safeImageURL(item.icon);
+            if (imageURL) {
+                const image = document.createElement('img');
+                image.className = 'inventory-image-pending';
+                image.alt = '';
+                image.referrerPolicy = 'no-referrer';
+                image.loading = 'lazy';
+                image.addEventListener('load', () => {
+                    image.classList.remove('inventory-image-pending', 'hidden');
+                    placeholder.classList.add('hidden');
+                });
+                image.addEventListener('error', () => {
+                    image.classList.add('hidden');
+                    image.classList.remove('inventory-image-pending');
+                    placeholder.classList.remove('hidden');
+                });
+                image.src = imageURL;
+                imageWrap.append(image);
+            }
             const name = document.createElement('p');
             name.className = 'inventory-name';
             name.textContent = safeText(item.name) || item.itemId;
+            name.append(document.createTextNode(' '), copyNameButton(name.textContent, 'item'));
+            heading.append(imageWrap, name);
             const quantities = document.createElement('div');
             quantities.className = 'inventory-quantities';
             const total = document.createElement('span');
@@ -581,7 +618,7 @@
                 input.max = String(item.total);
                 input.step = '1';
                 input.value = String(item[kind]);
-                input.setAttribute('aria-label', name.textContent + ': ' + label.textContent);
+                input.setAttribute('aria-label', (safeText(item.name) || item.itemId) + ': ' + label.textContent);
                 label.append(input);
                 fields.append(label);
                 return input;
@@ -613,7 +650,7 @@
                 $('inventory-status').textContent = 'Saving classification locally…';
                 updateControls();
                 try {
-                    const result = await call('SetTrackerItemQuality', inventoryData.profile, item.itemId, item.total, Number(inputs[0].value), Number(inputs[1].value));
+                    const result = await call('SetTrackerItemQuality', inventoryData.profile, item.rowKey || item.itemId, item.total, Number(inputs[0].value), Number(inputs[1].value));
                     if (context === currentInventoryContext()) {
                         await refresh(result);
                         if (safeText(result && result.local && result.local.error) || safeText(result && result.error)) throw new Error('Classification rejected');
@@ -632,7 +669,7 @@
                     updateControls();
                 }
             });
-            row.append(name, quantities, fields, save, error);
+            row.append(heading, quantities, fields, save, error);
             // A kezdeti validáció a már beillesztett soron frissíti a vezérlőket.
             const values = inputs.map((input) => Number(input.value));
             row.dataset.valid = 'true';
@@ -818,11 +855,15 @@
     };
     if (previewVariants) {
         const variantError = 'Separate stock updates are unavailable for variants sharing an item ID in the current Tarkov Market API.';
-        const regular = { ...previewState.tracking, variantName: 'MF-UNTAR body armor (0/50)', availableQuantity: 0,
+        const regular = { ...previewState.tracking, rowKey: 'preview-variant-0', qualityKnown: true,
+            variantName: 'MF-UNTAR body armor (0/50)', availableQuantity: 1, firQuantity: 0, regularQuantity: 0, uncategorizedQuantity: 1,
+            icon: 'https://cdn.tarkov-market.app/images/items/mf-untar_armor_vest_(0_45)_sm.png',
             requiredQuantity: 1, remainingQuantity: 1, requirement: 'regular',
             requirements: [{ kind: 'regular', requiredQuantity: 1, availableQuantity: 0 }],
             addFIRAllowed: false, addRegularAllowed: false, removeFIRAllowed: false, removeRegularAllowed: false, error: variantError };
-        const fir = { ...previewState.tracking, variantName: 'MF-UNTAR body armor', availableQuantity: 2,
+        const fir = { ...previewState.tracking, rowKey: 'preview-variant-1', qualityKnown: true,
+            variantName: 'MF-UNTAR body armor', availableQuantity: 2, firQuantity: 0, regularQuantity: 0, uncategorizedQuantity: 2,
+            icon: 'https://cdn.tarkov-market.app/images/items/689a1ed7-ae05-4d5d-b8eb-5e28e9276b4e_enImg.webp?r=1736022219428',
             requiredQuantity: 0, remainingQuantity: 0, requirement: 'unknown', requirements: [],
             anyGroups: [{ groupId: 'quest:scavenger:body-armor', fir: true, requiredQuantity: 15, availableQuantity: 6,
                 sources: [{ questName: 'Scavenger', category: 'Body Armor', requiredQuantity: 15, availableQuantity: 6,
@@ -844,7 +885,24 @@
                 { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: 0 }] };
     }
     const updatePreviewTracking = () => {
-        if (previewVariants || !previewState.tracking) return;
+        if (!previewState.tracking) return;
+        if (previewVariants) {
+            const variants = previewState.tracking.variants.map((variant) => {
+                const requirements = variant.requirements.map((requirement) => ({ ...requirement,
+                    availableQuantity: Math.min(requirement.requiredQuantity, requirement.kind === 'fir' ? variant.firQuantity : variant.firQuantity + variant.regularQuantity) }));
+                const anyGroups = (variant.anyGroups || []).map((group) => {
+                    const availableQuantity = Math.min(group.requiredQuantity, group.fir ? variant.firQuantity : variant.firQuantity + variant.regularQuantity);
+                    return { ...group, availableQuantity, sources: group.sources.map((source) => ({ ...source, availableQuantity,
+                        items: source.items.map((item, index) => ({ ...item, availableQuantity: index === 0 ? availableQuantity : 0 })) })) };
+                });
+                const targets = [...requirements.map((row) => ({ kind: 'quest', goalName: 'Fishing Gear', availableQuantity: row.availableQuantity,
+                    requiredQuantity: row.requiredQuantity })), ...anyGroups.map((group) => ({ kind: 'quest', goalName: 'Scavenger',
+                    availableQuantity: group.availableQuantity, requiredQuantity: group.requiredQuantity }))];
+                return { ...variant, requirements, anyGroups, nextItem: { status: 'estimated', targets } };
+            });
+            previewState.tracking = { ...variants[variants.length - 1], variants };
+            return;
+        }
         const tracking = previewState.tracking;
         let fir = tracking.firQuantity || 0;
         let regular = tracking.regularQuantity || 0;
@@ -870,7 +928,7 @@
                 goalName: row.kind === 'fir' ? 'Shortage' : 'A Bitter Victory',
                 availableQuantity: row.availableQuantity, requiredQuantity: row.requiredQuantity, completed: false })) } };
     };
-    if (preview && !previewVariants) updatePreviewTracking();
+    if (preview) updatePreviewTracking();
     if (preview) {
         previewState.pendingAdds = { count: 0, running: false, status: '', error: '' };
         previewState.local = { loading: false, error: '', warning: '', updatedAt: '2026-10-11T21:30:00Z' };
@@ -883,17 +941,19 @@
         if (method === 'RevealAPIKey') return previewState.hasAPIKey ? previewAPIKey : '';
         if (method === 'GetTrackerInventory') {
             const tracking = previewState.tracking;
-            return { profile: 'preview-profile', revision: 1, error: '', rows: tracking ? [{ itemId: tracking.itemId,
-                name: previewState.item.name, total: tracking.availableQuantity, fir: tracking.firQuantity || 0,
-                regular: tracking.regularQuantity || 0, uncategorized: tracking.uncategorizedQuantity || 0,
-                readOnly: !!tracking.variants || tracking.firInventorySeparate === true }] : [] };
+            const entries = tracking ? tracking.variants || [tracking] : [];
+            return { profile: 'preview-profile', revision: 1, error: '', rows: entries.map((entry) => ({ itemId: entry.itemId,
+                rowKey: entry.rowKey || entry.itemId, name: entry.variantName || previewState.item.name, icon: entry.icon || '',
+                total: entry.availableQuantity, fir: entry.firQuantity || 0, regular: entry.regularQuantity || 0,
+                uncategorized: entry.uncategorizedQuantity || 0, readOnly: entry.firInventorySeparate === true })) };
         }
         if (method === 'SetTrackerItemQuality') {
-            const [profile, itemId, total, fir, regular] = args;
-            const tracking = previewState.tracking;
-            if (profile !== 'preview-profile' || !tracking || tracking.itemId !== itemId || tracking.availableQuantity !== total ||
+            const [profile, rowKey, total, fir, regular] = args;
+            const entries = previewState.tracking ? previewState.tracking.variants || [previewState.tracking] : [];
+            const tracking = entries.find((entry) => (entry.rowKey || entry.itemId) === rowKey);
+            if (profile !== 'preview-profile' || !tracking || tracking.firInventorySeparate === true || tracking.availableQuantity !== total ||
                 ![fir, regular].every((value) => Number.isSafeInteger(value) && value >= 0) || fir + regular > total) throw new Error('Invalid classification');
-            previewState.tracking = { ...tracking, firQuantity: fir, regularQuantity: regular, uncategorizedQuantity: total - fir - regular };
+            Object.assign(tracking, { firQuantity: fir, regularQuantity: regular, uncategorizedQuantity: total - fir - regular });
             updatePreviewTracking();
         }
         if (method === 'SetOptions') {
