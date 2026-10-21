@@ -362,6 +362,7 @@ func (a *ItemWindowApp) GetState() ItemState {
 		st.Tracking.RemoveFIRAllowed, st.Tracking.RemoveRegularAllowed = false, false
 	}
 	if st.Tracking != nil && !a.canAddTrackedItemLocked() {
+		st.Tracking.AddAllowed = false
 		st.Tracking.AddFIRAllowed, st.Tracking.AddRegularAllowed = false, false
 	}
 	st.Local = cloneLocalProgressState(st.Local)

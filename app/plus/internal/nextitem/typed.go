@@ -14,6 +14,16 @@ type TypedGroupStock struct {
 	RequiredQuantity  int64
 	AllocatedQuantity int64
 	Contributions     map[string]int64
+	RowContributions  map[int]int64
+}
+
+// TypedStockSummary a készlet minőségi kategóriáinak külön megjelenítési
+// kiosztása. A FiR igények előbb kapnak FiR készletet; a Regular kategóriák
+// nonFiR készlet után csak a fennmaradó FiR darabokat használhatják.
+// Nem módosítja a célprioritás szerinti előrejelzést vagy a gombok állapotát.
+type TypedStockSummary struct {
+	FixedStock localprogress.RequirementStock
+	Groups     map[string]TypedGroupStock
 }
 
 // TypedView csak helyi számítás: a készletet és a Market adatait nem írja.
@@ -24,6 +34,7 @@ type TypedView struct {
 	FixedStock        localprogress.RequirementStock
 	RequiredQuantity  int64
 	Groups            map[string]TypedGroupStock
+	StockSummary      *TypedStockSummary
 	AddFIRAllowed     bool
 	AddRegularAllowed bool
 }
@@ -35,7 +46,20 @@ type TypedView struct {
 // felül ezt a kiosztást.
 // allowFIRForRegular esetén a Regular követelmény előbb nonFiR darabot használ,
 // majd szükség esetén FiR darabot is; nonFiR darab FiR igényt sosem fedhet le.
+// A minőség nem írja felül a meglévő célprioritást: későbbi FiR cél nem foglal
+// előre készletet egy korábban sorra kerülő Regular követelmény elől.
 func CalculateTyped(snapshot localprogress.Snapshot, itemID string, allowFIRForRegular bool) TypedView {
+	return calculateTyped(snapshot, itemID, allowFIRForRegular, false)
+}
+
+// CalculateTypedForDisplay a célkiosztás mellett a Stock sorainak külön
+// minőségi összesítését is elkészíti. A csak jogosultságot kérő útvonalaknak
+// nincs szükségük erre a további készletkiosztásra.
+func CalculateTypedForDisplay(snapshot localprogress.Snapshot, itemID string, allowFIRForRegular bool) TypedView {
+	return calculateTyped(snapshot, itemID, allowFIRForRegular, true)
+}
+
+func calculateTyped(snapshot localprogress.Snapshot, itemID string, allowFIRForRegular, withStockSummary bool) TypedView {
 	target, matches := -1, 0
 	for i, row := range snapshot.Items {
 		if itemID != "" && row.ItemID == itemID {
@@ -45,13 +69,23 @@ func CalculateTyped(snapshot localprogress.Snapshot, itemID string, allowFIRForR
 	if matches != 1 {
 		return TypedView{Forecast: Forecast{Status: "unavailable", Reason: "Typed allocation needs one unambiguous tracked inventory row."}}
 	}
-	return CalculateTypedRow(snapshot, target, allowFIRForRegular)
+	return calculateTypedRow(snapshot, target, allowFIRForRegular, withStockSummary)
 }
 
 // CalculateTypedRow egy fizikai API-rekordhoz számolja a helyi kiosztást.
 // Azonos item ID eltérő változatai külön készletet és követelményeket kapnak.
 // A közös item ID-ra címezhető API-írás ilyenkor továbbra is le van tiltva.
 func CalculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForRegular bool) TypedView {
+	return calculateTypedRow(snapshot, target, allowFIRForRegular, false)
+}
+
+// CalculateTypedRowForDisplay a fizikai API-sor külön minőségi Stock
+// összesítését is tartalmazza, az azonos ID-jú változatok összevonása nélkül.
+func CalculateTypedRowForDisplay(snapshot localprogress.Snapshot, target int, allowFIRForRegular bool) TypedView {
+	return calculateTypedRow(snapshot, target, allowFIRForRegular, true)
+}
+
+func calculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForRegular, withStockSummary bool) TypedView {
 	unavailable := func(reason string) TypedView {
 		return TypedView{Forecast: Forecast{Status: "unavailable", Reason: reason}}
 	}
@@ -82,7 +116,8 @@ func CalculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 		return unavailable("Quest, hideout or shared requirement data is incomplete or inconsistent.")
 	}
 	typedGoals := typedGoalInputs(graph.goals, allowFIRForRegular)
-	before := collapseTypedGoals(allocateGoals(typedGoals, stock))
+	allocated := allocateGoals(typedGoals, stock)
+	before := collapseTypedGoals(allocated)
 	// Az API Shared előrehaladása nem döntheti el a helyi készlet minőségét.
 	graph.counters = nil
 	fixed := currentFixedStock(before, target)
@@ -90,6 +125,11 @@ func CalculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 		Groups: typedGroupStocks(before, snapshot.Items, target),
 		Forecast: Forecast{Status: "estimated", Reason: "Allocated from locally recorded Found in Raid and Regular inventory.",
 			Targets: displayTargets(snapshot, graph, before, target, true), FixedStock: fixed}}
+	if withStockSummary {
+		summary := collapseTypedGoals(typedSummaryGoals(allocated, stock))
+		view.StockSummary = &TypedStockSummary{FixedStock: *currentFixedStock(summary, target),
+			Groups: typedGroupStocks(summary, snapshot.Items, target)}
+	}
 	if matches != 1 || snapshot.Items[target].AvailableQuantity == localprogress.MaxQuantity {
 		return view
 	}
@@ -101,6 +141,35 @@ func CalculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 	}
 	view.AddRegularAllowed, view.AddFIRAllowed = canAdd(0), canAdd(1)
 	return view
+}
+
+// typedSummaryGoals ugyanazt a teljes készletet egyszer osztja ki a Stock
+// kategóriáihoz. A célok már kiszámított sorrendje kategórián belül stabil;
+// előbb a fix és Shared FiR, majd a fix és Shared Regular igények következnek.
+// A flow egy darabot csak egyszer használhat fel, alternatív tárgyak között is.
+func typedSummaryGoals(goals []goal, stock []int64) []goal {
+	out := engineCloneGoals(goals)
+	type position struct{ goal, need int }
+	var positions []position
+	var ordered []need
+	for _, fir := range []bool{true, false} {
+		for _, shared := range []bool{false, true} {
+			for i, g := range out {
+				for j, n := range g.needs {
+					if n.fir == fir && n.shared == shared {
+						positions = append(positions, position{i, j})
+						ordered = append(ordered, n)
+					}
+				}
+			}
+		}
+	}
+	allocations := engineAllocateNeeds(ordered, stock)
+	for i, p := range positions {
+		n := &out[p.goal].needs[p.need]
+		n.allocations, n.have = allocations[i], engineAllocationTotal(allocations[i])
+	}
+	return out
 }
 
 func typedGoalInputs(goals []goal, allowFIRForRegular bool) []goal {
@@ -195,6 +264,10 @@ func typedGroupStocks(goals []goal, items []localprogress.Item, target int) map[
 			for _, row := range n.rows {
 				if row == target {
 					contributions := make(map[string]int64, len(n.allocations))
+					rowContributions := make(map[int]int64, len(n.rows))
+					for _, index := range n.rows {
+						rowContributions[index] = n.allocations[index]
+					}
 					for index, quantity := range n.allocations {
 						if index >= 0 && index < len(items) && quantity > 0 {
 							contributions[items[index].ItemID] += quantity
@@ -202,7 +275,7 @@ func typedGroupStocks(goals []goal, items []localprogress.Item, target int) map[
 					}
 					key := g.key + ":" + strings.TrimPrefix(n.key, g.key+":group:")
 					groups[key] = TypedGroupStock{FIR: n.fir, AvailableQuantity: n.have,
-						RequiredQuantity: n.amount, AllocatedQuantity: n.allocations[target], Contributions: contributions}
+						RequiredQuantity: n.amount, AllocatedQuantity: n.allocations[target], Contributions: contributions, RowContributions: rowContributions}
 					break
 				}
 			}

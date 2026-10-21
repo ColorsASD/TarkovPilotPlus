@@ -17,11 +17,21 @@
     let keyRevealPending = false;
     let initialRender = true;
     let latestStateSequence = null;
+    let loadedStockContext = '';
     let inventoryData = null;
     let inventoryContext = '';
     let inventoryRevision = 0;
     let inventoryLoading = false;
     let inventorySaving = false;
+    let inventoryBackupBusy = false;
+    let inventoryRowsRevision = 0;
+    let inventoryControlsKey = '';
+    let inventorySyncAttempt = '';
+    let inventoryRefreshRequest = null;
+    let inventorySyncErrorShown = false;
+    let inventoryNeedsReload = false;
+    let inventoryLoadedStamp = '';
+    const inventoryNameCollator = new Intl.Collator('en', { sensitivity: 'base' });
     const shortcutErrors = new Map();
     let shortcutCaptureInput = null;
     let shortcutCapturePending = false;
@@ -137,10 +147,22 @@
         return Array.isArray(tracking.variants) && tracking.variants.length ? tracking.variants.filter((variant) =>
             variant && typeof variant === 'object' && sameTrackingTarget(variant)) : [tracking];
     };
+    const stockTrackingContext = (tracking) => {
+        const mode = String(state.mode || '').toUpperCase();
+        if (!state.hasAPIKey || !tracking || tracking.tracked !== true || !sameTrackingTarget(tracking) ||
+            !safeText(state.item && state.item.uid) || !safeText(state.item && state.item.bsgId) || tracking.itemId !== state.item.bsgId ||
+            !['PVP', 'PVE', 'SEASON'].includes(mode) ||
+            ![tracking.availableQuantity, tracking.requiredQuantity, tracking.firQuantity, tracking.regularQuantity].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+            tracking.firQuantity + tracking.regularQuantity > tracking.availableQuantity) return '';
+        return JSON.stringify([state.item.uid, state.item.bsgId, state.characterUid, mode]);
+    };
     const canChangeTracking = (tracking, action) => {
         const current = currentTracking();
         const stockAction = stockActions.find((entry) => entry.id === action);
-        if (state.hotkeyCapture || shortcutCapturePending || !state.local || state.local.loading || safeText(state.local.error)) return false;
+        const context = stockTrackingContext(tracking);
+        const refreshing = !!tracking && (tracking.loading || !!state.local && state.local.loading);
+        if (state.hotkeyCapture || shortcutCapturePending || !state.local || safeText(state.local.error) || !context ||
+            refreshing && context !== loadedStockContext) return false;
         return (!!nativeApp() || preview) && !isBusy() && !safeText(state.error) && state.hasAPIKey && !!state.characterUid &&
             !!safeText(state.item && state.item.uid) &&
             !!safeText(state.item && state.item.bsgId) &&
@@ -148,7 +170,7 @@
             tracking.firInventorySeparate !== true &&
             !!stockAction && tracking[stockAction.allowed] === true &&
             (!stockAction.removing || Number.isSafeInteger(tracking[stockAction.quantity]) && tracking[stockAction.quantity] > 0) &&
-            !tracking.loading && !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
+            !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
             pendingOptions.size === 0 && !(current && Array.isArray(current.variants) && current.variants.length > 1);
     };
     const quantityText = (value) => Number.isInteger(value) && value >= 0 ? numberText(value) : '—';
@@ -215,6 +237,7 @@
     };
     const trackingCards = new Map();
     const trackingDisplayBaselines = new WeakMap();
+    const nextItemTargetSignatures = new WeakMap();
     let nextItemCacheKey = '';
     let nextItemCache = null;
     const nextItemContextKey = () => {
@@ -286,40 +309,44 @@
             panel.querySelector('[data-tracked="ratio"]').textContent = forecast && forecast.completedState ? '0/0' : baseline.stockRatio;
             panel.querySelector('[data-tracked="requirements"]').classList.toggle('hidden', !!(forecast && forecast.completedState) || !baseline.hasRequirements);
         }
-        panel.querySelector('[data-tracked="next-item-targets"]').replaceChildren(...(forecast ? ['quest', 'module'].flatMap((kind) => {
-            const targets = forecast.targets.filter((target) => target.kind === kind);
-            if (!targets.length) return [];
-            const group = document.createElement('div');
-            group.className = 'tracked-next-item-target-group';
-            const heading = document.createElement('h3');
-            heading.className = 'tracked-next-item-target-heading';
-            heading.textContent = kind === 'quest'
-                ? targets.length === 1 ? 'Quest' : 'Quests'
-                : targets.length === 1 ? 'Hideout Module' : 'Hideout Modules';
-            group.append(heading, ...targets.map((target) => {
-                const row = document.createElement('div');
-                row.className = 'tracked-next-item-target';
-                row.dataset.kind = target.kind;
-                const name = document.createElement('span');
-                name.className = 'tracked-next-item-target-name';
-                name.textContent = target.name;
-                name.append(document.createTextNode(' '), copyNameButton(target.name, target.kind));
-                if (target.completed) {
-                    const check = document.createElement('span');
-                    check.className = 'tracked-next-item-target-completed';
-                    check.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>';
-                    check.setAttribute('role', 'img');
-                    check.setAttribute('aria-label', 'Completed');
-                    name.append(document.createTextNode(' '), check);
-                }
-                const ratio = document.createElement('span');
-                ratio.className = 'tracked-next-item-target-ratio';
-                ratio.textContent = '(' + (target.allocationUnknown ? '—' : quantityText(target.availableQuantity)) + '/' + quantityText(target.requiredQuantity) + ')';
-                row.append(name, ratio);
-                return row;
-            }));
-            return [group];
-        }) : []));
+        const targetSignature = JSON.stringify(forecast ? forecast.targets : []);
+        if (nextItemTargetSignatures.get(panel) !== targetSignature) {
+            nextItemTargetSignatures.set(panel, targetSignature);
+            panel.querySelector('[data-tracked="next-item-targets"]').replaceChildren(...(forecast ? ['quest', 'module'].flatMap((kind) => {
+                const targets = forecast.targets.filter((target) => target.kind === kind);
+                if (!targets.length) return [];
+                const group = document.createElement('div');
+                group.className = 'tracked-next-item-target-group';
+                const heading = document.createElement('h3');
+                heading.className = 'tracked-next-item-target-heading';
+                heading.textContent = kind === 'quest'
+                    ? targets.length === 1 ? 'Quest' : 'Quests'
+                    : targets.length === 1 ? 'Hideout Module' : 'Hideout Modules';
+                group.append(heading, ...targets.map((target) => {
+                    const row = document.createElement('div');
+                    row.className = 'tracked-next-item-target';
+                    row.dataset.kind = target.kind;
+                    const name = document.createElement('span');
+                    name.className = 'tracked-next-item-target-name';
+                    name.textContent = target.name;
+                    name.append(document.createTextNode(' '), copyNameButton(target.name, target.kind));
+                    if (target.completed) {
+                        const check = document.createElement('span');
+                        check.className = 'tracked-next-item-target-completed';
+                        check.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>';
+                        check.setAttribute('role', 'img');
+                        check.setAttribute('aria-label', 'Completed');
+                        name.append(document.createTextNode(' '), check);
+                    }
+                    const ratio = document.createElement('span');
+                    ratio.className = 'tracked-next-item-target-ratio';
+                    ratio.textContent = '(' + (target.allocationUnknown ? '—' : quantityText(target.availableQuantity)) + '/' + quantityText(target.requiredQuantity) + ')';
+                    row.append(name, ratio);
+                    return row;
+                }));
+                return [group];
+                }) : []));
+        }
         nextItem.classList.toggle('hidden', !forecast);
         if (forecast) nextItem.setAttribute('aria-label', label);
         else nextItem.removeAttribute('aria-label');
@@ -487,6 +514,12 @@
         updateKeyVisibility();
     };
 
+    const updateInventoryRowControls = (row, blocked = inventoryEditingBlocked()) => {
+        const readOnly = row.dataset.readOnly === 'true';
+        row.querySelectorAll('input').forEach((input) => { input.disabled = blocked || readOnly; });
+        const button = row.querySelector('.inventory-save');
+        if (button) button.disabled = blocked || readOnly || row.dataset.valid !== 'true' || row.dataset.changed !== 'true';
+    };
     const updateControls = () => {
         const available = !!nativeApp() || preview;
         const busy = isBusy();
@@ -531,23 +564,92 @@
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
         $('btn-scan').querySelector('span').textContent = busy ? 'Processing…' : 'Scan now';
-        $('inventory-search').disabled = !available || busy || inventoryLoading;
-        $('btn-refresh-inventory').disabled = !available || busy || inventoryLoading || !state.hasAPIKey || !state.characterUid;
-        [...$('inventory-rows').children].forEach((row) => {
-            const readOnly = row.dataset.readOnly === 'true';
-            row.querySelectorAll('input').forEach((input) => { input.disabled = busy || inventoryLoading || readOnly; });
-            const button = row.querySelector('.inventory-save');
-            if (button) button.disabled = busy || inventoryLoading || readOnly || row.dataset.valid !== 'true' || row.dataset.changed !== 'true';
-        });
+        $('inventory-search').disabled = !available || busy || inventoryLoading || !!inventoryRefreshRequest || !!(state.local && state.local.loading);
+        $('btn-refresh-inventory').disabled = !available || busy || inventoryLoading || !!inventoryRefreshRequest || !!(state.local && state.local.loading) || !state.hasAPIKey || !state.characterUid;
+        $('btn-import-inventory').disabled = !canTransferInventory();
+        $('btn-export-inventory').disabled = !canTransferInventory();
+        const inventoryBlocked = inventoryEditingBlocked();
+        const controlsKey = [inventoryBlocked, inventoryRowsRevision].join(':');
+        if (inventoryControlsKey !== controlsKey) {
+            inventoryControlsKey = controlsKey;
+            [...$('inventory-rows').children].forEach((row) => updateInventoryRowControls(row, inventoryBlocked));
+        }
     };
 
     const currentInventoryContext = () => state.hasAPIKey && state.characterUid ?
         JSON.stringify([state.characterUid, String(state.mode || '').toUpperCase()]) : '';
+    const currentInventoryRevision = () => safeText(state.local && state.local.inventoryRevision);
+    const currentInventoryStamp = () => safeText(state.local && state.local.updatedAt);
+    const inventoryPending = () => !!(state.pendingAdds && Number.isSafeInteger(state.pendingAdds.count) && state.pendingAdds.count > 0);
+    const inventoryEditingBlocked = () => isBusy() || inventoryLoading || inventoryNeedsReload || !!inventoryRefreshRequest || !state.local || state.local.loading ||
+        !!safeText(state.local.error) || !!safeText(state.error) || inventoryPending() || !inventoryData || inventoryContext !== currentInventoryContext() ||
+        !!currentInventoryRevision() && inventoryData.revision !== currentInventoryRevision() ||
+        !!currentInventoryStamp() && inventoryLoadedStamp !== currentInventoryStamp();
+    const canTransferInventory = () => !!nativeApp() && !isBusy() && !inventoryLoading && !inventorySaving && !inventoryBackupBusy &&
+        !inventoryRefreshRequest && !inventoryNeedsReload &&
+        !!state.local && !state.local.loading && !safeText(state.local.error) && !safeText(state.error) &&
+        !!inventoryData && !!inventoryData.profile && !!currentInventoryContext() && currentInventoryContext() === inventoryContext &&
+        (!currentInventoryRevision() || inventoryData.revision === currentInventoryRevision()) &&
+        (!currentInventoryStamp() || inventoryLoadedStamp === currentInventoryStamp()) &&
+        !(state.pendingAdds && Number.isSafeInteger(state.pendingAdds.count) && state.pendingAdds.count > 0);
+    const transferInventory = async (importing) => {
+        if (!canTransferInventory()) return;
+        const context = currentInventoryContext();
+        const previousStatus = $('inventory-status').textContent;
+        inventoryBackupBusy = true;
+        localBusy = true;
+        $('inventory-error').textContent = '';
+        $('inventory-error').classList.add('hidden');
+        $('inventory-status').textContent = importing ? 'Importing item classifications…' : 'Exporting item classifications…';
+        updateControls();
+        try {
+            const result = await call(importing ? 'ImportTrackerQuality' : 'ExportTrackerQuality');
+            if (context !== currentInventoryContext()) return;
+            if (!result || typeof result !== 'object') throw new Error('Invalid backup result');
+            if (result.canceled === true) {
+                $('inventory-status').textContent = previousStatus;
+                return;
+            }
+            if (safeText(result.error)) {
+                $('inventory-status').textContent = '';
+                $('inventory-error').textContent = safeText(result.error);
+                $('inventory-error').classList.remove('hidden');
+                return;
+            }
+            const counts = importing ? [result.imported, result.skipped] : [result.exported];
+            if (!counts.every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error('Invalid backup counts');
+            if (importing) {
+                await refresh(await call('GetState'));
+                if (context !== currentInventoryContext()) return;
+                await loadInventory();
+                $('inventory-status').textContent = 'Imported ' + quantityText(result.imported) + ' item classifications; skipped ' + quantityText(result.skipped) + ' unavailable items.';
+            } else {
+                $('inventory-status').textContent = 'Exported ' + quantityText(result.exported) + ' item classifications.';
+            }
+        } catch (_) {
+            if (context === currentInventoryContext()) {
+                $('inventory-status').textContent = '';
+                $('inventory-error').textContent = importing ? 'Item classifications could not be imported. Please try again.' : 'Item classifications could not be exported. Please try again.';
+                $('inventory-error').classList.remove('hidden');
+            }
+        } finally {
+            inventoryBackupBusy = false;
+            localBusy = false;
+            updateControls();
+            synchronizeInventory();
+        }
+    };
     const resetInventory = () => {
         ++inventoryRevision;
         inventoryData = null;
         inventoryLoading = false;
+        inventorySyncAttempt = '';
+        inventoryRefreshRequest = null;
+        inventorySyncErrorShown = false;
+        inventoryNeedsReload = false;
+        inventoryLoadedStamp = '';
         $('inventory-rows').replaceChildren();
+        ++inventoryRowsRevision;
         $('inventory-status').textContent = state.hasAPIKey && state.characterUid ? 'Open Items Tracker to classify stock.' : 'Select a character to view stock.';
         $('inventory-error').textContent = '';
         $('inventory-error').classList.add('hidden');
@@ -556,7 +658,13 @@
         const query = $('inventory-search').value.trim().toLowerCase();
         const allRows = inventoryData && Array.isArray(inventoryData.rows) ? inventoryData.rows.filter((row) => row &&
             safeText(row.itemId) && Number.isSafeInteger(row.total) && row.total > 0 && Number.isSafeInteger(row.fir) && row.fir >= 0 &&
-            Number.isSafeInteger(row.regular) && row.regular >= 0 && row.fir + row.regular <= row.total) : [];
+            Number.isSafeInteger(row.regular) && row.regular >= 0 && row.fir + row.regular <= row.total).sort((left, right) => {
+                const uncategorizedOrder = Number(right.total > right.fir + right.regular) - Number(left.total > left.fir + left.regular);
+                const nameOrder = inventoryNameCollator.compare(safeText(left.name) || left.itemId, safeText(right.name) || right.itemId);
+                const leftKey = safeText(left.rowKey) || left.itemId;
+                const rightKey = safeText(right.rowKey) || right.itemId;
+                return uncategorizedOrder || nameOrder || (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0);
+            }) : [];
         const rows = allRows.filter((row) => (safeText(row.name) || row.itemId).toLowerCase().includes(query));
         $('inventory-rows').replaceChildren(...rows.map((item) => {
             const row = document.createElement('div');
@@ -638,11 +746,11 @@
                 uncategorized.textContent = 'Uncategorized: ' + (valid ? quantityText(item.total - values[0] - values[1]) : '—');
                 error.textContent = valid ? item.readOnly ? 'This stock is read-only.' : '' : 'FiR + Regular must be whole numbers between 0 and the API total.';
                 error.classList.toggle('hidden', !error.textContent);
-                updateControls();
+                updateInventoryRowControls(row);
             };
             inputs.forEach((input) => input.addEventListener('input', updateRow));
             save.addEventListener('click', async () => {
-                if (inventorySaving || inventoryLoading || isBusy() || !inventoryData || row.dataset.valid !== 'true' || row.dataset.changed !== 'true') return;
+                if (inventorySaving || inventoryEditingBlocked() || !inventoryData || row.dataset.valid !== 'true' || row.dataset.changed !== 'true') return;
                 const context = currentInventoryContext();
                 if (!context || context !== inventoryContext || item.readOnly) return;
                 inventorySaving = true;
@@ -667,6 +775,7 @@
                     inventorySaving = false;
                     localBusy = false;
                     updateControls();
+                    synchronizeInventory();
                 }
             });
             row.append(heading, quantities, fields, save, error);
@@ -681,15 +790,18 @@
             }
             return row;
         }));
+        ++inventoryRowsRevision;
         $('inventory-status').textContent = rows.length ? quantityText(rows.length) + ' of ' + quantityText(allRows.length) + ' stocked items.' :
             query ? 'No stocked items match your search.' : 'No items with stock for this character.';
         updateControls();
     };
     const loadInventory = async () => {
         const context = currentInventoryContext();
-        if (!context || inventoryLoading) return;
+        if (!context || inventoryLoading || !state.local || state.local.loading || inventoryPending()) return;
         const revision = ++inventoryRevision;
+        const stamp = currentInventoryStamp();
         inventoryContext = context;
+        inventorySyncAttempt = JSON.stringify([context, currentInventoryRevision(), stamp]);
         inventoryLoading = true;
         $('inventory-status').textContent = 'Loading inventory…';
         $('inventory-error').textContent = '';
@@ -698,17 +810,96 @@
         try {
             const result = await call('GetTrackerInventory');
             if (revision !== inventoryRevision || context !== currentInventoryContext()) return;
+            if (!state.local || state.local.loading || safeText(state.local.error) || safeText(state.error) || inventoryPending()) return;
+            if (currentInventoryStamp() !== stamp) return;
             if (!result || !result.profile || !Array.isArray(result.rows) || safeText(result.error)) throw new Error('Inventory unavailable');
+            if (currentInventoryRevision() && result.revision !== currentInventoryRevision()) {
+                inventorySyncErrorShown = true;
+                inventoryNeedsReload = true;
+                $('inventory-error').textContent = 'Inventory changed during loading. Refresh inventory before editing classifications.';
+                $('inventory-error').classList.remove('hidden');
+                return;
+            }
             inventoryData = result;
+            inventoryLoadedStamp = stamp;
+            inventorySyncErrorShown = false;
+            inventoryNeedsReload = false;
             renderInventory();
         } catch (_) {
             if (revision === inventoryRevision && context === currentInventoryContext()) {
+                inventoryNeedsReload = true;
                 $('inventory-status').textContent = '';
                 $('inventory-error').textContent = 'Inventory could not be loaded. Refresh inventory and try again.';
                 $('inventory-error').classList.remove('hidden');
             }
         } finally {
             if (revision === inventoryRevision) inventoryLoading = false;
+            updateControls();
+            synchronizeInventory();
+        }
+    };
+
+    const synchronizeInventory = () => {
+        const context = currentInventoryContext();
+        if (!$('tracker-inventory').open || !context || context !== inventoryContext) return;
+        if (state.local && state.local.loading) return;
+        const error = safeText(state.local && state.local.error) || safeText(state.error);
+        if (error) {
+            if (!inventoryNeedsReload) inventorySyncAttempt = '';
+            inventoryNeedsReload = true;
+            if (inventoryRefreshRequest && !inventoryRefreshRequest.awaitingResponse) inventoryRefreshRequest = null;
+            inventorySyncErrorShown = true;
+            $('inventory-error').textContent = 'Inventory may be outdated. ' + error + ' Refresh inventory before editing classifications.';
+            $('inventory-error').classList.remove('hidden');
+            updateControls();
+            return;
+        }
+        if (!state.local || isBusy() || inventoryLoading || inventorySaving || inventoryBackupBusy || inventoryPending() ||
+            inventoryRefreshRequest && inventoryRefreshRequest.awaitingResponse) return;
+        const forced = !!inventoryRefreshRequest;
+        const expected = currentInventoryRevision();
+        const stamp = currentInventoryStamp();
+        const attempt = JSON.stringify([context, expected, stamp]);
+        const stale = inventoryNeedsReload || !inventoryData || !!expected && inventoryData.revision !== expected || !!stamp && inventoryLoadedStamp !== stamp;
+        if (inventorySyncErrorShown && !stale) {
+            inventorySyncErrorShown = false;
+            $('inventory-error').textContent = '';
+            $('inventory-error').classList.add('hidden');
+        }
+        if (!forced && (!stale || inventorySyncAttempt === attempt)) return;
+        inventoryRefreshRequest = null;
+        if (inventorySyncErrorShown) {
+            inventorySyncErrorShown = false;
+            $('inventory-error').textContent = '';
+            $('inventory-error').classList.add('hidden');
+        }
+        loadInventory();
+    };
+
+    const refreshInventoryFromAPI = async () => {
+        const context = currentInventoryContext();
+        if ((!nativeApp() && !preview) || !context || isBusy() || inventoryLoading || inventorySaving || inventoryBackupBusy ||
+            inventoryRefreshRequest || state.local && state.local.loading) return;
+        const request = { context, awaitingResponse: true };
+        inventoryRefreshRequest = request;
+        $('inventory-status').textContent = 'Refreshing inventory from Tarkov Market…';
+        updateControls();
+        try {
+            const result = await call('RefreshLocalProgress');
+            if (inventoryRefreshRequest !== request || context !== currentInventoryContext()) return;
+            await refresh(result);
+            if (inventoryRefreshRequest !== request || context !== currentInventoryContext()) return;
+            request.awaitingResponse = false;
+            synchronizeInventory();
+        } catch (_) {
+            if (inventoryRefreshRequest === request && context === currentInventoryContext()) {
+                inventoryRefreshRequest = null;
+                inventoryNeedsReload = true;
+                $('inventory-status').textContent = '';
+                $('inventory-error').textContent = 'Inventory could not be refreshed from Tarkov Market. Please try again.';
+                $('inventory-error').classList.remove('hidden');
+            }
+        } finally {
             updateControls();
         }
     };
@@ -741,11 +932,15 @@
             return;
         }
         state = { ...state, ...nextState, pendingAdds: nextState.pendingAdds && typeof nextState.pendingAdds === 'object' ? nextState.pendingAdds : null };
+        const stockTracking = currentTracking();
+        const stockContext = stockTrackingContext(stockTracking);
+        if (stockContext !== loadedStockContext) loadedStockContext = '';
+        if (stockContext && state.local && !state.local.loading && !stockTracking.loading && !stockTracking.adding &&
+            !safeText(state.error) && !safeText(state.local.error) && !safeText(stockTracking.error)) loadedStockContext = stockContext;
         const nextInventoryContext = currentInventoryContext();
         if (inventoryContext !== nextInventoryContext) {
             inventoryContext = nextInventoryContext;
             resetInventory();
-            if ($('tracker-inventory').open && inventoryContext) loadInventory();
         }
         if (!state.hasAPIKey && (keyFromStorage || keyRevealPending)) resetKeyDisplay(true);
         const trackedState = currentTracking();
@@ -832,6 +1027,7 @@
             initialRender = false;
         }
         updateControls();
+        synchronizeInventory();
     };
 
     const previewVariants = preview && new URLSearchParams(window.location.search).get('variants') === '1';
@@ -1019,6 +1215,7 @@
         if (isBusy()) return false;
         const context = progressContext();
         localBusy = true;
+        if (method === 'SaveAPIKey' || method === 'ClearAPIKey') resetInventory();
         showFeedback('');
         updateControls();
         try {
@@ -1040,6 +1237,7 @@
         } finally {
             localBusy = false;
             updateControls();
+            synchronizeInventory();
         }
     };
 
@@ -1262,9 +1460,11 @@
         window.addEventListener('pagehide', () => { if (shortcutCaptureInput || state.hotkeyCapture) call('SetHotkeyCapture', false).catch(() => {}); });
         $('btn-refresh-local').addEventListener('click', () => action('RefreshLocalProgress'));
         $('tracker-inventory').addEventListener('toggle', () => {
-            if ($('tracker-inventory').open && !inventoryData) loadInventory();
+            if ($('tracker-inventory').open) synchronizeInventory();
         });
-        $('btn-refresh-inventory').addEventListener('click', loadInventory);
+        $('btn-refresh-inventory').addEventListener('click', refreshInventoryFromAPI);
+        $('btn-import-inventory').addEventListener('click', () => transferInventory(true));
+        $('btn-export-inventory').addEventListener('click', () => transferInventory(false));
         $('inventory-search').addEventListener('input', renderInventory);
         $('preview-label').classList.toggle('hidden', !preview);
         try {

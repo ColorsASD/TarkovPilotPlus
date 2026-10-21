@@ -10,8 +10,11 @@ in the [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/READM
 - `item_window.go` — Item Scanner Wails window, encrypted API key, settings, English title OCR and manual search
 - `item_tracking.go` — character selection, Items Tracker and inventory updates
 - `item_quality.go` — persistent local Found in Raid/Regular classification, the inventory editor and stock-write quality recovery
-- `typed_tracking_view.go` — fixed and Shared summaries from the same local typed allocation as the goal ratios
+- `item_quality_backup.go` — native JSON import/export of the selected character and game mode's classifications, without API stock changes or credentials
+- `item_quality_completion.go` — persistent completion flags and item identities per profile, with atomic reclassification on newly completed quests or hideout upgrades
+- `typed_tracking_view.go` — fixed and Shared quality summaries alongside the existing goal-priority allocation
 - `local_progress.go` — coherent Market quest/hideout progress loading and the existing Items Tracker view
+- `pending_add.go`, `pending_retry.go`, `pending_scheduler.go` and `pending_cache.go` — ordered stock saves, automatic transient-error recovery and verified preflight reuse
 - `local_tracking_view.go`, `variant_tracking_view.go` and `shared_tracking_items.go` — display projections for fixed requirements, separately identified variants and Shared group details
 - `item_hotkey.go` and `item_quality_hotkey.go` — typed stock availability, immutable item/character targets and the worker shared with the four stock buttons
 - `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable stock shortcuts, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
@@ -38,7 +41,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.3.0`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.4.0`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -49,7 +52,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.3.0`.
+version is `1.4.0`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -98,7 +101,12 @@ threads. The four stock buttons use the following default shortcuts:
 - F3 — Remove Found in Raid item
 - F4 — Remove Regular item
 
-The buttons form a two-column grid, with additions above removals. An unavailable
+The buttons form a two-column grid, with additions above removals. The title bar
+stays fixed while the content scrolls inside the available window height. Opening
+panels preserves the user's window size; resizing does not create an outer
+document scrollbar or compress the panels. Unchanged state events keep existing
+goal rows, and editing one inventory row updates only that row's controls.
+An unavailable
 action is gray and disabled: adding needs an eligible unfilled requirement, and
 removing needs stock of that exact quality. Settings can change or disable
 each shortcut separately; all enabled actions require different shortcuts. They support Ctrl, Alt and Shift with F1-F12, A-Z, 0-9,
@@ -143,8 +151,11 @@ The snapshot remains in memory. Inspect changes can reuse this confirmed graph;
 Refresh progress reloads the selected character's current Market state.
 
 Refreshing an already loaded item keeps its panel and counters visible while
-the matching snapshot loads in the background. Stock actions pause during the
-refresh. A failed refresh retains the last known values with an error; switching
+the matching snapshot loads in the background. Stock buttons and shortcuts remain
+available from the last valid inventory for the same item and profile, with the
+usual quantity and quality limits. Accepted changes stay in the pending queue;
+the worker verifies fresh Market progress and the revision before saving.
+A failed refresh retains the last known values with an error; switching
 items or profiles cannot reuse another target's displayed inventory.
 
 Tarkov Market remains authoritative for each item's total stock. The local save
@@ -156,13 +167,41 @@ any goal until the user classifies them in the separate Items Tracker panel.
 The searchable Items Tracker inventory editor is a separate collapsible panel
 above Settings. It lists items with positive stock, with a thumbnail and a small
 brown name-copy button after each displayed item name. Failed or unavailable
-images use the existing placeholder. The API total
+images use the existing placeholder. Items with Uncategorized stock come first,
+then fully classified items; each group is alphabetized by displayed name, and
+search covers both groups. The order updates after saving, importing or refreshing
+classifications. The API total
 is read-only. Found in Raid and Regular accept nonnegative whole numbers whose
 sum cannot exceed that total; the remainder is Uncategorized. Save classification
 locally changes only the local quality split and does not make a Market stock
 request. Profile and expected-total checks reject stale edits, and pending saves
 make that item's editor row read-only. Refresh inventory reloads the available
 rows without changing Market stock.
+
+Refresh inventory first requests a complete Market progress refresh and reloads
+the local editor after that request finishes. An open editor also follows new
+successful progress observations, including completion-triggered resets, while
+preserving its search filter. Pending save bursts coalesce into one final list
+reload. Classification inputs wait during API loading, but eligible stock buttons
+and shortcuts remain available as described above. A closed editor checks its
+freshness when reopened; stale callbacks cannot populate another profile's list.
+
+Refresh inventory occupies a full button row, followed by Import and Export in
+two columns. `ExportTrackerQuality()` opens the native JSON save dialog and
+writes only the selected character and game mode's classifications, item/variant
+identities and the stock totals used to interpret them. The backup includes no
+API key, internal profile hash, pending stock operation or quality recovery
+journal. `ImportTrackerQuality()` opens the native JSON file dialog, validates
+the format and selected character/mode, then matches stable row identities
+against the current snapshot. Unmatched or indistinguishable rows are skipped.
+Matched quality is bounded conservatively by the current API total: a decrease
+can leave quality uncertain, while an increase leaves the extra pieces
+Uncategorized. Neither action sends a stock update or changes any API total.
+
+Import and Export wait for a fully loaded selected profile and pending stock
+saves to finish. A successful import refreshes the local projection and editor
+while preserving the search filter. File validation errors stay in the inventory
+panel; canceling a file dialog does not report an error or change classifications.
 
 When a fresh Market response reports less stock after an external change, the
 app preserves only the minimum quantity of each quality that is still certain.
@@ -177,6 +216,30 @@ quality exactly. Confirmed classifications survive restart. The local `item-qual
 quantities, hashed profile identifiers and quality recovery records, without the
 API key. It is runtime data and is not part of the release package.
 
+Each full tracker refresh reads all quests and hideout upgrade levels of the
+selected character alongside inventory. The quality file also stores their
+completion flags and minimal item identities per API-key, character and game-mode
+profile. An observed `false → true` quest or upgrade completion clears the FiR
+and Regular classifications of all related remaining stock without changing
+Market quantities. Shared and Shared (FiR) include every eligible candidate,
+including items with no allocated contribution. Saved item identities preserve
+this relationship if completed sources disappear from a later API response.
+
+The first observation establishes a baseline. Missing metadata, canceled goals,
+a full collection ratio and a source-level completed marker do not invent a
+global completion transition. Repeated completed states do not clear a subsequent
+manual classification; a new unfinished-to-completed cycle can clear it again.
+Editor and import/export reads do not advance completion history. Completion
+flags and classification changes are saved atomically; a failed save preserves
+both and requires a fresh successful progress load. Cached preflight projections
+do not advance completion history; only a fresh API observation can do so.
+
+Operations sent before a completion receive an invalidated quality journal flag.
+Their late acknowledgements cannot restore the previous classification, and
+their pending projection remains nonnegative and Uncategorized. New typed
+additions prepared after the reset may classify their newly added piece. The
+stock queue itself is not restored or replayed after restart.
+
 Each Add action accepts only an eligible active Market requirement that an
 additional item of its quality can cover. Each Remove action accepts a unique,
 supported item with stock of that quality above zero, including items without
@@ -184,10 +247,13 @@ active requirements. Each button and shortcut shares one short reservation: the 
 quantity changes immediately and pending changes participate in allocation,
 preventing overcollection and removal below zero. The
 Market worker saves these changes in order in the background using fresh stock and
-revision checks. Successful updates settle the reservation; definite rejections remove the
-rejected reservation and expose the error. Network outages retain pending pieces
-in memory. Uncertain writes are verified through GET before any retry, including
-when Refresh progress resumes the pending work. Queued stock deltas remain in
+revision checks. Successful updates settle the reservation; permanent rejections
+remove the rejected reservation and expose the error. Typed changes remain queued
+through temporary rate limits, read outages and requests canceled before sending,
+with cancellable backoff and automatic continuation. The Market client's
+Retry-After gate still controls request pacing. Uncertain writes are verified
+through GET without replaying the PATCH, including when Refresh progress resumes
+the pending work. Queued stock deltas remain in
 memory and are not replayed after restart. Before sending a typed stock write,
 the app persists its quality recovery record. On restart, a fresh GET establishes
 the current total without sending another PATCH. A changed total or revision
@@ -196,6 +262,13 @@ quality record leaves the affected stock Uncategorized for the user to classify.
 Confirmed classifications remain saved. This journal protects quality bookkeeping and is not a
 disk queue for replaying stock updates.
 
+Adjacent typed changes can reuse the preceding operation's fully verified stock,
+quest and hideout snapshot for at most two seconds within the same profile and
+language. Every PATCH retains its If-Match revision check; a conflict forces a
+complete fresh preflight read. Sent, uncertain or backing-off operations do not
+reuse this shortcut. This removes three preflight requests from each following
+change without omitting its post-write verification.
+
 A successful write acknowledgement proves the app's change independently of
 later stock changes from another client. A follow-up read with a later revision
 can settle that change even when the current stock differs from the submitted
@@ -203,8 +276,9 @@ target; uncertain writes still require read-back verification without another
 PATCH. Shortcut targets retain their identity across unrelated state events,
 but item, character, settings and eligibility changes invalidate them. The
 worker preserves FIFO order separately for each API-key, character and game-mode
-profile. A blocked profile remains pending without preventing other profiles
-from saving, and each blocked head is attempted at most once per worker run.
+profile. A blocked or backing-off profile remains pending without preventing other
+profiles from saving. A pending head is retried only when its delay expires or an
+explicit refresh restarts verification.
 
 While the Market worker is saving, the scanner status and main Events log heading
 append the pending item count in parentheses, for example `(3 items waiting for API save)`.
@@ -265,44 +339,71 @@ never reads the clipboard. Browser-only previews can use
 The latest result stays visible during refreshes and stock updates for the same
 item, item ID, character and game mode. Switching that context, an error, separate
 API FiR inventory or an indistinguishable variant clears it. Distinct variants
-use independent row calculations and do not share cached goal details. A finished calculation with
-no target details also clears it. Completed targets remain visible while adding
+use independent row calculations and do not share cached goal details. A finished
+calculation with no target details also clears it. Completed targets remain visible while adding
 is unavailable. New quest, hideout and inventory responses automatically update
 the section.
 
-`internal/nextitem.CalculateTyped` uses the complete confirmed requirement graph
-and the locally classified stock, including canonical quest IDs, their aliases
-and module upgrade keys. Newly returned goals need no item-specific rules.
-Found in Raid requirements can use only FiR pieces. FiR-only needs reserve those
-pieces before Regular requirements; Regular needs use Regular pieces first and
-can also use surplus FiR pieces. Uncategorized pieces cannot satisfy either
-quality. Fixed requirements, Shared requirements and the goal list use this same
-allocation, so one physical piece is credited only once across overlapping needs.
+`internal/nextitem.CalculateTyped` and `CalculateTypedRow` use the complete
+confirmed requirement graph and locally classified stock, including canonical
+quest IDs, their aliases and module upgrade keys. Newly returned goals need no
+item-specific rules.
+The existing goal-priority and target-order engine is preserved. Quality filters
+which pieces each requirement can use when that requirement is reached. A Regular
+need uses non-FiR pieces first and can also use FiR pieces; a FiR-only need accepts
+only FiR. A later FiR-only goal does not reserve stock ahead of an earlier Regular
+goal. Uncategorized pieces cannot satisfy either quality. One physical piece is
+credited only once across overlapping fixed and Shared needs in the goal view.
+
+The Stock summary uses a separate quality projection. It reserves classified FiR
+pieces for FiR-only fixed and Shared requirements first, then uses Regular pieces
+and eligible FiR surplus for Regular fixed and Shared requirements. This summary
+also counts a physical piece only once. Its category ratios can differ from the
+goal-priority ratios without changing inventory, collection targets or Add
+eligibility. `CalculateTypedForDisplay` and `CalculateTypedRowForDisplay` add this
+summary alongside the unchanged goal calculation; eligibility-only paths do not
+need the extra projection.
 
 For example, with one Regular vodka, Booze shows `0/10` and A Bitter Victory
 shows `1/4`; the summary shows Found in Raid `0/10` and Regular `1/4`. Classifying
-the same single piece as FiR gives Booze `1/10` and Regular `0/4` without changing
-the API total. Leaving it Uncategorized gives both goals zero allocated pieces.
+that piece does not change the API total. A FiR piece can cover either requirement
+according to the existing goal order. Leaving it Uncategorized gives both goals
+zero allocated pieces.
 The API still supplies required quantities and completion; the app supplies
-quality-aware allocation from the local split.
+quality-aware allocation from the local split. With one FiR and one Regular
+ComTac, the Stock summary shows Regular `1/2` and Shared (FiR) `1/15`. Next Item
+can show the earlier Hot Delivery requirement at `2/2` while the later Scavenger
+requirement remains `0/15`, because the existing goal order lets Hot Delivery use
+both pieces first. These are separate views of the same inventory. Within the
+goal view, those pieces are already allocated to Hot Delivery, so the later FiR
+requirement does not claim them a second time.
 
 Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
 `groups` and `questGroup` sources to identify requirements and eligible items.
 The displayed Shared and Shared (FiR) numerators come from locally classified
 inventory across those eligible items, rather than the API group's untyped stock
 counter. Other eligible items and their pending typed changes participate in the
-same allocation. Groups are summarized in one Shared (FiR) row and one Shared row
+summary's quality projection and in the separate goal-priority calculation.
+Groups are summarized in one Shared (FiR) row and one Shared row
 while preserving their individual identities and eligible items. Covered groups
 stay visible until their goals are completed. Missing or inconsistent allocation
 metadata displays an unknown numerator instead of reusing an API counter as
 local quality progress.
 
+`internal/nextitem.Calculate` remains the legacy untyped estimator for snapshots
+without local quality metadata. It can compare modeled allocation with explicit
+API Shared counters and retain diagnostic category fields in its forecast DTO.
+Rows with known local quality use the typed entry points instead, including
+Uncategorized remainders; the legacy estimator does not override their recorded
+quality or goal-priority order. Its category is not rendered in the current UI.
+
 The pure typed +1 calculation checks whether one more FiR or Regular piece would
 cover an unmet eligible requirement. That result controls the matching Add
 button and shortcut; it never submits its virtual piece. Remove availability
 uses the selected quality's current stock. Pending changes immediately update
-the total, local quality projection, requirement rows and goal ratios, while the
-Market worker confirms the total in the background. Display allocation does not
+the total, local quality projection and eligibility, while the Market worker
+confirms the total in the background. The frontend retains the last coherent
+same-item goal details during refreshes and saves. Display allocation does not
 complete goals, consume additional inventory or change stock by itself.
 
 The concise How it works? section describes the visible controls and local

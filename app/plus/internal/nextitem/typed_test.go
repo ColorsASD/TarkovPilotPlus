@@ -61,7 +61,7 @@ func TestTypedNonFIRAndUncategorizedCannotCoverFIRRequirements(t *testing.T) {
 	}
 }
 
-func TestTypedFIRRequirementsReserveStockBeforeRegularGoals(t *testing.T) {
+func TestTypedEarlierRegularGoalUsesFIRBeforeLaterFIRRequirements(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		for _, fir := range []int64{1, 2, 3, 4} {
 			snapshot := forecastSnapshot()
@@ -78,11 +78,11 @@ func TestTypedFIRRequirementsReserveStockBeforeRegularGoals(t *testing.T) {
 			snapshot.Items = []localprogress.Item{typedItem("selected", fir, 0, 0,
 				fixedSource("regular", 1, false), firSource)}
 			got := CalculateTyped(snapshot, "selected", true)
-			wantFIR, wantRegular := min(fir, 2), min(max(0, fir-2), 1)
+			wantFIR, wantRegular := min(max(0, fir-1), 2), int64(1)
 			if !got.Known || len(got.Forecast.Targets) != 2 || got.Forecast.Targets[0].AvailableQuantity != wantRegular ||
 				got.Forecast.Targets[1].AvailableQuantity != wantFIR || got.AddFIRAllowed != (fir < 3) ||
 				got.AddRegularAllowed != (fir < 3) {
-				t.Fatalf("FiR stock must be reserved for FiR fixed/Shared needs: fir=%d shared=%v got=%+v targets=%+v", fir, shared, got, got.Forecast.Targets)
+				t.Fatalf("later FiR fixed/Shared need overrode the earlier Regular goal: fir=%d shared=%v got=%+v targets=%+v", fir, shared, got, got.Forecast.Targets)
 			}
 		}
 	}

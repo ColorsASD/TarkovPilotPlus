@@ -103,7 +103,7 @@
         </section>
 
         <details id="scan-details" class="scan-details-panel hidden">
-            <summary>Scan details</summary>
+            <summary>Scan Details</summary>
             <div class="scan-details-content">
                 <p class="scan-details-count">Inspect windows found: <span id="inspect-count">0</span></p>
                 <p class="scan-details-label">Recognized titles</p>
@@ -135,6 +135,10 @@
                 <label for="inventory-search" class="sr-only">Search inventory</label>
                 <input id="inventory-search" type="search" placeholder="Search inventory…" autocomplete="off" spellcheck="false" />
                 <button id="btn-refresh-inventory" type="button">Refresh inventory</button>
+                <div class="inventory-file-actions">
+                    <button id="btn-import-inventory" type="button" disabled>Import</button>
+                    <button id="btn-export-inventory" type="button" disabled>Export</button>
+                </div>
                 <p id="inventory-status" class="hint" role="status" aria-live="polite"></p>
                 <p id="inventory-error" class="tracked-error hidden" role="alert"></p>
                 <div id="inventory-rows" class="inventory-rows"></div>

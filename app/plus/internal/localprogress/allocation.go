@@ -267,7 +267,7 @@ func Allocate(snapshot Snapshot) (Snapshot, error) {
 		if !safeRows[i] || !usesReportedMarketQuota(out.Items[i]) {
 			continue
 		}
-		quota, err := reportedMarketQuota(out, i)
+		quota, err := reportedMarketQuotaWithRows(out, i, rows)
 		if err != nil {
 			return Snapshot{}, err
 		}

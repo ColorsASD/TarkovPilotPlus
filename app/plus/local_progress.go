@@ -48,10 +48,11 @@ func localProgressErrorText(err error) string {
 }
 
 type LocalProgressState struct {
-	Loading   bool      `json:"loading"`
-	Error     string    `json:"error"`
-	Warning   string    `json:"warning"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Loading           bool      `json:"loading"`
+	Error             string    `json:"error"`
+	Warning           string    `json:"warning"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	InventoryRevision string    `json:"inventoryRevision,omitempty"`
 }
 
 func cloneLocalProgressState(state *LocalProgressState) *LocalProgressState {
@@ -121,7 +122,18 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 	if allocated, err := localprogress.Allocate(snapshot); err == nil {
 		snapshot = allocated
 	}
-	confirmedRequirements := localprogress.ConfirmedRequirementStock(snapshot)
+	return allocatedLocalTrackedView(item, snapshot)
+}
+
+// A függő készlet nézete már kiosztott snapshotot kap. A régi, minőség nélküli
+// kiosztást nem számoljuk újra ott, ahol a típusos eredmény teljesen felülírja.
+func allocatedLocalTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTrackingState {
+	typedRow, unique := stockItem(snapshot, item.BSGID)
+	typed := unique && typedRow.QualityKnown && !snapshot.FIRInventorySeparate
+	confirmedRequirements := make([]localprogress.RequirementStock, len(snapshot.Items))
+	if !typed {
+		confirmedRequirements = localprogress.ConfirmedRequirementStock(snapshot)
+	}
 	view := trackedView(item, localMarketSnapshot(snapshot))
 	view.Storage = "market"
 	if len(view.Variants) != 0 {
@@ -189,7 +201,7 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 			}
 		}
 		simplifyLocalTrackingView(view, row, snapshot, confirmedRequirements[rowIndex])
-		if !view.InventorySeparate && view.Error == "" {
+		if !typed && !view.InventorySeparate && view.Error == "" {
 			view.AddAllowed, _ = localprogress.AddAllowed(snapshot, item.BSGID)
 		}
 		break
@@ -299,7 +311,12 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 		a.emit()
 		return nil
 	}
-	a.state.Local = &LocalProgressState{Loading: true}
+	if a.state.Local == nil {
+		a.state.Local = &LocalProgressState{}
+	} else {
+		a.state.Local = cloneLocalProgressState(a.state.Local)
+	}
+	a.state.Local.Loading = true
 	a.mu.Unlock()
 	a.emit()
 	a.marketNetworkMu.Lock()
@@ -312,9 +329,10 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 	}
 	valid := snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) && snapshot.Revision != ""
 	if valid {
+		a.invalidatePendingProgressCachesLocked(key, opts, snapshot)
 		if a.qualityTracking {
 			var qualityErr error
-			snapshot, qualityErr = a.qualityReconcileSnapshotLocked(key, opts, snapshot)
+			snapshot, qualityErr = a.qualityReconcileFreshSnapshotLocked(key, opts, snapshot)
 			if qualityErr != nil {
 				err = localProgressFailure("quality", qualityErr)
 				snapshot = unknownQualitySnapshot(snapshot)
@@ -323,10 +341,7 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 		snapshot, _ = localprogress.Allocate(snapshot)
 		a.confirmedProgress, a.localRevision = snapshot, opts.revision
 		a.rebuildPendingViewLocked()
-		a.state.Local = &LocalProgressState{UpdatedAt: time.Now(), Warning: warning}
-		if a.localItemCurrentLocked(item) {
-			a.state.Tracking = a.pendingTrackedViewLocked(item)
-		}
+		a.state.Local = &LocalProgressState{UpdatedAt: time.Now(), Warning: warning, InventoryRevision: snapshot.Revision}
 	} else {
 		a.state.Local = &LocalProgressState{}
 		if a.localItemCurrentLocked(item) {
@@ -357,7 +372,12 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 func (a *ItemWindowApp) RefreshLocalProgress() ItemState {
 	a.mu.Lock()
 	a.localAt, a.trackedAt = time.Time{}, time.Time{}
-	a.state.Local = &LocalProgressState{Loading: true}
+	if a.state.Local == nil {
+		a.state.Local = &LocalProgressState{}
+	} else {
+		a.state.Local = cloneLocalProgressState(a.state.Local)
+	}
+	a.state.Local.Loading = true
 	a.mu.Unlock()
 	a.emit()
 	a.requestTracking()
@@ -371,10 +391,23 @@ func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote mar
 }
 
 func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote market.TrackedSnapshot, merged localprogress.Snapshot, status string) {
+	a.applyMergedMarketSnapshotWithFreshnessLocked(item, remote, merged, status, true)
+}
+
+// A közvetlen előző művelet cache-e felépítheti a készletnézetet, de csak
+// tényleges API-olvasás léptetheti a teljesítési alapot és a cache-frissességet.
+func (a *ItemWindowApp) applyMergedMarketSnapshotWithFreshnessLocked(item market.Item, remote market.TrackedSnapshot, merged localprogress.Snapshot, status string, fresh bool) {
 	a.reconcilePendingSnapshotLocked(remote)
+	if fresh {
+		a.invalidatePendingProgressCachesLocked(a.apiKey, a.state.ItemOptions, merged)
+	}
 	var qualityErr error
 	if a.qualityTracking {
-		merged, qualityErr = a.qualityReconcileSnapshotLocked(a.apiKey, a.state.ItemOptions, merged)
+		if fresh {
+			merged, qualityErr = a.qualityReconcileFreshSnapshotLocked(a.apiKey, a.state.ItemOptions, merged)
+		} else {
+			merged, qualityErr = a.qualityReconcileSnapshotLocked(a.apiKey, a.state.ItemOptions, merged)
+		}
 		if qualityErr != nil {
 			merged = unknownQualitySnapshot(merged)
 		}
@@ -382,12 +415,11 @@ func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote
 	snapshot, _ := localprogress.Allocate(merged)
 	a.confirmedProgress, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
 	a.rebuildPendingViewLocked()
-	a.state.Local = &LocalProgressState{UpdatedAt: a.localAt}
+	a.state.Local = &LocalProgressState{UpdatedAt: a.localAt, InventoryRevision: snapshot.Revision}
 	if qualityErr != nil {
 		a.state.Local.Error = "Local item quality could not be saved. " + qualityErr.Error()
 	}
 	if a.localItemCurrentLocked(item) {
-		a.state.Tracking = a.pendingTrackedViewLocked(item)
 		a.state.Tracking.Status = status
 		if qualityErr != nil {
 			a.state.Tracking.Error = a.state.Local.Error
@@ -399,21 +431,47 @@ func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote
 // darabokat is. A confirmedProgress mindig csak a Market keszlete marad.
 func (a *ItemWindowApp) rebuildPendingViewLocked() {
 	snapshot := localprogress.Clone(a.confirmedProgress)
+	type pendingQuantity struct{ total, fir, regular int64 }
+	quantities := make(map[string]pendingQuantity)
+	for _, entry := range a.pendingAddQueue {
+		if entry.Key != a.apiKey {
+			continue
+		}
+		current := entry.Opts.CharacterUID == a.state.CharacterUID && strings.EqualFold(entry.Opts.Mode, a.state.Mode)
+		typed := entry.Typed && entry.Opts.CharacterUID == snapshot.CharUID && strings.EqualFold(entry.Opts.Mode, snapshot.GameMode)
+		// A cél teljesítése előtti, már elküldött művelet minősége is
+		// bizonytalanná vált. A teljes pending mennyiség megmarad, de
+		// az invalidált napló nem hozhat vissza korábbi FiR/Regular típust.
+		if typed && a.qualities != nil && a.qualities.data.Pending[a.qualityOperationIDLocked(entry)].Invalidated {
+			typed = false
+		}
+		if !current && !typed {
+			continue
+		}
+		delta := pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
+		quantity := quantities[entry.Item.BSGID]
+		if current {
+			quantity.total += delta
+		}
+		if typed {
+			if entry.FIR {
+				quantity.fir += delta
+			} else {
+				quantity.regular += delta
+			}
+		}
+		quantities[entry.Item.BSGID] = quantity
+	}
 	for i := range snapshot.Items {
 		row := &snapshot.Items[i]
-		pending := a.pendingAddAmountLocked(a.state.ItemOptions, row.ItemID)
-		row.AvailableQuantity = min(localprogress.MaxQuantity, max(0, row.MarketAvailableQuantity+pending))
+		pending := quantities[row.ItemID]
+		row.AvailableQuantity = min(localprogress.MaxQuantity, max(0, row.MarketAvailableQuantity+pending.total))
 		if row.QualityKnown {
-			for _, entry := range a.pendingAddQueue {
-				if !entry.Typed || entry.Key != a.apiKey || entry.Opts.CharacterUID != snapshot.CharUID || !strings.EqualFold(entry.Opts.Mode, snapshot.GameMode) || entry.Item.BSGID != row.ItemID {
-					continue
-				}
-				if entry.FIR {
-					row.FIRQuantity += pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
-				} else {
-					row.RegularQuantity += pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
-				}
-			}
+			// Az API közben érvényteleníthette egy még el nem küldött
+			// törlés minőségét is. Az ilyen szándékot a worker frissen
+			// ellenőrzi, addig sem jelenhet meg negatív készletminőség.
+			row.FIRQuantity = min(row.AvailableQuantity, max(0, row.FIRQuantity+pending.fir))
+			row.RegularQuantity = min(row.AvailableQuantity-row.FIRQuantity, max(0, row.RegularQuantity+pending.regular))
 		}
 		row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
 	}
@@ -427,7 +485,7 @@ func (a *ItemWindowApp) rebuildPendingViewLocked() {
 }
 
 func (a *ItemWindowApp) pendingTrackedViewLocked(item market.Item) *ItemTrackingState {
-	view := localTrackedView(item, a.localSnapshot)
+	view := allocatedLocalTrackedView(item, a.localSnapshot)
 	if row, found := stockItem(a.confirmedProgress, item.BSGID); found {
 		view.MarketAvailableQuantity = row.MarketAvailableQuantity
 	}

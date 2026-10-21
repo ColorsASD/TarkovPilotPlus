@@ -1,5 +1,11 @@
 package plus
 
+import (
+	"strings"
+
+	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
+)
+
 // A shortcut is bound to the item and character visible at keydown. Replacing
 // this immutable target invalidates an activation that has not started yet.
 type trackedAddHotkeyTarget struct {
@@ -43,7 +49,7 @@ func (a *ItemWindowApp) trackedAddHotkeyTargetCurrent(target *trackedAddHotkeyTa
 }
 
 func (a *ItemWindowApp) canRemoveTrackedItemLocked() bool {
-	if a.state.HotkeyCapture || a.pendingExitApproved() || a.state.Local == nil || a.state.Local.Loading || a.state.Local.Error != "" {
+	if a.state.HotkeyCapture || a.pendingExitApproved() || a.state.Local == nil || a.state.Local.Error != "" || !a.hasLoadedTrackedSnapshotLocked() {
 		return false
 	}
 	t, item := a.state.Tracking, a.state.Item
@@ -51,14 +57,14 @@ func (a *ItemWindowApp) canRemoveTrackedItemLocked() bool {
 		!a.state.Busy && a.state.Error == "" && item != nil && item.UID != "" && item.BSGID != "" &&
 		a.state.CharacterUID != "" && t != nil && t.ItemUID == item.UID && t.ItemID == item.BSGID &&
 		t.CharUID == a.state.CharacterUID && t.AvailableQuantity > 0 && !t.InventorySeparate &&
-		len(t.Variants) == 0 && !t.Loading && !t.Adding && t.Error == ""
+		len(t.Variants) == 0 && !t.Adding && t.Error == ""
 }
 
 func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
 	if a.state.HotkeyCapture || a.pendingExitApproved() {
 		return false
 	}
-	if a.state.Local == nil || a.state.Local.Loading || a.state.Local.Error != "" {
+	if a.state.Local == nil || a.state.Local.Error != "" || !a.hasLoadedTrackedSnapshotLocked() {
 		return false
 	}
 	t := a.state.Tracking
@@ -67,7 +73,26 @@ func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
 		!a.state.Busy && a.state.Error == "" && item != nil && item.UID != "" && item.BSGID != "" &&
 		a.state.CharacterUID != "" && t != nil && t.ItemUID == item.UID && t.ItemID == item.BSGID &&
 		t.CharUID == a.state.CharacterUID && t.Tracked && t.RequiredQuantity > 0 && !t.InventorySeparate &&
-		len(t.Variants) == 0 && !t.Loading && !t.Adding && t.Error == ""
+		len(t.Variants) == 0 && !t.Adding && t.Error == ""
+}
+
+// A háttérben futó frissítés alatt a már betöltött, azonos tárgyhoz és
+// profilhoz tartozó pillanatkép fogadhat új műveletet. A Loading jelző nem
+// teszi érvénytelenné ezt a készletet; az első betöltés és az eltérő profil igen.
+func (a *ItemWindowApp) hasLoadedTrackedSnapshotLocked() bool {
+	t, item := a.state.Tracking, a.state.Item
+	snapshot := a.localSnapshot
+	if t == nil || item == nil || t.ItemUID != item.UID || t.ItemID != item.BSGID ||
+		t.CharUID != a.state.CharacterUID || a.localRevision != a.state.ItemOptions.revision || snapshot.Revision == "" ||
+		snapshot.CharUID != a.state.CharacterUID || !strings.EqualFold(snapshot.GameMode, a.state.Mode) || snapshot.FIRInventorySeparate {
+		return false
+	}
+	row, unique := stockItem(snapshot, item.BSGID)
+	if !unique || !row.MarketTracked || row.AvailableQuantity < 0 || row.AvailableQuantity > localprogress.MaxQuantity ||
+		row.MarketAvailableQuantity < 0 || row.MarketAvailableQuantity > localprogress.MaxQuantity || row.AvailableQuantity != t.AvailableQuantity {
+		return false
+	}
+	return !row.QualityKnown || row.FIRQuantity >= 0 && row.RegularQuantity >= 0 && row.FIRQuantity <= row.AvailableQuantity && row.RegularQuantity <= row.AvailableQuantity-row.FIRQuantity
 }
 
 func (a *ItemWindowApp) publishTrackedAddHotkey() {

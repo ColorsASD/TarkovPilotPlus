@@ -8,7 +8,7 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
 )
 
-func TestBackgroundTrackingRefreshPreservesLoadedPanelAndDisablesActions(t *testing.T) {
+func TestBackgroundTrackingRefreshPreservesLoadedPanelAndAcceptsActions(t *testing.T) {
 	a, fake := newPendingRemoveTestApp(t, 2, false)
 	a.localAt = time.Time{}
 	before := a.GetState().Tracking
@@ -23,18 +23,18 @@ func TestBackgroundTrackingRefreshPreservesLoadedPanelAndDisablesActions(t *test
 		t.Fatal("refresh did not start")
 	}
 	state := a.GetState()
-	if state.Tracking == nil || !state.Tracking.Tracked || !state.Tracking.Loading || state.Tracking.ItemID != trackingBSGID || state.Tracking.AvailableQuantity != 2 || state.Tracking.RequiredQuantity != before.RequiredQuantity || !reflect.DeepEqual(state.Tracking.Requirements, before.Requirements) || state.Local == nil || !state.Local.Loading || state.Tracking.RemoveAllowed {
-		t.Fatalf("background refresh erased the loaded panel or retained unsafe actions: tracking=%+v local=%+v", state.Tracking, state.Local)
+	if state.Tracking == nil || !state.Tracking.Tracked || !state.Tracking.Loading || state.Tracking.ItemID != trackingBSGID || state.Tracking.AvailableQuantity != 2 || state.Tracking.RequiredQuantity != before.RequiredQuantity || !reflect.DeepEqual(state.Tracking.Requirements, before.Requirements) || state.Local == nil || !state.Local.Loading || !state.Tracking.RemoveAllowed {
+		t.Fatalf("background refresh erased the loaded panel or disabled its valid actions: tracking=%+v local=%+v", state.Tracking, state.Local)
 	}
 	a.AddTrackedItem(trackingItemUID)
 	a.RemoveTrackedItem(trackingItemUID)
-	if a.GetPendingAddCount() != 0 {
-		t.Fatal("loading snapshot accepted a stock change")
+	if a.GetPendingAddCount() != 2 {
+		t.Fatal("background refresh did not reserve both valid stock changes")
 	}
 	release()
 	<-done
-	state = a.GetState()
-	if state.Tracking.Loading || !state.Tracking.Tracked || state.Tracking.AvailableQuantity != 2 || state.Local.Loading || state.Local.Error != "" || !state.Tracking.RemoveAllowed || len(fake.writes) != 0 {
+	state = waitPendingForTest(t, a)
+	if state.Tracking.Loading || !state.Tracking.Tracked || state.Tracking.AvailableQuantity != 2 || state.Local.Loading || state.Local.Error != "" || !state.Tracking.RemoveAllowed || len(fake.writes) != 2 || fake.writes[0].Quantity != 3 || fake.writes[1].Quantity != 2 {
 		t.Fatalf("background refresh did not finish atomically: tracking=%+v local=%+v", state.Tracking, state.Local)
 	}
 }

@@ -28,7 +28,12 @@ type pendingMarketAdd struct {
 	ACK            market.ProgressWriteResult
 	WriteError     error
 	Progress       localprogress.Snapshot
+	ProgressCached bool
 	Error          string
+	RetryAt        time.Time
+	RetryCount     int
+	retryDelay     time.Duration
+	verified       *pendingVerifiedProgress
 }
 
 func pendingMarketDelta(entry pendingMarketAdd) int64 {
@@ -42,7 +47,7 @@ func pendingMarketDelta(entry pendingMarketAdd) int64 {
 // amikor az API már igazolta a készletváltozást. Ezt a darabot az új API-alap
 // fölé sem a teljes, sem a minőség szerinti készletben nem szabad újra hozzáadni.
 func pendingMarketDeltaForSnapshot(entry pendingMarketAdd, snapshot localprogress.Snapshot) int64 {
-	if entry.Typed && pendingMarketChangeConfirmed(entry, localMarketSnapshot(snapshot)) {
+	if entry.Typed && entry.Stage == "sent" && pendingMarketChangeConfirmed(entry, localMarketSnapshot(snapshot)) {
 		return 0
 	}
 	return pendingMarketDelta(entry)
@@ -184,6 +189,12 @@ func (a *ItemWindowApp) reservePendingMarketQualityChange(uid string, target *tr
 // tartalma kilépéskor nem kerül lemezre és nem állítható vissza új futásban.
 func (a *ItemWindowApp) RecheckPendingAdds() ItemState {
 	a.mu.Lock()
+	recheckAt := time.Now()
+	for i := range a.pendingAddQueue {
+		// A futó worker attempted halmaza csak nem nulla, lejárt újrakérésre
+		// engedi vissza ugyanazt a fejet. A nullázás elveszítené az ébresztést.
+		a.pendingAddQueue[i].RetryAt = recheckAt
+	}
 	a.startPendingAddWorkerLocked()
 	a.updatePendingAddStateLocked()
 	a.mu.Unlock()
@@ -277,7 +288,7 @@ func (a *ItemWindowApp) publishPendingRemoteLocked(entry pendingMarketAdd, remot
 	if a.state.Item != nil {
 		item = *a.state.Item
 	}
-	a.applyMergedMarketSnapshotLocked(item, remote, entry.Progress, status)
+	a.applyMergedMarketSnapshotWithFreshnessLocked(item, remote, entry.Progress, status, !entry.ProgressCached)
 }
 
 func (a *ItemWindowApp) finishPendingAdd(entry pendingMarketAdd, remote market.TrackedSnapshot, message string, failure error) {
@@ -317,6 +328,9 @@ func (a *ItemWindowApp) finishPendingAdd(entry pendingMarketAdd, remote market.T
 		}
 		if a.pendingAddProfileLocked(entry) && a.state.Item != nil && a.state.Item.UID == entry.Item.UID && a.state.Tracking != nil {
 			a.state.Tracking.Status = message
+		}
+		if failure == nil {
+			a.cachePendingProgressLocked(entry, remote)
 		}
 		a.updatePendingAddStateLocked()
 	}
@@ -368,6 +382,8 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		return true
 	}
 	entry = a.pendingAddQueue[i]
+	entry.RetryAt = time.Time{}
+	a.pendingAddQueue[i].RetryAt = time.Time{}
 	a.mu.Unlock()
 	if entry.Stage == "canceled" {
 		a.finishPendingAdd(entry, market.TrackedSnapshot{}, "The canceled stock change was removed after its local FiR/Regular cleanup.", entry.WriteError)
@@ -376,8 +392,18 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
 	defer cancel()
 	for attempt := 0; attempt < 2; attempt++ {
-		remote, readErr := a.tracker.LoadTracked(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
+		remote, snapshot, cached := cachedPendingProgress(entry, time.Now())
+		if attempt != 0 {
+			cached = false
+		}
+		var readErr error
+		if !cached {
+			remote, readErr = a.tracker.LoadTracked(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
+		}
 		if readErr != nil {
+			if a.retryPendingMarketChange(entry, readErr, "Tarkov Market is temporarily unavailable. The pending stock change will be checked automatically.") {
+				return false
+			}
 			a.blockPendingAdd(entry, "Tarkov Market could not be reached. The stock change remains pending in memory; refresh progress to retry verification.")
 			return false
 		}
@@ -388,12 +414,18 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		if entry.Stage == "sent" {
 			return a.verifyPendingMarketAdd(ctx, entry, remote)
 		}
-		snapshot, mergeErr := a.loadPendingProgress(ctx, entry, remote)
+		var mergeErr error
+		if !cached {
+			snapshot, mergeErr = a.loadPendingProgress(ctx, entry, remote)
+		}
 		if mergeErr != nil {
+			if a.retryPendingMarketChange(entry, mergeErr, "Market quest and hideout progress will be checked automatically before saving the pending stock change.") {
+				return false
+			}
 			a.blockPendingAdd(entry, "The current Market quest and hideout requirements could not be verified. The stock change remains pending; refresh progress to check it.")
 			return false
 		}
-		entry.Progress = snapshot
+		entry.Progress, entry.ProgressCached = snapshot, cached
 		a.mu.Lock()
 		a.publishPendingRemoteLocked(entry, remote, "")
 		a.mu.Unlock()
@@ -402,8 +434,10 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		allowed, gateErr := row.MarketAvailableQuantity > 0, error(nil)
 		message := "The current Market stock is empty. Its pending removal was canceled."
 		if delta > 0 {
-			allowed, gateErr = localprogress.AddAllowed(snapshot, entry.Item.BSGID)
-			allowed = allowed && row.MarketAvailableQuantity < localprogress.MaxQuantity
+			if !entry.Typed {
+				allowed, gateErr = localprogress.AddAllowed(snapshot, entry.Item.BSGID)
+				allowed = allowed && row.MarketAvailableQuantity < localprogress.MaxQuantity
+			}
 			message = "The current Market requirements cannot use this item. Its pending addition was canceled."
 		}
 		if entry.Typed {
@@ -425,6 +459,9 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		if i < 0 {
 			a.mu.Unlock()
 			return true
+		}
+		if previousError := a.pendingAddQueue[i].Error; previousError != "" && a.pendingAddError == previousError {
+			a.pendingAddError = ""
 		}
 		if err := a.qualityMarkSentLocked(entry); err != nil {
 			a.mu.Unlock()
@@ -454,6 +491,25 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 			continue
 		}
 		if writeErr != nil && !errors.Is(writeErr, market.ErrProgressWriteUncertain) {
+			if entry.Typed && definitelyUnappliedRetryablePendingWrite(writeErr) && parent.Err() == nil {
+				a.mu.Lock()
+				if err := a.qualityCancelPendingLocked(entry); err != nil {
+					if i := a.pendingAddIndexLocked(entry.ID); i >= 0 {
+						a.pendingAddQueue[i].Stage, a.pendingAddQueue[i].WriteError = "canceled", writeErr
+					}
+					a.mu.Unlock()
+					a.blockPendingAdd(entry, "The rejected stock change is awaiting local FiR/Regular cleanup. Refresh progress to retry.")
+					return false
+				}
+				entry.Stage, entry.ACK, entry.WriteError = "queued", market.ProgressWriteResult{}, nil
+				if i := a.pendingAddIndexLocked(entry.ID); i >= 0 {
+					a.pendingAddQueue[i] = entry
+				}
+				a.mu.Unlock()
+				if a.retryPendingMarketChange(entry, writeErr, "Market has not applied this stock change. It remains queued and will retry automatically with fresh progress.") {
+					return false
+				}
+			}
 			message := fmt.Sprintf("Market did not save the stock change. Requested stock: %d; current stock: %d. %s %s", entry.Target, entry.Before, trackingError(writeErr), progressWriteDiagnostic(result, writeErr, remote.Revision, "", nil)) + progressItemMismatch(entry.Item, remote)
 			a.finishPendingAdd(entry, remote, message, writeErr)
 			return true
@@ -467,6 +523,9 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		a.mu.Unlock()
 		observed, readErr := a.tracker.LoadTracked(ctx, entry.Key, entry.Opts.CharacterUID, entry.Opts.Language)
 		if readErr != nil {
+			if a.retryPendingMarketChange(entry, readErr, "The stock change is awaiting automatic read-back verification. No repeated stock request will be sent.") {
+				return false
+			}
 			a.blockPendingAdd(entry, "The Market stock change is awaiting verification. No automatic repeat was sent; refresh progress to check it. "+progressWriteDiagnostic(result, writeErr, remote.Revision, observed.Revision, readErr))
 			return false
 		}
@@ -500,10 +559,13 @@ func (a *ItemWindowApp) loadPendingProgress(ctx context.Context, entry pendingMa
 func (a *ItemWindowApp) verifyPendingMarketAdd(ctx context.Context, entry pendingMarketAdd, remote market.TrackedSnapshot) bool {
 	progress, err := a.loadPendingProgress(ctx, entry, remote)
 	if err != nil {
+		if a.retryPendingMarketChange(entry, err, "The stock change is awaiting matching quest and hideout progress. Only read-back verification will retry automatically.") {
+			return false
+		}
 		a.blockPendingAdd(entry, "The Market stock change is awaiting matching quest and hideout progress. No repeated stock request was sent; refresh progress to check it.")
 		return false
 	}
-	entry.Progress = progress
+	entry.Progress, entry.ProgressCached = progress, false
 	quantity, known := observedPendingStock(entry, remote)
 	valid := remote.CharUID == entry.Opts.CharacterUID && strings.EqualFold(remote.GameMode, entry.Opts.Mode) && remote.Items != nil && remote.Revision != "" &&
 		known
@@ -529,6 +591,9 @@ func (a *ItemWindowApp) verifyPendingMarketAdd(ctx context.Context, entry pendin
 	message := fmt.Sprintf("The Market stock change is awaiting verification for %s. Requested stock: %d; current stock: unavailable. No repeated stock request was sent; refresh progress to check it.", diagnosticItemName(entry.Item.Name), entry.Target)
 	if valid {
 		message = fmt.Sprintf("Market did not confirm the stock change. Requested stock: %d; current stock: %d. No repeated stock request was sent; refresh progress to check it.", entry.Target, quantity)
+	}
+	if a.retryPendingMarketChange(entry, market.ErrProgressUnavailable, "The stock change is not confirmed yet. Read-back verification will retry automatically; the stock request will not be repeated.") {
+		return false
 	}
 	a.blockPendingAdd(entry, message+" "+progressWriteDiagnostic(entry.ACK, entry.WriteError, entry.BeforeRevision, remote.Revision, nil)+progressItemMismatch(entry.Item, remote))
 	return false

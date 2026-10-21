@@ -187,11 +187,11 @@ func TestTrackedHotkeyRejectsUnavailableAddTargets(t *testing.T) {
 		{"hidden completed requirement", func(a *ItemWindowApp) { a.state.Tracking.RequiredQuantity = 0 }},
 		{"busy scan", func(a *ItemWindowApp) { a.state.Busy = true }},
 		{"scan error", func(a *ItemWindowApp) { a.state.Error = "scan failed" }},
-		{"tracking loading", func(a *ItemWindowApp) { a.state.Tracking.Loading = true }},
+		{"tracking first load", func(a *ItemWindowApp) { a.state.Tracking.Loading = true; a.localSnapshot.Revision = "" }},
 		{"tracking adding", func(a *ItemWindowApp) { a.state.Tracking.Adding = true }},
 		{"tracking error", func(a *ItemWindowApp) { a.state.Tracking.Error = "tracker failed" }},
 		{"combined progress missing", func(a *ItemWindowApp) { a.state.Local = nil }},
-		{"combined progress loading", func(a *ItemWindowApp) { a.state.Local.Loading = true }},
+		{"combined progress first load", func(a *ItemWindowApp) { a.state.Local.Loading = true; a.localSnapshot.Revision = "" }},
 		{"combined progress error", func(a *ItemWindowApp) { a.state.Local.Error = "public source unavailable" }},
 		{"separate inventory", func(a *ItemWindowApp) { a.state.Tracking.InventorySeparate = true }},
 		{"ambiguous variants", func(a *ItemWindowApp) {

@@ -32,6 +32,10 @@ func usesReportedMarketQuota(item Item) bool {
 // A saját készlet a Stock számlálójában szerepel, ezért itt nem csökkentheti
 // még egyszer a célt. Más tárgy fixed igényére nem végzünk keresztfélretételt.
 func reportedMarketQuota(snapshot Snapshot, itemIndex int) (int64, error) {
+	return reportedMarketQuotaWithRows(snapshot, itemIndex, countRows(snapshot))
+}
+
+func reportedMarketQuotaWithRows(snapshot Snapshot, itemIndex int, rows map[string]int) (int64, error) {
 	item := snapshot.Items[itemIndex]
 	groups := make(map[string]Source)
 	var required int64
@@ -54,7 +58,6 @@ func reportedMarketQuota(snapshot Snapshot, itemIndex int) (int64, error) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	rows := countRows(snapshot)
 	// A confirmed és pending kapacitás külön utat kap. Az API reported
 	// számlálója csak a confirmed rész felső korlátja; a még nem mentett
 	// darabok a gyűjtési korlátot már most csökkentik.
@@ -74,6 +77,11 @@ func reportedMarketQuota(snapshot Snapshot, itemIndex int) (int64, error) {
 			continue
 		}
 		confirmed, pending := min(other.AvailableQuantity, other.MarketAvailableQuantity), max(0, other.AvailableQuantity-other.MarketAvailableQuantity)
+		// Készlet nélkül ezen a soron egyetlen pozitív folyam sem haladhat.
+		// A cél és az igénye megmarad; csak a nulla kapacitású utat hagyjuk ki.
+		if confirmed == 0 && pending == 0 {
+			continue
+		}
 		confirmedNode, pendingNode := 1+2*i, 2+2*i
 		flow.add(0, confirmedNode, confirmed)
 		if rows[other.ItemID] != 1 {

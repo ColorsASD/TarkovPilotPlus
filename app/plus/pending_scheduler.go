@@ -1,6 +1,9 @@
 package plus
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type pendingMarketProfile struct {
 	key       string
@@ -19,7 +22,10 @@ func nextPendingMarketAdd(queue []pendingMarketAdd, attempted map[uint64]struct{
 			continue
 		}
 		seen[profile] = struct{}{}
-		if _, tried := attempted[entry.ID]; tried {
+		if entry.RetryAt.After(time.Now()) {
+			continue
+		}
+		if _, tried := attempted[entry.ID]; tried && entry.RetryAt.IsZero() {
 			continue
 		}
 		return entry, true

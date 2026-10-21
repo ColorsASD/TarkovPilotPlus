@@ -36,11 +36,11 @@ func markTypedAllocationUnknown(view *ItemTrackingState) {
 }
 
 func applyTypedTrackingView(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot) {
-	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTyped(snapshot, row.ItemID, true))
+	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTypedForDisplay(snapshot, row.ItemID, true))
 }
 
 func applyTypedTrackingRow(view *ItemTrackingState, row localprogress.Item, snapshot localprogress.Snapshot, index int) {
-	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTypedRow(snapshot, index, true))
+	applyTypedTrackingResult(view, row, snapshot, nextitem.CalculateTypedRowForDisplay(snapshot, index, true))
 	view.AddAllowed, view.RemoveAllowed = false, false
 	view.AddFIRAllowed, view.AddRegularAllowed, view.RemoveFIRAllowed, view.RemoveRegularAllowed = false, false, false, false
 }
@@ -58,11 +58,15 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 	view.NextItem = &typed.Forecast
 	view.AddFIRAllowed, view.AddRegularAllowed = typed.Known && typed.AddFIRAllowed, typed.Known && typed.AddRegularAllowed
 	view.AddAllowed = view.AddFIRAllowed || view.AddRegularAllowed
+	summary := typed.StockSummary
+	if summary == nil {
+		summary = &nextitem.TypedStockSummary{}
+	}
 	for i := range view.Requirements {
 		requirement := &view.Requirements[i]
-		requirement.AvailableQuantity = typed.FixedStock.Regular
+		requirement.AvailableQuantity = summary.FixedStock.Regular
 		if requirement.Kind == "fir" {
-			requirement.AvailableQuantity = typed.FixedStock.FIR
+			requirement.AvailableQuantity = summary.FixedStock.FIR
 		}
 		requirement.AvailableQuantity = min(requirement.RequiredQuantity, requirement.AvailableQuantity)
 		requirement.AllocationUnknown = !typed.Known
@@ -90,26 +94,51 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 			for k := range source.Items {
 				source.Items[k].AvailableQuantity = 0
 			}
-			allocated, exists := typed.Groups[groupKey(source.GroupID)]
+			allocated, exists := summary.Groups[groupKey(source.GroupID)]
 			if !exists {
 				group.AllocationUnknown = true
 				source.AvailableQuantity = 0
 			} else {
 				source.AvailableQuantity, source.RequiredQuantity = allocated.AvailableQuantity, allocated.RequiredQuantity
-				for k := range source.Items {
-					source.Items[k].AvailableQuantity = allocated.Contributions[source.Items[k].ItemID]
-				}
+				applyTypedGroupContributions(source.Items, allocated, snapshot)
 			}
 			group.AvailableQuantity += source.AvailableQuantity
 			group.RequiredQuantity += source.RequiredQuantity
 		}
 		if len(group.Sources) == 0 {
 			group.RequiredQuantity = required
-			if allocated, exists := typed.Groups[groupKey(group.GroupID)]; exists {
+			if allocated, exists := summary.Groups[groupKey(group.GroupID)]; exists {
 				group.AvailableQuantity, group.RequiredQuantity = allocated.AvailableQuantity, allocated.RequiredQuantity
 			} else {
 				group.AllocationUnknown = true
 			}
+		}
+	}
+}
+
+func applyTypedGroupContributions(items []ItemTrackingAnyItem, group nextitem.TypedGroupStock, snapshot localprogress.Snapshot) {
+	type identity struct{ id, name string }
+	quantities := make(map[identity][]int64)
+	for index, row := range snapshot.Items {
+		quantity, member := group.RowContributions[index]
+		if !member || !row.MarketTracked || row.MarketAvailableQuantity <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			name = row.ItemID
+		}
+		key := identity{row.ItemID, name}
+		quantities[key] = append(quantities[key], quantity)
+	}
+	// sharedTrackingItems név szerint stabilan rendez, azonos ID és név
+	// esetén az eredeti fizikai sorsorrend marad meg. Így az azonos-ID
+	// változatok egyenként a saját, akár nulla hozzájárulásukat kapják.
+	for i := range items {
+		key := identity{items[i].ItemID, items[i].Name}
+		items[i].AvailableQuantity = 0
+		if values := quantities[key]; len(values) > 0 {
+			items[i].AvailableQuantity, quantities[key] = values[0], values[1:]
 		}
 	}
 }

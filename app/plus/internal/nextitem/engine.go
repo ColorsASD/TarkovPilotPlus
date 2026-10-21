@@ -235,13 +235,9 @@ func engineAllocateNeeds(needs []need, stock []int64) []map[int]int64 {
 		components[position] = append(components[position], index)
 	}
 	for _, component := range components {
-		// A helyi minőségi nézetben csak a FiR igények után maradó FiR
-		// darabok egészíthetik ki a Regular készletet. A típuson belüli
-		// célprioritás és a régi közös készletű számítás változatlan.
-		sort.SliceStable(component, func(i, j int) bool {
-			a, b := needs[component[i]], needs[component[j]]
-			return a.typed && b.typed && a.fir && !b.fir
-		})
+		// A komponens a már kiszámított célprioritás sorrendjét tartja.
+		// A minőség az elfogadható készletet szűri; egy későbbi FiR igény
+		// nem veheti el a korábbi Regular célhoz szükséges FiR darabokat.
 		ordered := make([]need, 0, len(component))
 		for _, index := range component {
 			ordered = append(ordered, needs[index])
@@ -288,8 +284,8 @@ func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
 		}
 	}
 	if typed {
-		// A FiR sinkkapuk előbb nyílnak; a későbbi Regular kapuk a
-		// rendelkezésre álló nonFiR forrásokat használják először.
+		// A célkapuk prioritási sorrendben nyílnak. Az adott Regular cél
+		// előbb nonFiR készletet használ, majd a hozzá jogosult FiR darabokat.
 		sort.SliceStable(itemRows, func(i, j int) bool { return itemRows[i]%2 < itemRows[j]%2 })
 	}
 	for _, row := range itemRows {

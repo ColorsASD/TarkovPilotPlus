@@ -562,7 +562,7 @@ func TestAddRejectsStaleOrUntrackedTargets(t *testing.T) {
 		{"different character", func(a *ItemWindowApp) { a.state.CharacterUID = "another" }},
 		{"untracked item", func(a *ItemWindowApp) { a.state.Tracking.Tracked = false }},
 		{"error", func(a *ItemWindowApp) { a.state.Tracking.Error = "error" }},
-		{"loading", func(a *ItemWindowApp) { a.state.Tracking.Loading = true }},
+		{"first load", func(a *ItemWindowApp) { a.state.Tracking.Loading = true; a.localSnapshot.Revision = "" }},
 		{"no API key", func(a *ItemWindowApp) { a.apiKey = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

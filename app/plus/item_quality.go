@@ -17,6 +17,8 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/nextitem"
 )
 
+const maxQualityStoreBytes = 8 << 20
+
 // A fájl csak minőségi megjegyzéseket tárol. A Total az egyeztetés legutóbbi
 // API-alapja; sem betöltéskor, sem szerkesztéskor nem írja a Market készletét.
 type qualityRecord struct {
@@ -31,13 +33,15 @@ type qualityOperation struct {
 	Before                        qualityRecord
 	Delta                         int64
 	FIR                           bool
+	Invalidated                   bool `json:"invalidated,omitempty"`
 }
 
 type qualityData struct {
-	Version  int                                 `json:"version"`
-	Profiles map[string]map[string]qualityRecord `json:"profiles"`
-	Pending  map[string]qualityOperation         `json:"pending"`
-	Applied  map[string]bool                     `json:"applied"`
+	Version     int                                 `json:"version"`
+	Profiles    map[string]map[string]qualityRecord `json:"profiles"`
+	Pending     map[string]qualityOperation         `json:"pending"`
+	Applied     map[string]bool                     `json:"applied"`
+	Completions map[string]qualityCompletionProfile `json:"completions,omitempty"`
 }
 
 type qualityStore struct {
@@ -94,7 +98,7 @@ func (a *ItemWindowApp) qualityStoreLocked() (*qualityStore, error) {
 		store.path = filepath.Join(a.dir, "item-quality.json")
 		body, err := os.ReadFile(store.path)
 		if err == nil {
-			if len(body) > 8<<20 || json.Unmarshal(body, &store.data) != nil || store.data.Version != 1 || store.data.Profiles == nil || store.data.Pending == nil || store.data.Applied == nil {
+			if len(body) > maxQualityStoreBytes || json.Unmarshal(body, &store.data) != nil || store.data.Version != 1 || store.data.Profiles == nil || store.data.Pending == nil || store.data.Applied == nil {
 				return nil, errors.New("The saved item quality data is invalid. Its file was preserved.")
 			}
 			for _, profile := range store.data.Profiles {
@@ -115,6 +119,9 @@ func (a *ItemWindowApp) qualityStoreLocked() (*qualityStore, error) {
 				if op.Profile == "" || op.Item == "" || op.BeforeRevision == "" || (op.Delta != 1 && op.Delta != -1) || !validQualityRecord(op.Before) || !validQualityRecord(after) {
 					return nil, errors.New("The saved item quality reservation is invalid. Its file was preserved.")
 				}
+			}
+			if !validQualityCompletions(store.data.Completions) {
+				return nil, errors.New("The saved completion baseline is invalid. Its file was preserved.")
 			}
 			// Másik futás már nem hívhatja újra egy lezárt művelet callbackjét.
 			store.data.Applied = map[string]bool{}
@@ -145,6 +152,9 @@ func (store *qualityStore) update(change func(*qualityData) error) error {
 	after, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return err
+	}
+	if len(after) > maxQualityStoreBytes {
+		return errors.New("The local item quality data is too large. Its previous file was preserved.")
 	}
 	compact, _ := json.Marshal(next)
 	if string(before) == string(compact) {
@@ -191,6 +201,9 @@ func applyQualityOperation(data *qualityData, id string, op qualityOperation) {
 	} else {
 		row.Regular += op.Delta
 	}
+	if op.Invalidated {
+		row.FIR, row.Regular = 0, 0
+	}
 	key := op.RowKey
 	if key == "" {
 		key = op.Item
@@ -208,6 +221,17 @@ func (a *ItemWindowApp) qualityOperationIDLocked(entry pendingMarketAdd) string 
 }
 
 func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOptions, snapshot localprogress.Snapshot) (localprogress.Snapshot, error) {
+	return a.qualityReconcileSnapshotWithCompletionLocked(key, opts, snapshot, false)
+}
+
+// Csak teljes, frissen olvasott API-célállapot léptetheti a teljesítési alapot.
+// A szerkesztő és az export/import régi pillanatképe nem használja; a worker
+// friss API-alapú jogosultságvizsgálata viszont szintén ezen az úton egyeztet.
+func (a *ItemWindowApp) qualityReconcileFreshSnapshotLocked(key string, opts ItemOptions, snapshot localprogress.Snapshot) (localprogress.Snapshot, error) {
+	return a.qualityReconcileSnapshotWithCompletionLocked(key, opts, snapshot, true)
+}
+
+func (a *ItemWindowApp) qualityReconcileSnapshotWithCompletionLocked(key string, opts ItemOptions, snapshot localprogress.Snapshot, fresh bool) (localprogress.Snapshot, error) {
 	if key == "" || snapshot.CharUID != opts.CharacterUID || !strings.EqualFold(snapshot.GameMode, opts.Mode) || snapshot.Revision == "" {
 		return snapshot, errors.New("The Market profile could not be matched to local item quality.")
 	}
@@ -240,6 +264,11 @@ func (a *ItemWindowApp) qualityReconcileSnapshotLocked(key string, opts ItemOpti
 					rows[keys[i]] = legacy
 				}
 				delete(rows, row.ItemID)
+			}
+		}
+		if fresh {
+			if err := reconcileQualityCompletions(data, profile, snapshot, keys); err != nil {
+				return err
 			}
 		}
 		for id, op := range data.Pending {
@@ -303,7 +332,11 @@ func (a *ItemWindowApp) qualityChangeAllowedLocked(snapshot localprogress.Snapsh
 	}
 	if !known {
 		var err error
-		typed, err = a.qualityReconcileSnapshotLocked(entry.Key, entry.Opts, snapshot)
+		if entry.ProgressCached {
+			typed, err = a.qualityReconcileSnapshotLocked(entry.Key, entry.Opts, snapshot)
+		} else {
+			typed, err = a.qualityReconcileFreshSnapshotLocked(entry.Key, entry.Opts, snapshot)
+		}
 		if err != nil {
 			return false
 		}
@@ -419,7 +452,7 @@ func (a *ItemWindowApp) GetTrackerInventory() TrackerQualityInventory {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	result := TrackerQualityInventory{Rows: []TrackerQualityRow{}}
-	if a.apiKey == "" || a.confirmedProgress.CharUID != a.state.CharacterUID || a.confirmedProgress.Revision == "" {
+	if a.apiKey == "" || a.confirmedProgress.CharUID != a.state.CharacterUID || a.confirmedProgress.Revision == "" || !a.confirmedProgress.MetadataComplete {
 		result.Error = "Refresh Market progress before editing item quality."
 		return result
 	}
@@ -463,7 +496,7 @@ func (a *ItemWindowApp) SetTrackerItemQuality(profile, itemID string, expectedTo
 		}
 	}
 	unique := matches == 1 && identities[rowKey] == 1
-	valid := a.apiKey != "" && profile == qualityProfile(a.apiKey, a.state.ItemOptions) && a.confirmedProgress.CharUID == a.state.CharacterUID && unique &&
+	valid := a.apiKey != "" && profile == qualityProfile(a.apiKey, a.state.ItemOptions) && a.confirmedProgress.CharUID == a.state.CharacterUID && a.confirmedProgress.MetadataComplete && unique &&
 		!a.confirmedProgress.FIRInventorySeparate && row.MarketAvailableQuantity == expectedTotal && validQualityRecord(qualityRecord{Total: expectedTotal, FIR: fir, Regular: regular})
 	for _, entry := range a.pendingAddQueue {
 		if entry.Key == a.apiKey && entry.Opts.CharacterUID == a.state.CharacterUID && entry.Item.BSGID == row.ItemID {
