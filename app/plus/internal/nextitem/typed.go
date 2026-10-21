@@ -52,9 +52,11 @@ func CalculateTyped(snapshot localprogress.Snapshot, itemID string, allowFIRForR
 	return calculateTyped(snapshot, itemID, allowFIRForRegular, false)
 }
 
-// CalculateTypedForDisplay a célkiosztás mellett a Stock sorainak külön
-// minőségi összesítését is elkészíti. A csak jogosultságot kérő útvonalaknak
-// nincs szükségük erre a további készletkiosztásra.
+// CalculateTypedForDisplay minden cél részarányát külön számolja a teljes
+// ismert minőségű készletből, és a Stock külön kategóriaösszesítését is adja.
+// A célonkénti megjelenítés nem írja felül az Add jogosultságot meghatározó
+// kizáró, prioritás szerinti kiosztást. A csak jogosultságot kérő útvonalaknak
+// nincs szükségük ezekre a további megjelenítési kiosztásokra.
 func CalculateTypedForDisplay(snapshot localprogress.Snapshot, itemID string, allowFIRForRegular bool) TypedView {
 	return calculateTyped(snapshot, itemID, allowFIRForRegular, true)
 }
@@ -126,6 +128,7 @@ func calculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 		Forecast: Forecast{Status: "estimated", Reason: "Allocated from locally recorded Found in Raid and Regular inventory.",
 			Targets: displayTargets(snapshot, graph, before, target, true), FixedStock: fixed}}
 	if withStockSummary {
+		view.Forecast.Targets = typedIndependentTargets(snapshot, graph, typedGoals, stock, target)
 		summary := collapseTypedGoals(typedSummaryGoals(allocated, stock))
 		view.StockSummary = &TypedStockSummary{FixedStock: *currentFixedStock(summary, target),
 			Groups: typedGroupStocks(summary, snapshot.Items, target)}
@@ -141,6 +144,73 @@ func calculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 	}
 	view.AddRegularAllowed, view.AddFIRAllowed = canAdd(0), canAdd(1)
 	return view
+}
+
+// typedIndependentTargets célok között újra felhasználhatja a készletet,
+// ugyanazon cél összes igénye viszont egyetlen közös készletből osztozik.
+// Csak a kiválasztott fizikai sort elfogadó igények kerülnek a cél arányába,
+// a Shared részhez tartozó más jelöltek hozzájárulásával együtt.
+func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGraph, goals []goal, stock []int64, target int) []Target {
+	acceptsTarget := func(n need) bool {
+		for _, bucket := range n.rows {
+			if bucket/2 == target {
+				return true
+			}
+		}
+		return false
+	}
+	type quality struct{ fir, regular int64 }
+	qualities := make(map[string]quality)
+	var independent []goal
+	for _, g := range goals {
+		accepts := false
+		for _, n := range g.needs {
+			accepts = accepts || acceptsTarget(n)
+		}
+		if !accepts {
+			continue
+		}
+		allocated := engineCloneGoals([]goal{g})[0]
+		allocations := engineAllocateNeeds(allocated.needs, stock)
+		if len(allocated.needs) > 1 {
+			// A lefedett need-mennyiségek változatlanok maradnak. A külön
+			// megjelenítési flow a szükségtelen FiR felhasználást hosszabb
+			// reziduális cserékkel is nonFiR készletre tudja cserélni.
+			covered := append([]need(nil), allocated.needs...)
+			for i := range covered {
+				covered[i].amount = engineAllocationTotal(allocations[i])
+			}
+			allocations = engineRegularPreferredFlow(covered, stock)
+		}
+		var quantities quality
+		for i := range allocated.needs {
+			n := &allocated.needs[i]
+			n.allocations, n.have = allocations[i], engineAllocationTotal(allocations[i])
+			if !acceptsTarget(*n) {
+				continue
+			}
+			for bucket, amount := range n.allocations {
+				if bucket%2 == 1 {
+					quantities.fir += amount
+				} else {
+					quantities.regular += amount
+				}
+			}
+		}
+		qualities[g.key] = quantities
+		independent = append(independent, allocated)
+	}
+	targets := displayTargets(snapshot, graph, collapseTypedGoals(independent), target, true)
+	for i := range targets {
+		current := &targets[i]
+		quantities, active := qualities[current.GoalKey]
+		// Az explicit completed x/x részarány korábbi átadásból származik;
+		// ennek minőségét az aktuális készletből nem lehet rekonstruálni.
+		if active && !current.AllocationUnknown && quantities.fir+quantities.regular == current.AvailableQuantity {
+			current.FIRQuantity, current.RegularQuantity, current.QualityKnown = quantities.fir, quantities.regular, true
+		}
+	}
+	return targets
 }
 
 // typedSummaryGoals ugyanazt a teljes készletet egyszer osztja ki a Stock

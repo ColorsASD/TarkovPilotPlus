@@ -253,6 +253,14 @@
         }
         return key;
     };
+    const parsedTargetQuality = (target) => {
+        const firQuantity = target.firQuantity === undefined ? 0 : target.firQuantity;
+        const regularQuantity = target.regularQuantity === undefined ? 0 : target.regularQuantity;
+        if (target.qualityKnown !== true || target.allocationUnknown === true ||
+            ![firQuantity, regularQuantity].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+            firQuantity + regularQuantity !== target.availableQuantity) return { qualityKnown: false };
+        return { qualityKnown: true, firQuantity, regularQuantity };
+    };
     const parsedNextItem = (tracking, transient) => {
         const forecast = tracking.nextItem && typeof tracking.nextItem === 'object' && !Array.isArray(tracking.nextItem) ? tracking.nextItem : null;
         if (forecast && ['estimated', 'uncertain', 'unavailable'].includes(forecast.status)) {
@@ -262,7 +270,7 @@
                 (target.allocationUnknown === true || Number.isSafeInteger(target.availableQuantity) && target.availableQuantity >= 0)).map((target) => ({
                     kind: target.kind, name: safeText(target.goalName).trim() || (target.kind === 'quest' ? 'Unnamed quest' : 'Unnamed hideout upgrade'),
                     availableQuantity: target.availableQuantity, requiredQuantity: target.requiredQuantity, allocationUnknown: target.allocationUnknown === true,
-                    completed: target.completed === true,
+                    completed: target.completed === true, ...parsedTargetQuality(target),
                 })).sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'quest' ? -1 : 1) : [];
             if (targets.length) {
                 const completedState = !transient && tracking.addFIRAllowed === false && tracking.addRegularAllowed === false &&
@@ -329,6 +337,12 @@
                     const name = document.createElement('span');
                     name.className = 'tracked-next-item-target-name';
                     name.textContent = target.name;
+                    if (target.qualityKnown) {
+                        const quality = document.createElement('span');
+                        quality.className = 'tracked-next-item-target-quality';
+                        quality.textContent = ' (FiR: ' + quantityText(target.firQuantity) + ', NonFiR: ' + quantityText(target.regularQuantity) + ')';
+                        name.append(quality);
+                    }
                     name.append(document.createTextNode(' '), copyNameButton(target.name, target.kind));
                     if (target.completed) {
                         const check = document.createElement('span');
@@ -1080,6 +1094,11 @@
             requirements: [{ kind: 'fir', requiredQuantity: previewCompletion ? 2 : 5, availableQuantity: previewCompletion ? 0 : 2 },
                 { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: 0 }] };
     }
+    const previewTargetQuality = (tracking, requiredQuantity, firOnly) => {
+        const regularQuantity = firOnly ? 0 : Math.min(requiredQuantity, tracking.regularQuantity || 0);
+        const firQuantity = Math.min(requiredQuantity - regularQuantity, tracking.firQuantity || 0);
+        return { qualityKnown: true, firQuantity, regularQuantity, availableQuantity: firQuantity + regularQuantity };
+    };
     const updatePreviewTracking = () => {
         if (!previewState.tracking) return;
         if (previewVariants) {
@@ -1092,8 +1111,9 @@
                         items: source.items.map((item, index) => ({ ...item, availableQuantity: index === 0 ? availableQuantity : 0 })) })) };
                 });
                 const targets = [...requirements.map((row) => ({ kind: 'quest', goalName: 'Fishing Gear', availableQuantity: row.availableQuantity,
-                    requiredQuantity: row.requiredQuantity })), ...anyGroups.map((group) => ({ kind: 'quest', goalName: 'Scavenger',
-                    availableQuantity: group.availableQuantity, requiredQuantity: group.requiredQuantity }))];
+                    requiredQuantity: row.requiredQuantity, ...previewTargetQuality(variant, row.requiredQuantity, row.kind === 'fir') })),
+                    ...anyGroups.map((group) => ({ kind: 'quest', goalName: 'Scavenger', requiredQuantity: group.requiredQuantity,
+                        ...previewTargetQuality(variant, group.requiredQuantity, group.fir) }))];
                 return { ...variant, requirements, anyGroups, nextItem: { status: 'estimated', targets } };
             });
             previewState.tracking = { ...variants[variants.length - 1], variants };
@@ -1122,7 +1142,8 @@
             removeFIRAllowed: tracking.firQuantity > 0, removeRegularAllowed: tracking.regularQuantity > 0,
             nextItem: { status: 'estimated', targets: requirements.map((row) => ({ kind: 'quest',
                 goalName: row.kind === 'fir' ? 'Shortage' : 'A Bitter Victory',
-                availableQuantity: row.availableQuantity, requiredQuantity: row.requiredQuantity, completed: false })) } };
+                requiredQuantity: row.requiredQuantity, completed: false,
+                ...previewTargetQuality(tracking, row.requiredQuantity, row.kind === 'fir') })) } };
     };
     if (preview) updatePreviewTracking();
     if (preview) {

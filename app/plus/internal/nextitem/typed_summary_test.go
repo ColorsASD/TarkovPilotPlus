@@ -36,6 +36,9 @@ func TestTypedStockSummaryKeepsQualityCategoriesAndGoalForecastSeparate(t *testi
 				t.Fatalf("Stock category projection lost quality, surplus or reused stock: fir=%d regular=%d summary=%+v group=%+v", fir, regular, summary, group)
 			}
 			view.StockSummary = nil
+			// A célonként független megjelenítés eltérhet a gombokhoz
+			// használt kizáró kiosztástól; minden más adat változatlan.
+			gate.Forecast.Targets, view.Forecast.Targets = nil, nil
 			if !reflect.DeepEqual(gate, view) || view.RequiredQuantity != 17 {
 				t.Fatalf("display summary changed goal forecast, collection quota or add eligibility: gate=%+v display=%+v", gate, view)
 			}

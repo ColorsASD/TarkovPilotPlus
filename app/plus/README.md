@@ -12,7 +12,7 @@ in the [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/READM
 - `item_quality.go` — persistent local Found in Raid/Regular classification, the inventory editor and stock-write quality recovery
 - `item_quality_backup.go` — native JSON import/export of the selected character and game mode's classifications, without API stock changes or credentials
 - `item_quality_completion.go` — persistent completion flags and item identities per profile, with atomic reclassification on newly completed quests or hideout upgrades
-- `typed_tracking_view.go` — fixed and Shared quality summaries alongside the existing goal-priority allocation
+- `typed_tracking_view.go` — fixed and Shared quality summaries alongside independent goal coverage and FiR/NonFiR breakdowns
 - `local_progress.go` — coherent Market quest/hideout progress loading and the existing Items Tracker view
 - `pending_add.go`, `pending_retry.go`, `pending_scheduler.go` and `pending_cache.go` — ordered stock saves, automatic transient-error recovery and verified preflight reuse
 - `local_tracking_view.go`, `variant_tracking_view.go` and `shared_tracking_items.go` — display projections for fixed requirements, separately identified variants and Shared group details
@@ -41,7 +41,7 @@ Build and test commands are described in [app/README.md](../README.md).
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.4.0`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.4.1`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -52,7 +52,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.4.0`.
+version is `1.4.1`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -348,42 +348,45 @@ the section.
 confirmed requirement graph and locally classified stock, including canonical
 quest IDs, their aliases and module upgrade keys. Newly returned goals need no
 item-specific rules.
-The existing goal-priority and target-order engine is preserved. Quality filters
-which pieces each requirement can use when that requirement is reached. A Regular
-need uses non-FiR pieces first and can also use FiR pieces; a FiR-only need accepts
-only FiR. A later FiR-only goal does not reserve stock ahead of an earlier Regular
-goal. Uncategorized pieces cannot satisfy either quality. One physical piece is
-credited only once across overlapping fixed and Shared needs in the goal view.
+The existing global goal-priority and target-order engine still controls typed
+Add eligibility and collection targets. For display, each quest or hideout goal
+separately allocates the complete classified inventory to its own needs. A Regular
+need uses non-FiR pieces first and eligible FiR pieces only for its remainder;
+a FiR-only need accepts only FiR. Uncategorized pieces satisfy neither quality.
+Within one goal a physical piece is credited only once across overlapping fixed
+and Shared needs. Different goals can each show that same eligible piece.
 
 The Stock summary uses a separate quality projection. It reserves classified FiR
 pieces for FiR-only fixed and Shared requirements first, then uses Regular pieces
 and eligible FiR surplus for Regular fixed and Shared requirements. This summary
 also counts a physical piece only once. Its category ratios can differ from the
-goal-priority ratios without changing inventory, collection targets or Add
+independent goal ratios without changing inventory, collection targets or Add
 eligibility. `CalculateTypedForDisplay` and `CalculateTypedRowForDisplay` add this
-summary alongside the unchanged goal calculation; eligibility-only paths do not
-need the extra projection.
+summary and independent goal projection alongside the unchanged global priority
+calculation; eligibility-only paths do not need these display projections.
 
 For example, with one Regular vodka, Booze shows `0/10` and A Bitter Victory
 shows `1/4`; the summary shows Found in Raid `0/10` and Regular `1/4`. Classifying
-that piece does not change the API total. A FiR piece can cover either requirement
-according to the existing goal order. Leaving it Uncategorized gives both goals
-zero allocated pieces.
+that piece does not change the API total. A FiR piece can appear in the separate
+coverage of both goals. Leaving it Uncategorized gives both goals zero allocated
+pieces.
 The API still supplies required quantities and completion; the app supplies
 quality-aware allocation from the local split. With one FiR and one Regular
 ComTac, the Stock summary shows Regular `1/2` and Shared (FiR) `1/15`. Next Item
-can show the earlier Hot Delivery requirement at `2/2` while the later Scavenger
-requirement remains `0/15`, because the existing goal order lets Hot Delivery use
-both pieces first. These are separate views of the same inventory. Within the
-goal view, those pieces are already allocated to Hot Delivery, so the later FiR
-requirement does not claim them a second time.
+shows Hot Delivery at `2/2` with `(FiR: 1, NonFiR: 1)` and Scavenger at `1/15`
+with `(FiR: 1, NonFiR: 0)`, while Stock remains `2/17`. These goals independently
+describe the same inventory's coverage, so their numerators are not a combined
+stock total. Adding a second Regular piece changes Hot Delivery's breakdown to
+`(FiR: 0, NonFiR: 2)` while Scavenger retains its FiR piece. A known current
+breakdown sums to that goal's displayed numerator; historical completed sources
+and unknown allocations have no inferred quality breakdown.
 
 Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
 `groups` and `questGroup` sources to identify requirements and eligible items.
 The displayed Shared and Shared (FiR) numerators come from locally classified
 inventory across those eligible items, rather than the API group's untyped stock
 counter. Other eligible items and their pending typed changes participate in the
-summary's quality projection and in the separate goal-priority calculation.
+summary's quality projection and in each independent goal calculation.
 Groups are summarized in one Shared (FiR) row and one Shared row
 while preserving their individual identities and eligible items. Covered groups
 stay visible until their goals are completed. Missing or inconsistent allocation

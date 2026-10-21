@@ -259,6 +259,17 @@ type engineEdge struct {
 // A sinkkapuk egyenként nyílnak: egy korábbi need fedezete nem csökkenhet,
 // de a hozzá rendelt tárgyak reziduális utakon átrendezhetők későbbi needhez.
 func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
+	return engineFlow(needs, stock, false)
+}
+
+// engineRegularPreferredFlow már rögzített need-lefedésekhez keres kiosztást.
+// Előbb a teljes nonFiR készletet használja, majd csak a szükséges FiR darabokat.
+// Kizárólag a típusos, célonkénti megjelenítés hívja; a prioritási engine nem.
+func engineRegularPreferredFlow(needs []need, stock []int64) []map[int]int64 {
+	return engineFlow(needs, stock, true)
+}
+
+func engineFlow(needs []need, stock []int64, preferRegular bool) []map[int]int64 {
 	graph := make([][]*engineEdge, 2) // source=0, sink=1
 	addNode := func() int {
 		graph = append(graph, nil)
@@ -288,9 +299,14 @@ func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
 		// előbb nonFiR készletet használ, majd a hozzá jogosult FiR darabokat.
 		sort.SliceStable(itemRows, func(i, j int) bool { return itemRows[i]%2 < itemRows[j]%2 })
 	}
+	var firSources []*engineEdge
 	for _, row := range itemRows {
 		itemNodes[row] = addNode()
-		addEdge(0, itemNodes[row], engineStock(stock, row))
+		source := addEdge(0, itemNodes[row], engineStock(stock, row))
+		if preferRegular && row%2 == 1 {
+			source.capacity = 0
+			firSources = append(firSources, source)
+		}
 	}
 	type itemEdge struct {
 		row  int
@@ -337,9 +353,22 @@ func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
 		}
 		return true
 	}
-	for i, n := range needs {
-		sinks[i].capacity, sinks[i].initial = max(0, n.amount), max(0, n.amount)
+	if preferRegular {
+		for i, n := range needs {
+			sinks[i].capacity, sinks[i].initial = max(0, n.amount), max(0, n.amount)
+		}
 		for augment() {
+		}
+		for _, source := range firSources {
+			source.capacity = source.initial
+		}
+		for augment() {
+		}
+	} else {
+		for i, n := range needs {
+			sinks[i].capacity, sinks[i].initial = max(0, n.amount), max(0, n.amount)
+			for augment() {
+			}
 		}
 	}
 	result := make([]map[int]int64, len(needs))

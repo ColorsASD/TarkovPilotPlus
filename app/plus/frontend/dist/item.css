@@ -144,6 +144,7 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .tracked-next-item-target { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 9px; }
 .tracked-next-item-target + .tracked-next-item-target { margin-top: 3px; }
 .tracked-next-item-target-name { min-width: 0; overflow-wrap: anywhere; }
+.tracked-next-item-target-quality { font-variant-numeric: tabular-nums; }
 .tracked-next-item-target-completed { display: inline-flex; align-items: center; vertical-align: baseline; position: relative; top: 2px; color: var(--accent-light); line-height: 1; white-space: nowrap; }
 .tracked-next-item-target-completed svg { width: 11px; height: 11px; }
 .tracked-next-item-target-ratio { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }

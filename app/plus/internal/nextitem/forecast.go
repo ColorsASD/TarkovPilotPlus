@@ -19,8 +19,9 @@ type Forecast struct {
 	Changes            []Change `json:"changes,omitempty"`
 	Targets            []Target `json:"targets,omitempty"`
 	Reason             string   `json:"reason,omitempty"`
-	// FixedStock ugyanannak az aktuális kiosztásnak a fix kategóriaszámlálója,
-	// amelyből a Targets készül. A megjelenítés belső adata, nem része a DTO-nak.
+	// FixedStock a globális, prioritás szerinti kiosztás fix számlálója.
+	// A típusos megjelenítés Targets sorai célonként külön készletet látnak;
+	// ez a belső számláló nem része a DTO-nak.
 	FixedStock *localprogress.RequirementStock `json:"-"`
 }
 
@@ -42,6 +43,9 @@ type Target struct {
 	RequiredQuantity  int64  `json:"requiredQuantity"`
 	AllocationUnknown bool   `json:"allocationUnknown,omitempty"`
 	Completed         bool   `json:"completed,omitempty"`
+	FIRQuantity       int64  `json:"firQuantity,omitempty"`
+	RegularQuantity   int64  `json:"regularQuantity,omitempty"`
+	QualityKnown      bool   `json:"qualityKnown,omitempty"`
 }
 
 type groupCounter struct {

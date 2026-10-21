@@ -4,14 +4,14 @@ TarkovPilot+ is a Windows companion app for Escape from Tarkov. It extends [Tark
 
 For the original map, screenshot and game-log features, see the [original TarkovPilot README](https://github.com/ggdiam/TarkovPilot/blob/master/README.md). This README describes this fork and its own additions.
 
-The current Plus version is **1.4.0**, based on **TarkovPilot 2.1.1**. Their source code and version numbers are maintained separately. Both app window title bars display **TarkovPilot+**, and the app interface is in English.
+The current Plus version is **1.4.1**, based on **TarkovPilot 2.1.1**. Their source code and version numbers are maintained separately. Both app window title bars display **TarkovPilot+**, and the app interface is in English.
 
 ## Features
 
 - **Separate item window.** The companion opens with the main app. Closing either window closes both; unsaved Market updates trigger a warning before exit.
 - **Local English OCR and search.** Recognize an item's Inspect title automatically or manually, or search by its English name without opening an Inspect window.
 - **Market prices and progress.** Compare Flea Market and trader prices, then view the selected character's stock, requirement categories and quest/hideout details.
-- **Next Item and completed goals.** Read current quest/hideout ratios and completed checkmarks. Goal allocation keeps the existing target priorities and uses your locally recorded item quality. Copy item or goal names with the small brown icons.
+- **Next Item and completed goals.** Read independent quest/hideout coverage, FiR/NonFiR breakdowns and completed checkmarks from your locally recorded item quality. Collection limits keep the existing target priorities. Copy item or goal names with the small brown icons.
 - **Stock controls.** Add or remove Found in Raid and Regular pieces separately with four buttons or configurable F1–F4 shortcuts. Eligible changes appear immediately and save the total to Tarkov Market in the background.
 - **Items Tracker editor and backups.** Classify existing stock in the separate Items Tracker panel above Settings. Import or export the selected character and game mode's local classification as JSON without changing API totals.
 - **Local settings and quality.** The API key is encrypted with Windows DPAPI. Confirmed Found in Raid/Regular classifications and a small quality recovery journal are saved locally; total stock remains authoritative on Tarkov Market.
@@ -61,7 +61,7 @@ The public catalog is cached locally for five minutes. Requests respect API rate
 ### Read Items Tracker
 
 The tracker uses the selected character's Tarkov Market requirements, completion and total inventory, together with locally recorded Found in Raid/Regular quality. **Stock** shows the item's total; the rows beneath it describe requirements that can use classified pieces.
-Existing stock and external increases start as **Uncategorized** until classified. Uncategorized pieces do not cover requirements. The Stock summary and Next Item goals are separate views of the same classified inventory; each view counts a physical piece only once.
+Existing stock and external increases start as **Uncategorized** until classified. Uncategorized pieces do not cover requirements. The Stock summary and Next Item goals are separate views of the same classified inventory. The summary counts each physical piece once; each Next Item goal separately shows how much of its requirements the inventory could cover.
 
 | Row | Meaning | How to read it |
 |---|---|---|
@@ -76,8 +76,8 @@ The Stock summary reserves classified FiR pieces for FiR-only requirements first
 The collection target credits other eligible items and their pending changes without subtracting the selected item's own stock twice.
 Within this summary, overlapping fixed and Shared requirements share one allocation rather than claiming the same piece repeatedly.
 
-Next Item keeps the existing goal and target priority order. When a goal's turn is reached, a Regular requirement uses non-FiR pieces before eligible FiR pieces, while a FiR-only requirement accepts only FiR. A later FiR-only goal does not reserve pieces ahead of an earlier Regular goal in this view.
-For example, **one FiR and one Regular ComTac** show **Regular 1/2** and **Shared (FiR) 1/15** in the Stock summary. Next Item can show the earlier **Hot Delivery (2/2)** and the later **Scavenger (0/15)** because Hot Delivery accepts both pieces first. These are two views of the same two pieces, not additional inventory; neither view credits a piece to two requirements.
+Next Item evaluates each quest and hideout goal against the classified inventory separately. A Regular requirement uses non-FiR pieces first and eligible FiR pieces only for the remainder; a FiR-only requirement accepts only FiR. Within a single goal, overlapping fixed and Shared needs cannot count the same physical piece twice. Different goals can each show the same eligible piece, so their numerators must not be added together as inventory.
+For example, **one FiR and one Regular ComTac** show **Stock 2/17**, **Regular 1/2** and **Shared (FiR) 1/15** in the Stock summary. Next Item shows **Hot Delivery (FiR: 1, NonFiR: 1) (2/2)** and **Scavenger (FiR: 1, NonFiR: 0) (1/15)**. Adding another Regular piece changes Hot Delivery to **(FiR: 0, NonFiR: 2) (2/2)** while Scavenger stays at **1/15**. The total collection target remains 17; the existing priority calculation still controls whether another typed piece can fill a remaining need.
 Pending stock immediately participates in the Stock display, local allocation and quantity limits. The last coherent same-item goal details remain visible during background refreshes and saves.
 
 Open the separate **Items Tracker** panel above Settings to edit classifications. Items with Uncategorized stock appear first, followed by fully classified items; both groups are alphabetized by displayed name, and search covers both. Search for an item, check its image and name, then enter Found in Raid and Regular quantities. Their sum cannot exceed the read-only **API total**; the remainder is Uncategorized. **Save classification locally** changes only this local split. Distinct same-ID variants can be classified separately; indistinguishable rows and unsupported separate FiR inventory remain read-only.
@@ -98,12 +98,13 @@ An active row can remain visible at `10/10`: enough collected items does not com
 ### Read Next Item and goal details
 
 **Next Item** lists the current item's quest and hideout goals. There is no category at the right of its header.
-Goal ratios use locally classified stock in the existing goal priority order. They can differ from the Stock summary, which reserves FiR pieces for FiR-only categories first.
+Goal ratios use locally classified stock independently for each goal. They can differ from the Stock summary, which reserves FiR pieces for FiR-only categories first and shares one physical allocation across all categories.
 The pure virtual **+1** checks determine whether another FiR or Regular piece can fill an eligible need; these checks never add an item or send an inventory update.
 
 Below the header, quest lists appear before hideout module lists.
 The headings use **Quest** for one quest and **Quests** for several; **Hideout Module** for one module and **Hideout Modules** for several.
 Each name is on the left, with its current ratio in parentheses at the right edge, for example **(0/5)**.
+An active goal with known quality shows **(FiR: 1, NonFiR: 1)** after its name to explain the ratio. The breakdown uses non-FiR pieces before FiR for Regular needs and updates when the classified inventory changes. Historical completed ratios and unknown allocations do not invent a quality breakdown.
 These are the current requirements for this item or its Shared group, not virtual +1 results or the total of every item needed by the whole quest.
 A Shared ratio can include other eligible items. Unknown allocations display **(—/5)**.
 
@@ -188,7 +189,7 @@ cd app
 
 The frontend consists of static HTML, CSS and JavaScript. A Node/npm frontend build is not required.
 
-The build prepares OCR dependencies from pinned official sources and verifies their SHA256 hashes. Every build creates the complete `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` package, containing `TarkovPilotPlus.exe`, the matching `ocr` folder and `versions.json`. It also creates `TarkovPilotPlus-<version>-windows-x64.zip` and its `.sha256` file. The current package uses version `1.4.0`. OCR does not download models or call an external OCR service at runtime.
+The build prepares OCR dependencies from pinned official sources and verifies their SHA256 hashes. Every build creates the complete `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` package, containing `TarkovPilotPlus.exe`, the matching `ocr` folder and `versions.json`. It also creates `TarkovPilotPlus-<version>-windows-x64.zip` and its `.sha256` file. The current package uses version `1.4.1`. OCR does not download models or call an external OCR service at runtime.
 
 The default compiler output is `TarkovPilotPlus.exe`. Even when a custom `-OutputFilename` is supplied, the executable is moved into the complete package under the name `TarkovPilotPlus.exe`; the same name is used inside the ZIP. No extra standalone compiler EXE remains in `app/build/bin` after a successful build.
 

@@ -47,7 +47,7 @@ or Wails tools are optional and are not required for the standard commands above
 ## Release
 
 The original application version remains in `version.go` (`2.1.1`), while the
-independent Plus version is in `plus/version.go` (`1.4.0`). The build script can
+independent Plus version is in `plus/version.go` (`1.4.1`). The build script can
 increment only the Plus version; it leaves the original version unchanged. It
 builds the EXE and local OCR components and writes both versions to
 `versions.json`. The upstream repository, commit and version are recorded in
@@ -57,7 +57,7 @@ in [plus/README.md](plus/README.md).
 Every build creates `build/bin/TarkovPilotPlus-<version>-windows-x64/`, containing
 `TarkovPilotPlus.exe`, `versions.json` and the complete `ocr` directory. The build
 also produces `build/bin/TarkovPilotPlus-<version>-windows-x64.zip` with the same
-distribution files and its `.sha256` file. The current package version is `1.4.0`.
+distribution files and its `.sha256` file. The current package version is `1.4.1`.
 
 The default compiler output filename is `TarkovPilotPlus.exe`. A custom
 `-OutputFilename` changes the compiler output name, but the executable is moved
@@ -87,7 +87,7 @@ notification. Keep the matching `ocr` directory beside the EXE when updating.
 
 - `plus/item_window.go` — separate Wails window, encrypted API key with explicit reveal, local catalog and scan state; one automatic scan toggle, independent manual scanning and search by name
 - `plus/item_tracking.go` — character selection by unique ID, API stock totals and quest/hideout requirements; four typed stock actions share quantity checks with their buttons and shortcuts, while ambiguous same-ID variant API writes remain blocked
-- `plus/item_quality.go` and `plus/typed_tracking_view.go` — persistent local Found in Raid/Regular classification, Uncategorized remainders, separate variant identities and fixed/Shared quality summaries alongside goal-priority ratios
+- `plus/item_quality.go` and `plus/typed_tracking_view.go` — persistent local Found in Raid/Regular classification, Uncategorized remainders, separate variant identities and fixed/Shared quality summaries alongside independent goal coverage and quality breakdowns
 - `plus/item_quality_backup.go` — native JSON import/export for the selected character and game mode's classifications, with current-stock bounds and no API total changes or exported credentials
 - `plus/item_hotkey.go`, `plus/item_quality_hotkey.go` and `plus/tracked_hotkey*.go` — default F1 Add Found in Raid, F2 Add Regular, F3 Remove Found in Raid and F4 Remove Regular shortcuts, each configurable with a supported key or Ctrl/Alt/Shift combination or Disabled; dedicated keyboard hook threads consume matching key events and send bound requests to the stock worker without waiting for network requests
 - `plus/paired_windows.go` — paired startup and shutdown; each window runs in its own Wails process
@@ -104,16 +104,20 @@ uses the `window.go.plus.ItemWindowApp` binding and receives `item-state` events
 
 Items Tracker uses the selected character's Market total stock and goal progress,
 with a local FiR/Regular split. Existing and externally added pieces remain
-Uncategorized until classified, and do not cover goals. The existing goal and
-target priority order is preserved: a Regular requirement accepts Regular pieces
-and then eligible FiR pieces when reached, while a FiR-only requirement accepts
-only FiR. A later FiR goal cannot preempt an earlier Regular goal in Next Item.
+Uncategorized until classified, and do not cover goals. Each Next Item quest or
+hideout goal separately evaluates the classified inventory: a Regular requirement
+uses Regular pieces first and eligible FiR pieces for its remainder, while a
+FiR-only requirement accepts only FiR. A goal cannot reuse a physical piece
+between its own fixed and Shared needs; different goals can each show that piece.
 The Stock summary separately reserves FiR pieces for FiR-only needs, then uses
 Regular pieces and eligible FiR surplus for Regular/Shared needs. Both views use
 the local classification rather than treating the API's untyped group counter as
-item quality, and each view counts a piece only once. With one FiR and one Regular
-ComTac, Stock can show Regular `1/2` and Shared (FiR) `1/15`, while Next Item shows
-the earlier Hot Delivery `2/2` and the later Scavenger `0/15`.
+item quality. With one FiR and one Regular ComTac, Stock stays `2/17` with Regular
+`1/2` and Shared (FiR) `1/15`, while Next Item shows Hot Delivery `2/2`
+`(FiR: 1, NonFiR: 1)` and Scavenger `1/15` `(FiR: 1, NonFiR: 0)`. Adding another
+Regular piece replaces the FiR contribution to Hot Delivery with Regular stock.
+The existing global priority calculation still controls collection targets and
+typed Add eligibility; the independent goal display does not change either.
 
 Full tracker refresh reads the selected character's entire quest and hideout
 state with inventory. Only completion flags and minimal item identities persist,
