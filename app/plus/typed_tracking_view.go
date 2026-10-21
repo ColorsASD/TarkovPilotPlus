@@ -1,6 +1,7 @@
 package plus
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/localprogress"
@@ -22,9 +23,11 @@ func markTypedAllocationUnknown(view *ItemTrackingState) {
 	view.AddFIRAllowed, view.AddRegularAllowed, view.RemoveFIRAllowed, view.RemoveRegularAllowed = false, false, false, false
 	for i := range view.Requirements {
 		view.Requirements[i].AvailableQuantity, view.Requirements[i].AllocationUnknown = 0, true
+		view.Requirements[i].FIRQuantity = 0
 	}
 	for i := range view.AnyGroups {
 		view.AnyGroups[i].AvailableQuantity, view.AnyGroups[i].AllocationUnknown = 0, true
+		view.AnyGroups[i].OtherStock = nil
 		for j := range view.AnyGroups[i].Sources {
 			source := &view.AnyGroups[i].Sources[j]
 			source.AvailableQuantity = 0
@@ -64,12 +67,16 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 	}
 	for i := range view.Requirements {
 		requirement := &view.Requirements[i]
+		requirement.FIRQuantity = 0
 		requirement.AvailableQuantity = summary.FixedStock.Regular
 		if requirement.Kind == "fir" {
 			requirement.AvailableQuantity = summary.FixedStock.FIR
 		}
 		requirement.AvailableQuantity = min(requirement.RequiredQuantity, requirement.AvailableQuantity)
 		requirement.AllocationUnknown = !typed.Known
+		if requirement.Kind == "regular" && typed.Known {
+			requirement.FIRQuantity = min(requirement.AvailableQuantity, summary.RegularFIRQuantity)
+		}
 	}
 	aliases := map[string]string{}
 	for _, quest := range snapshot.MarketQuests {
@@ -89,6 +96,7 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 		group := &view.AnyGroups[i]
 		required := group.RequiredQuantity
 		group.AvailableQuantity, group.RequiredQuantity, group.AllocationUnknown = 0, 0, !typed.Known
+		group.OtherStock = nil
 		for j := range group.Sources {
 			source := &group.Sources[j]
 			for k := range source.Items {
@@ -100,6 +108,7 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 				source.AvailableQuantity = 0
 			} else {
 				source.AvailableQuantity, source.RequiredQuantity = allocated.AvailableQuantity, allocated.RequiredQuantity
+				group.OtherStock = append(group.OtherStock, allocated.OtherStock...)
 				applyTypedGroupContributions(source.Items, allocated, snapshot)
 			}
 			group.AvailableQuantity += source.AvailableQuantity
@@ -109,11 +118,44 @@ func applyTypedTrackingResult(view *ItemTrackingState, row localprogress.Item, s
 			group.RequiredQuantity = required
 			if allocated, exists := summary.Groups[groupKey(group.GroupID)]; exists {
 				group.AvailableQuantity, group.RequiredQuantity = allocated.AvailableQuantity, allocated.RequiredQuantity
+				group.OtherStock = append(group.OtherStock, allocated.OtherStock...)
 			} else {
 				group.AllocationUnknown = true
 			}
 		}
+		if group.AllocationUnknown {
+			group.OtherStock = nil
+		} else {
+			group.OtherStock = mergedTrackingOtherStock(group.OtherStock)
+		}
 	}
+}
+
+func mergedTrackingOtherStock(items []nextitem.StockContribution) []nextitem.StockContribution {
+	type identity struct{ id, name, icon string }
+	quantities := make(map[identity]nextitem.StockContribution)
+	for _, item := range items {
+		key := identity{item.ItemID, item.Name, item.Icon}
+		entry := quantities[key]
+		entry.ItemID, entry.Name, entry.Icon = item.ItemID, item.Name, item.Icon
+		entry.FIRQuantity += item.FIRQuantity
+		entry.RegularQuantity += item.RegularQuantity
+		quantities[key] = entry
+	}
+	var out []nextitem.StockContribution
+	for _, entry := range quantities {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].ItemID != out[j].ItemID {
+			return out[i].ItemID < out[j].ItemID
+		}
+		return out[i].Icon < out[j].Icon
+	})
+	return out
 }
 
 func applyTypedGroupContributions(items []ItemTrackingAnyItem, group nextitem.TypedGroupStock, snapshot localprogress.Snapshot) {

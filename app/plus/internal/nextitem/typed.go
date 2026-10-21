@@ -15,15 +15,15 @@ type TypedGroupStock struct {
 	AllocatedQuantity int64
 	Contributions     map[string]int64
 	RowContributions  map[int]int64
+	OtherStock        []StockContribution
 }
 
-// TypedStockSummary a készlet minőségi kategóriáinak külön megjelenítési
-// kiosztása. A FiR igények előbb kapnak FiR készletet; a Regular kategóriák
-// nonFiR készlet után csak a fennmaradó FiR darabokat használhatják.
-// Nem módosítja a célprioritás szerinti előrejelzést vagy a gombok állapotát.
+// TypedStockSummary a Stock kategóriasorainak külön, FiR-t védő globális
+// megjelenítési kiosztása. Nem írja át a célprioritás szerinti alapnézetet.
 type TypedStockSummary struct {
-	FixedStock localprogress.RequirementStock
-	Groups     map[string]TypedGroupStock
+	FixedStock         localprogress.RequirementStock
+	Groups             map[string]TypedGroupStock
+	RegularFIRQuantity int64
 }
 
 // TypedView csak helyi számítás: a készletet és a Market adatait nem írja.
@@ -53,7 +53,7 @@ func CalculateTyped(snapshot localprogress.Snapshot, itemID string, allowFIRForR
 }
 
 // CalculateTypedForDisplay minden cél részarányát külön számolja a teljes
-// ismert minőségű készletből, és a Stock külön kategóriaösszesítését is adja.
+// ismert minőségű készletből, és a Stock FiR-t védő kiosztását is részletezi.
 // A célonkénti megjelenítés nem írja felül az Add jogosultságot meghatározó
 // kizáró, prioritás szerinti kiosztást. A csak jogosultságot kérő útvonalaknak
 // nincs szükségük ezekre a további megjelenítési kiosztásokra.
@@ -124,14 +124,14 @@ func calculateTypedRow(snapshot localprogress.Snapshot, target int, allowFIRForR
 	graph.counters = nil
 	fixed := currentFixedStock(before, target)
 	view := TypedView{Known: true, FixedStock: *fixed, RequiredQuantity: typedRequiredQuantity(before, target),
-		Groups: typedGroupStocks(before, snapshot.Items, target),
+		Groups: typedGroupStocks(allocated, snapshot.Items, target),
 		Forecast: Forecast{Status: "estimated", Reason: "Allocated from locally recorded Found in Raid and Regular inventory.",
 			Targets: displayTargets(snapshot, graph, before, target, true), FixedStock: fixed}}
 	if withStockSummary {
 		view.Forecast.Targets = typedIndependentTargets(snapshot, graph, typedGoals, stock, target)
-		summary := collapseTypedGoals(typedSummaryGoals(allocated, stock))
-		view.StockSummary = &TypedStockSummary{FixedStock: *currentFixedStock(summary, target),
-			Groups: typedGroupStocks(summary, snapshot.Items, target)}
+		summary := typedStockSummaryGoals(allocated, stock)
+		view.StockSummary = &TypedStockSummary{FixedStock: *currentFixedStock(collapseTypedGoals(summary), target),
+			Groups: typedGroupStocks(summary, snapshot.Items, target), RegularFIRQuantity: typedRegularFIRQuantity(summary, target)}
 	}
 	if matches != 1 || snapshot.Items[target].AvailableQuantity == localprogress.MaxQuantity {
 		return view
@@ -161,6 +161,7 @@ func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGrap
 	}
 	type quality struct{ fir, regular int64 }
 	qualities := make(map[string]quality)
+	otherStock := make(map[string][]StockContribution)
 	var independent []goal
 	for _, g := range goals {
 		accepts := false
@@ -183,6 +184,7 @@ func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGrap
 			allocations = engineRegularPreferredFlow(covered, stock)
 		}
 		var quantities quality
+		otherAllocations := make(map[int]int64)
 		for i := range allocated.needs {
 			n := &allocated.needs[i]
 			n.allocations, n.have = allocations[i], engineAllocationTotal(allocations[i])
@@ -190,6 +192,7 @@ func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGrap
 				continue
 			}
 			for bucket, amount := range n.allocations {
+				otherAllocations[bucket] += amount
 				if bucket%2 == 1 {
 					quantities.fir += amount
 				} else {
@@ -198,6 +201,7 @@ func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGrap
 			}
 		}
 		qualities[g.key] = quantities
+		otherStock[g.key] = typedOtherStock(otherAllocations, snapshot.Items, target)
 		independent = append(independent, allocated)
 	}
 	targets := displayTargets(snapshot, graph, collapseTypedGoals(independent), target, true)
@@ -206,40 +210,12 @@ func typedIndependentTargets(snapshot localprogress.Snapshot, graph forecastGrap
 		quantities, active := qualities[current.GoalKey]
 		// Az explicit completed x/x részarány korábbi átadásból származik;
 		// ennek minőségét az aktuális készletből nem lehet rekonstruálni.
-		if active && !current.AllocationUnknown && quantities.fir+quantities.regular == current.AvailableQuantity {
+		if active && !current.Completed && !current.AllocationUnknown && quantities.fir+quantities.regular == current.AvailableQuantity {
 			current.FIRQuantity, current.RegularQuantity, current.QualityKnown = quantities.fir, quantities.regular, true
+			current.OtherStock = otherStock[current.GoalKey]
 		}
 	}
 	return targets
-}
-
-// typedSummaryGoals ugyanazt a teljes készletet egyszer osztja ki a Stock
-// kategóriáihoz. A célok már kiszámított sorrendje kategórián belül stabil;
-// előbb a fix és Shared FiR, majd a fix és Shared Regular igények következnek.
-// A flow egy darabot csak egyszer használhat fel, alternatív tárgyak között is.
-func typedSummaryGoals(goals []goal, stock []int64) []goal {
-	out := engineCloneGoals(goals)
-	type position struct{ goal, need int }
-	var positions []position
-	var ordered []need
-	for _, fir := range []bool{true, false} {
-		for _, shared := range []bool{false, true} {
-			for i, g := range out {
-				for j, n := range g.needs {
-					if n.fir == fir && n.shared == shared {
-						positions = append(positions, position{i, j})
-						ordered = append(ordered, n)
-					}
-				}
-			}
-		}
-	}
-	allocations := engineAllocateNeeds(ordered, stock)
-	for i, p := range positions {
-		n := &out[p.goal].needs[p.need]
-		n.allocations, n.have = allocations[i], engineAllocationTotal(allocations[i])
-	}
-	return out
 }
 
 func typedGoalInputs(goals []goal, allowFIRForRegular bool) []goal {
@@ -331,21 +307,23 @@ func typedGroupStocks(goals []goal, items []localprogress.Item, target int) map[
 			if !n.shared {
 				continue
 			}
-			for _, row := range n.rows {
-				if row == target {
+			for _, bucket := range n.rows {
+				if bucket/2 == target {
 					contributions := make(map[string]int64, len(n.allocations))
 					rowContributions := make(map[int]int64, len(n.rows))
-					for _, index := range n.rows {
-						rowContributions[index] = n.allocations[index]
+					for _, member := range n.rows {
+						rowContributions[member/2] += n.allocations[member]
 					}
-					for index, quantity := range n.allocations {
+					for member, quantity := range n.allocations {
+						index := member / 2
 						if index >= 0 && index < len(items) && quantity > 0 {
 							contributions[items[index].ItemID] += quantity
 						}
 					}
 					key := g.key + ":" + strings.TrimPrefix(n.key, g.key+":group:")
 					groups[key] = TypedGroupStock{FIR: n.fir, AvailableQuantity: n.have,
-						RequiredQuantity: n.amount, AllocatedQuantity: n.allocations[target], Contributions: contributions, RowContributions: rowContributions}
+						RequiredQuantity: n.amount, AllocatedQuantity: rowContributions[target], Contributions: contributions, RowContributions: rowContributions,
+						OtherStock: typedOtherStock(n.allocations, items, target)}
 					break
 				}
 			}

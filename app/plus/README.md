@@ -37,11 +37,14 @@ neither frontend imports them.
 
 Paths beginning with `app/` in this document are relative to the repository root.
 Build and test commands are described in [app/README.md](../README.md).
+For installation, Settings, scanning and everyday inventory use, see the detailed
+[user guide](../../README.md#how-it-works). The in-app How it works? is the short
+control reference; the sections below describe the implementation and its limits.
 
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.4.1`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.4.2`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -52,7 +55,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.4.1`.
+version is `1.4.2`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -143,6 +146,8 @@ keyboard behavior in the game requires a live trial.
 
 ## Market progress
 
+### Load and refresh progress
+
 Items Tracker uses the selected character's Tarkov Market requirements,
 completion and total inventory, together with locally recorded item quality.
 The tracked-items, quests and hideout reads must have
@@ -157,6 +162,8 @@ usual quantity and quality limits. Accepted changes stay in the pending queue;
 the worker verifies fresh Market progress and the revision before saving.
 A failed refresh retains the last known values with an error; switching
 items or profiles cannot reuse another target's displayed inventory.
+
+### Local quality and the inventory editor
 
 Tarkov Market remains authoritative for each item's total stock. The local save
 distinguishes Found in Raid, Regular and Uncategorized quantities within that
@@ -186,6 +193,8 @@ reload. Classification inputs wait during API loading, but eligible stock button
 and shortcuts remain available as described above. A closed editor checks its
 freshness when reopened; stale callbacks cannot populate another profile's list.
 
+### Classification backups
+
 Refresh inventory occupies a full button row, followed by Import and Export in
 two columns. `ExportTrackerQuality()` opens the native JSON save dialog and
 writes only the selected character and game mode's classifications, item/variant
@@ -202,6 +211,8 @@ Import and Export wait for a fully loaded selected profile and pending stock
 saves to finish. A successful import refreshes the local projection and editor
 while preserving the search filter. File validation errors stay in the inventory
 panel; canceling a file dialog does not report an error or change classifications.
+
+### External stock changes and completion
 
 When a fresh Market response reports less stock after an external change, the
 app preserves only the minimum quantity of each quality that is still certain.
@@ -239,6 +250,12 @@ Their late acknowledgements cannot restore the previous classification, and
 their pending projection remains nonnegative and Uncategorized. New typed
 additions prepared after the reset may classify their newly added piece. The
 stock queue itself is not restored or replayed after restart.
+
+The local completion reset does not send a stock update. An API stock change,
+removal of an active requirement and a completed goal's retained ratio are
+separate facts; the completion display alone does not establish consumption.
+
+### Stock actions and pending saves
 
 Each Add action accepts only an eligible active Market requirement that an
 additional item of its quality can cover. Each Remove action accepts a unique,
@@ -296,12 +313,18 @@ Stock displays the item's available quantity as a complete ratio, such as 2/2
 or 0/0, while Shared can remain 8/8. This display convention changes neither Market
 stock nor Add eligibility.
 
-The compact Next Item section lists every requirement for the current item,
+### Goal details and completion display
+
+The compact Next Items section lists every requirement for the current item,
 including completed goals, under separate quest and hideout headings, in that
-order. Its header has no category on the right. One quest uses Quest; multiple
-quests use Quests. One hideout entry uses Hideout Module; multiple entries use
-Hideout Modules. Each name is on the left and its current available/required
-ratio is in parentheses at the right edge. These are current item-specific
+order. Its header has no category on the right. The group headings are Quests
+and Hideout. Section labels and quality breakdowns are small gray text, goal
+names and the main Stock ratio are white, and requirement/goal ratios are brown.
+Each name is on the left and its
+current available/required ratio is at the right edge without parentheses.
+Known quality shows only positive components: `FiR ×2`, `NonFiR ×1` or
+`FiR ×1 · NonFiR ×1`. Both zero quantities omit the entire label for quests
+and hideout goals. These are current item-specific
 ratios, not virtual +1 values or the whole goal's item total. Shared ratios can
 include other eligible items. Completed goals retain their complete `x/x` ratios
 instead of an aggregate completed-items row under Stock. An unknown allocation
@@ -312,7 +335,7 @@ belongs only to completed sources, both Add actions are ineligible, the raw
 requirement is zero and no stock remains, the confirmed display becomes
 Completed Item. Stock, the divider, the four stock buttons and the requirement
 summary rows are hidden, while the quest/hideout list retains its complete
-`x/x` ratios. Filled active or mixed goals still use Next Item with their current
+`x/x` ratios. Filled active or mixed goals still use Next Items with their current
 Stock. Remaining classified stock can still be removed when no active goal
 requires it. A refresh retains the complete last display state until the new
 data is confirmed.
@@ -344,6 +367,8 @@ calculation with no target details also clears it. Completed targets remain visi
 is unavailable. New quest, hideout and inventory responses automatically update
 the section.
 
+### Stock categories and independent goal coverage
+
 `internal/nextitem.CalculateTyped` and `CalculateTypedRow` use the complete
 confirmed requirement graph and locally classified stock, including canonical
 quest IDs, their aliases and module upgrade keys. Newly returned goals need no
@@ -356,13 +381,20 @@ a FiR-only need accepts only FiR. Uncategorized pieces satisfy neither quality.
 Within one goal a physical piece is credited only once across overlapping fixed
 and Shared needs. Different goals can each show that same eligible piece.
 
-The Stock summary uses a separate quality projection. It reserves classified FiR
-pieces for FiR-only fixed and Shared requirements first, then uses Regular pieces
-and eligible FiR surplus for Regular fixed and Shared requirements. This summary
-also counts a physical piece only once. Its category ratios can differ from the
-independent goal ratios without changing inventory, collection targets or Add
-eligibility. `CalculateTypedForDisplay` and `CalculateTypedRowForDisplay` add this
-summary and independent goal projection alongside the unchanged global priority
+The Stock summary first allocates FiR pieces to fixed Found in Raid and Shared
+(FiR) requirements in goal-priority order. Its Regular and Shared requirements
+then use the remaining inventory, with non-FiR pieces before eligible FiR pieces.
+Its fixed and Shared categories count each physical piece only once. The
+collection target and Add eligibility keep their existing global goal-priority
+allocation. Independent goal ratios can still differ because each quest or
+hideout goal evaluates the full classified inventory separately.
+Within the FiR pass, fixed and Shared needs keep the existing full-goal order;
+there is no automatic fixed-before-Shared preference or reordering by only a
+goal's FiR subtotal. The summary uses one pool across all physical rows and
+counts each piece once. `typed_stock_summary.go` provides this display-only
+projection without modifying the baseline, collection quantity or Add gates.
+`CalculateTypedForDisplay` and `CalculateTypedRowForDisplay` add the independent
+goal projection and actual contribution details alongside the global priority
 calculation; eligibility-only paths do not need these display projections.
 
 For example, with one Regular vodka, Booze shows `0/10` and A Bitter Victory
@@ -372,26 +404,56 @@ coverage of both goals. Leaving it Uncategorized gives both goals zero allocated
 pieces.
 The API still supplies required quantities and completion; the app supplies
 quality-aware allocation from the local split. With one FiR and one Regular
-ComTac, the Stock summary shows Regular `1/2` and Shared (FiR) `1/15`. Next Item
-shows Hot Delivery at `2/2` with `(FiR: 1, NonFiR: 1)` and Scavenger at `1/15`
-with `(FiR: 1, NonFiR: 0)`, while Stock remains `2/17`. These goals independently
+ComTac, Next Items shows Hot Delivery at `2/2` with `FiR ×1 · NonFiR ×1` and
+Scavenger at `1/15` with `FiR ×1`, while Stock remains `2/17`.
+The Stock category rows use the separate FiR-reserving allocation. If the fixed
+Regular row receives remaining FiR pieces, its positive `firQuantity` appears as
+a small gray `FiR ×1` label beside Regular. Zero or unknown contributions have no
+label. This summary does not change any Next Items ratio or quality breakdown.
+These goals independently
 describe the same inventory's coverage, so their numerators are not a combined
 stock total. Adding a second Regular piece changes Hot Delivery's breakdown to
-`(FiR: 0, NonFiR: 2)` while Scavenger retains its FiR piece. A known current
+`NonFiR ×2` while Scavenger retains its FiR piece. A known current
 breakdown sums to that goal's displayed numerator; historical completed sources
 and unknown allocations have no inferred quality breakdown.
+
+With one FiR Pile of meds and requirements of 20 FiR plus one Regular piece,
+Stock is `1/21`, Found in Raid is `1/20` and Regular is `0/1`. The independent
+Regular goal can still show `1/1` with `FiR ×1`. With 21 FiR pieces and no non-FiR
+pieces, the summary can cover `20/20` plus Regular `1/1`, marked `FiR ×1`.
+If a Regular piece is also available, it supplies that Regular requirement and
+the extra FiR piece remains unused. This label reports an actual allocation,
+not the selected item's entire FiR inventory; zero and unknown values are omitted.
 
 Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
 `groups` and `questGroup` sources to identify requirements and eligible items.
 The displayed Shared and Shared (FiR) numerators come from locally classified
 inventory across those eligible items, rather than the API group's untyped stock
 counter. Other eligible items and their pending typed changes participate in the
-summary's quality projection and in each independent goal calculation.
+summary's global allocation and in each independent goal calculation.
 Groups are summarized in one Shared (FiR) row and one Shared row
 while preserving their individual identities and eligible items. Covered groups
 stay visible until their goals are completed. Missing or inconsistent allocation
 metadata displays an unknown numerator instead of reusing an API counter as
 local quality progress.
+
+### Other Stock Details
+
+`Other Stock Details` appears only when a displayed Shared group, quest or
+hideout requirement actually receives a positive allocation from another item.
+The contributor DTO carries its item ID, name, icon and separate FiR/Regular
+quantities. Shared details use the global Stock allocation; goal details use
+that goal's independent allocation and include only needs accepting the selected
+physical row. The selected item ID, including its same-ID variants, is excluded.
+Unused alternatives, Uncategorized stock, unrelated needs in the same goal and
+historical completed quantities do not become contributors. The frontend applies
+the same own-item and positive-quantity filter, hides empty disclosures and shows
+the icon plus `Item name · FiR ×1` or `Item name · NonFiR ×1` in small gray text.
+A small brown copy button immediately after each contributor name uses the
+existing native clipboard path and copies only that item name, without its
+quality or quantity. Both quality rows retain their own copy control.
+Contributor data participates in the same-context cache signature, and disclosure
+state survives ordinary refreshes without crossing item or profile boundaries.
 
 `internal/nextitem.Calculate` remains the legacy untyped estimator for snapshots
 without local quality metadata. It can compare modeled allocation with explicit
@@ -412,7 +474,9 @@ complete goals, consume additional inventory or change stock by itself.
 The concise How it works? section describes the visible controls and local
 classification. The allocation engine and DTO fields are implementation details,
 not additional in-game item statuses or stock operations. The former estimated
-category is no longer displayed next to Next Item or Completed Item.
+category is no longer displayed next to Next Items or Completed Item.
+
+### Persistence and unsupported inventory
 
 The encrypted API key, scanner settings, item-price catalog cache and local item
 quality are stored separately. Quest/hideout snapshots remain in memory; total

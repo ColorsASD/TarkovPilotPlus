@@ -36,16 +36,27 @@ type Change struct {
 // készlet más jelöltek darabjait is tartalmazza; nem a virtuális +1 eredménye.
 // A teljesített forrás a saját eredeti igényével, x/x arányként marad látható.
 type Target struct {
-	GoalKey           string `json:"goalKey"`
-	GoalName          string `json:"goalName"`
-	Kind              string `json:"kind"`
-	AvailableQuantity int64  `json:"availableQuantity"`
-	RequiredQuantity  int64  `json:"requiredQuantity"`
-	AllocationUnknown bool   `json:"allocationUnknown,omitempty"`
-	Completed         bool   `json:"completed,omitempty"`
-	FIRQuantity       int64  `json:"firQuantity,omitempty"`
-	RegularQuantity   int64  `json:"regularQuantity,omitempty"`
-	QualityKnown      bool   `json:"qualityKnown,omitempty"`
+	GoalKey           string              `json:"goalKey"`
+	GoalName          string              `json:"goalName"`
+	Kind              string              `json:"kind"`
+	AvailableQuantity int64               `json:"availableQuantity"`
+	RequiredQuantity  int64               `json:"requiredQuantity"`
+	AllocationUnknown bool                `json:"allocationUnknown,omitempty"`
+	Completed         bool                `json:"completed,omitempty"`
+	FIRQuantity       int64               `json:"firQuantity,omitempty"`
+	RegularQuantity   int64               `json:"regularQuantity,omitempty"`
+	QualityKnown      bool                `json:"qualityKnown,omitempty"`
+	OtherStock        []StockContribution `json:"otherStock,omitempty"`
+}
+
+// StockContribution kizárólag a megjelenített igényhez kiosztott másik tárgy
+// aktuális, ismert minőségű darabjait tartalmazza; nem a jelölt teljes készlete.
+type StockContribution struct {
+	ItemID          string `json:"itemId"`
+	Name            string `json:"name"`
+	Icon            string `json:"icon,omitempty"`
+	FIRQuantity     int64  `json:"firQuantity"`
+	RegularQuantity int64  `json:"regularQuantity"`
 }
 
 type groupCounter struct {

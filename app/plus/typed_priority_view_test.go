@@ -52,7 +52,7 @@ func TestTypedUncategorizedComTacCountsOnlyTowardStockUntilLocallyClassified(t *
 	}
 }
 
-func TestTypedComTacStockQualitySummaryAndNextItemGoalAllocationAreSeparate(t *testing.T) {
+func TestTypedComTacStockProtectsFIRAndNextItemUsesIndependentGoals(t *testing.T) {
 	view := typedComTacTrackingViewForTest(t)
 	if view.AvailableQuantity != 2 || view.FIRQuantity != 1 || view.RegularQuantity != 1 || len(view.Requirements) != 1 ||
 		view.Requirements[0].Kind != "regular" || view.Requirements[0].AvailableQuantity != 1 || view.Requirements[0].RequiredQuantity != 2 ||

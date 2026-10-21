@@ -264,7 +264,7 @@ func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
 
 // engineRegularPreferredFlow már rögzített need-lefedésekhez keres kiosztást.
 // Előbb a teljes nonFiR készletet használja, majd csak a szükséges FiR darabokat.
-// Kizárólag a típusos, célonkénti megjelenítés hívja; a prioritási engine nem.
+// A típusos célonkénti és Stock-összesítő megjelenítés hívja; a prioritási engine nem.
 func engineRegularPreferredFlow(needs []need, stock []int64) []map[int]int64 {
 	return engineFlow(needs, stock, true)
 }

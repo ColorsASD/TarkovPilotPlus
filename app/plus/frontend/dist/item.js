@@ -237,7 +237,9 @@
     };
     const trackingCards = new Map();
     const trackingDisplayBaselines = new WeakMap();
+    const trackingRequirementSignatures = new WeakMap();
     const nextItemTargetSignatures = new WeakMap();
+    const otherStockDetailStates = new WeakMap();
     let nextItemCacheKey = '';
     let nextItemCache = null;
     const nextItemContextKey = () => {
@@ -253,6 +255,91 @@
         }
         return key;
     };
+    const mergeOtherStock = (items) => {
+        const merged = new Map();
+        items.forEach((item) => {
+            const identity = JSON.stringify([item.itemId, item.name, item.icon]);
+            const previous = merged.get(identity);
+            if (!previous) {
+                merged.set(identity, {...item});
+                return;
+            }
+            const firQuantity = previous.firQuantity + item.firQuantity;
+            const regularQuantity = previous.regularQuantity + item.regularQuantity;
+            if (!Number.isSafeInteger(firQuantity) || !Number.isSafeInteger(regularQuantity)) {
+                previous.invalid = true;
+                return;
+            }
+            previous.firQuantity = firQuantity;
+            previous.regularQuantity = regularQuantity;
+            if (!previous.icon) previous.icon = item.icon;
+        });
+        return [...merged.values()].filter((item) => !item.invalid);
+    };
+    const parsedOtherStock = (items, selectedItemId) => {
+        const ownIds = new Set([safeText(selectedItemId).trim(), safeText(state.item && state.item.bsgId).trim()].filter(Boolean));
+        // Csak a backend tényleges kiosztását fogadjuk el; a jelöltlista nem készlet.
+        if (!ownIds.size || !Array.isArray(items)) return [];
+        return mergeOtherStock(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map((item) => ({
+            itemId: safeText(item.itemId).trim(), name: safeText(item.name).trim() || safeText(item.itemId).trim(),
+            icon: safeImageURL(item.icon), firQuantity: item.firQuantity === undefined ? 0 : item.firQuantity,
+            regularQuantity: item.regularQuantity === undefined ? 0 : item.regularQuantity,
+        })).filter((item) => item.itemId && !ownIds.has(item.itemId) &&
+            [item.firQuantity, item.regularQuantity].every((quantity) => Number.isSafeInteger(quantity) && quantity >= 0) &&
+            (item.firQuantity > 0 || item.regularQuantity > 0)));
+    };
+    const rememberOtherStockDetails = (panel) => {
+        let openStates = otherStockDetailStates.get(panel);
+        if (!openStates) {
+            openStates = new Map();
+            otherStockDetailStates.set(panel, openStates);
+        }
+        panel.querySelectorAll('details[data-stock-detail]').forEach((details) => openStates.set(details.dataset.stockDetail, details.open));
+        return openStates;
+    };
+    const otherStockDetails = (panel, key, items) => {
+        if (!items.length) return null;
+        const openStates = otherStockDetailStates.get(panel) || rememberOtherStockDetails(panel);
+        const details = document.createElement('details');
+        details.className = 'tracked-other-stock-details';
+        details.dataset.stockDetail = key;
+        details.open = openStates.get(key) === true;
+        details.addEventListener('toggle', () => {
+            if (details.isConnected) openStates.set(key, details.open);
+        });
+        const summary = document.createElement('summary');
+        summary.textContent = 'Other Stock Details';
+        details.append(summary);
+        items.forEach((item) => {
+            [['fir', 'FiR', item.firQuantity], ['regular', 'NonFiR', item.regularQuantity]].forEach(([quality, label, quantity]) => {
+                if (quantity <= 0) return;
+                const row = document.createElement('div');
+                row.className = 'tracked-other-stock-item';
+                row.dataset.itemId = item.itemId;
+                row.dataset.quality = quality;
+                const icon = document.createElement('span');
+                icon.className = 'tracked-other-stock-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                if (item.icon) {
+                    const image = document.createElement('img');
+                    image.alt = '';
+                    image.loading = 'lazy';
+                    image.referrerPolicy = 'no-referrer';
+                    image.addEventListener('error', () => image.remove());
+                    image.src = item.icon;
+                    icon.append(image);
+                }
+                const text = document.createElement('span');
+                text.className = 'tracked-other-stock-text';
+                text.textContent = item.name;
+                text.append(document.createTextNode(' '), copyNameButton(item.name, 'item'),
+                    document.createTextNode(' · ' + label + ' ×' + quantityText(quantity)));
+                row.append(icon, text);
+                details.append(row);
+            });
+        });
+        return details;
+    };
     const parsedTargetQuality = (target) => {
         const firQuantity = target.firQuantity === undefined ? 0 : target.firQuantity;
         const regularQuantity = target.regularQuantity === undefined ? 0 : target.regularQuantity;
@@ -267,11 +354,16 @@
             const targets = Array.isArray(forecast.targets) ? forecast.targets.filter((target) =>
                 target && typeof target === 'object' && !Array.isArray(target) &&
                 (target.kind === 'quest' || target.kind === 'module') && Number.isSafeInteger(target.requiredQuantity) && target.requiredQuantity >= 0 &&
-                (target.allocationUnknown === true || Number.isSafeInteger(target.availableQuantity) && target.availableQuantity >= 0)).map((target) => ({
-                    kind: target.kind, name: safeText(target.goalName).trim() || (target.kind === 'quest' ? 'Unnamed quest' : 'Unnamed hideout upgrade'),
-                    availableQuantity: target.availableQuantity, requiredQuantity: target.requiredQuantity, allocationUnknown: target.allocationUnknown === true,
-                    completed: target.completed === true, ...parsedTargetQuality(target),
-                })).sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'quest' ? -1 : 1) : [];
+                (target.allocationUnknown === true || Number.isSafeInteger(target.availableQuantity) && target.availableQuantity >= 0)).map((target) => {
+                    const quality = parsedTargetQuality(target);
+                    return {
+                        key: safeText(target.goalKey).trim() || target.kind + ':' + safeText(target.goalName).trim(),
+                        kind: target.kind, name: safeText(target.goalName).trim() || (target.kind === 'quest' ? 'Unnamed quest' : 'Unnamed hideout upgrade'),
+                        availableQuantity: target.availableQuantity, requiredQuantity: target.requiredQuantity, allocationUnknown: target.allocationUnknown === true,
+                        completed: target.completed === true, ...quality,
+                        otherStock: target.completed !== true && quality.qualityKnown ? parsedOtherStock(target.otherStock, tracking.itemId) : [],
+                    };
+                }).sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'quest' ? -1 : 1) : [];
             if (targets.length) {
                 const completedState = !transient && tracking.addFIRAllowed === false && tracking.addRegularAllowed === false &&
                     tracking.requiredQuantity === 0 && tracking.availableQuantity === 0 && targets.every((target) => target.completed);
@@ -307,7 +399,7 @@
     };
     const renderNextItem = (panel, forecast) => {
         const nextItem = panel.querySelector('[data-tracked="next-item"]');
-        const label = forecast && forecast.completedState ? 'Completed Item' : 'Next Item';
+        const label = forecast && forecast.completedState ? 'Completed Item' : 'Next Items';
         panel.querySelector('[data-tracked="next-item-label"]').textContent = label;
         panel.querySelector('.tracked-stock-list').classList.toggle('hidden', !!(forecast && forecast.completedState));
         stockActions.forEach((action) => panel.querySelector('[data-tracked="' + action.id + '"]').classList.toggle('hidden', !!(forecast && forecast.completedState)));
@@ -319,6 +411,7 @@
         }
         const targetSignature = JSON.stringify(forecast ? forecast.targets : []);
         if (nextItemTargetSignatures.get(panel) !== targetSignature) {
+            rememberOtherStockDetails(panel);
             nextItemTargetSignatures.set(panel, targetSignature);
             panel.querySelector('[data-tracked="next-item-targets"]').replaceChildren(...(forecast ? ['quest', 'module'].flatMap((kind) => {
                 const targets = forecast.targets.filter((target) => target.kind === kind);
@@ -327,21 +420,28 @@
                 group.className = 'tracked-next-item-target-group';
                 const heading = document.createElement('h3');
                 heading.className = 'tracked-next-item-target-heading';
-                heading.textContent = kind === 'quest'
-                    ? targets.length === 1 ? 'Quest' : 'Quests'
-                    : targets.length === 1 ? 'Hideout Module' : 'Hideout Modules';
+                heading.textContent = kind === 'quest' ? 'Quests' : 'Hideout';
                 group.append(heading, ...targets.map((target) => {
                     const row = document.createElement('div');
                     row.className = 'tracked-next-item-target';
                     row.dataset.kind = target.kind;
+                    const main = document.createElement('div');
+                    main.className = 'tracked-next-item-target-row';
+                    const label = document.createElement('span');
+                    label.className = 'tracked-next-item-target-label';
                     const name = document.createElement('span');
                     name.className = 'tracked-next-item-target-name';
                     name.textContent = target.name;
-                    if (target.qualityKnown) {
+                    label.append(name);
+                    const qualityParts = target.qualityKnown ? [
+                        target.firQuantity > 0 ? 'FiR ×' + quantityText(target.firQuantity) : '',
+                        target.regularQuantity > 0 ? 'NonFiR ×' + quantityText(target.regularQuantity) : '',
+                    ].filter(Boolean) : [];
+                    if (qualityParts.length) {
                         const quality = document.createElement('span');
                         quality.className = 'tracked-next-item-target-quality';
-                        quality.textContent = ' (FiR: ' + quantityText(target.firQuantity) + ', NonFiR: ' + quantityText(target.regularQuantity) + ')';
-                        name.append(quality);
+                        quality.textContent = qualityParts.join(' · ');
+                        label.append(quality);
                     }
                     name.append(document.createTextNode(' '), copyNameButton(target.name, target.kind));
                     if (target.completed) {
@@ -354,8 +454,11 @@
                     }
                     const ratio = document.createElement('span');
                     ratio.className = 'tracked-next-item-target-ratio';
-                    ratio.textContent = '(' + (target.allocationUnknown ? '—' : quantityText(target.availableQuantity)) + '/' + quantityText(target.requiredQuantity) + ')';
-                    row.append(name, ratio);
+                    ratio.textContent = (target.allocationUnknown ? '—' : quantityText(target.availableQuantity)) + '/' + quantityText(target.requiredQuantity);
+                    main.append(label, ratio);
+                    row.append(main);
+                    const details = otherStockDetails(panel, 'goal:' + target.key, target.otherStock);
+                    if (details) row.append(details);
                     return row;
                 }));
                 return [group];
@@ -387,7 +490,7 @@
                 const fir = group.fir === true;
                 let total = totals.find((entry) => entry.fir === fir);
                 if (!total) {
-                    total = { fir, availableQuantity: 0, requiredQuantity: 0, allocationUnknown: false, sources: [] };
+                    total = { fir, availableQuantity: 0, requiredQuantity: 0, allocationUnknown: false, otherStock: [] };
                     totals.push(total);
                 }
                 const available = total.availableQuantity + group.availableQuantity;
@@ -395,14 +498,9 @@
                 total.availableQuantity = Number.isSafeInteger(available) ? available : NaN;
                 total.requiredQuantity = Number.isSafeInteger(required) ? required : NaN;
                 total.allocationUnknown = total.allocationUnknown || group.allocationUnknown === true;
-                const sources = Array.isArray(group.sources) ? group.sources.filter((source) =>
-                    source && typeof source === 'object' && !Array.isArray(source) &&
-                    Number.isSafeInteger(source.requiredQuantity) && source.requiredQuantity > 0 &&
-                    Number.isSafeInteger(source.availableQuantity) && source.availableQuantity >= 0 &&
-                    source.availableQuantity <= source.requiredQuantity) : [];
-                total.sources.push(...sources.length ? sources : [{
-                    availableQuantity: group.availableQuantity, requiredQuantity: group.requiredQuantity,
-                }]);
+                if (tracking.qualityKnown === true && group.allocationUnknown !== true) {
+                    total.otherStock.push(...parsedOtherStock(group.otherStock, tracking.itemId));
+                }
                 return totals;
             }, []).sort((a, b) =>
                 a.fir === true ? b.fir === true ? 0 : -1 : b.fir === true ? 1 : 0) : [];
@@ -423,29 +521,51 @@
         element('ratio').textContent = stockRatio;
         trackingDisplayBaselines.set(panel, {stockRatio, hasRequirements: !!visibleRequirements.length || !!anyGroups.length});
         element('ratio').setAttribute('aria-label', 'Available / required quantity');
-        element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
-            const row = document.createElement('div');
-            row.className = 'tracked-requirement-row';
-            row.dataset.kind = requirement.kind;
-            const label = document.createElement('dt');
-            label.textContent = requirement.kind === 'fir' ? 'Found in Raid' : 'Regular';
-            const quantity = document.createElement('dd');
-            quantity.textContent = (requirement.allocationUnknown === true ? '—' : quantityText(requirement.availableQuantity)) + '/' + quantityText(requirement.requiredQuantity);
-            row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
-            row.append(label, quantity);
-            return row;
-        }), ...anyGroups.map((group) => {
-            const row = document.createElement('div');
-            row.className = 'tracked-requirement-row';
-            row.dataset.kind = 'any';
-            const label = document.createElement('dt');
-            label.textContent = group.fir === true ? 'Shared (FiR)' : 'Shared';
-            const quantity = document.createElement('dd');
-            quantity.textContent = (group.allocationUnknown ? '—' : quantityText(group.availableQuantity)) + '/' + quantityText(group.requiredQuantity);
-            row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
-            row.append(label, quantity);
-            return row;
-        }));
+        anyGroups.forEach((group) => { group.otherStock = group.allocationUnknown ? [] : mergeOtherStock(group.otherStock); });
+        const requirementSignature = JSON.stringify([visibleRequirements, anyGroups]);
+        if (trackingRequirementSignatures.get(panel) !== requirementSignature) {
+            rememberOtherStockDetails(panel);
+            trackingRequirementSignatures.set(panel, requirementSignature);
+            element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
+                const row = document.createElement('div');
+                row.className = 'tracked-requirement-row';
+                row.dataset.kind = requirement.kind;
+                const label = document.createElement('dt');
+                label.textContent = requirement.kind === 'fir' ? 'Found in Raid' : 'Regular';
+                if (requirement.kind === 'regular' && tracking.qualityKnown === true && requirement.allocationUnknown !== true &&
+                    Number.isSafeInteger(requirement.firQuantity) && requirement.firQuantity > 0 &&
+                    Number.isSafeInteger(requirement.availableQuantity) && Number.isSafeInteger(requirement.requiredQuantity) &&
+                    requirement.firQuantity <= requirement.availableQuantity && requirement.availableQuantity <= requirement.requiredQuantity) {
+                    const quality = document.createElement('span');
+                    quality.className = 'tracked-requirement-fir-quality';
+                    quality.textContent = 'FiR ×' + quantityText(requirement.firQuantity);
+                    label.append(document.createTextNode(' '), quality);
+                }
+                const quantity = document.createElement('dd');
+                quantity.textContent = (requirement.allocationUnknown === true ? '—' : quantityText(requirement.availableQuantity)) + '/' + quantityText(requirement.requiredQuantity);
+                row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
+                row.append(label, quantity);
+                return row;
+            }), ...anyGroups.map((group) => {
+                const row = document.createElement('div');
+                row.className = 'tracked-requirement-row';
+                row.dataset.kind = 'any';
+                const label = document.createElement('dt');
+                label.textContent = group.fir === true ? 'Shared (FiR)' : 'Shared';
+                const quantity = document.createElement('dd');
+                quantity.textContent = (group.allocationUnknown ? '—' : quantityText(group.availableQuantity)) + '/' + quantityText(group.requiredQuantity);
+                row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
+                row.append(label, quantity);
+                const details = otherStockDetails(panel, 'stock:shared:' + (group.fir ? 'fir' : 'regular'), group.otherStock);
+                if (details) {
+                    const detailValue = document.createElement('dd');
+                    detailValue.className = 'tracked-requirement-details';
+                    detailValue.append(details);
+                    row.append(detailValue);
+                }
+                return row;
+            }));
+        }
         element('requirements').classList.toggle('hidden', !visibleRequirements.length && !anyGroups.length);
         stockActions.forEach((action) => {
             const button = element(action.id);

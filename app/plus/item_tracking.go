@@ -58,12 +58,13 @@ type ItemTrackingState struct {
 }
 
 type ItemTrackingAnyGroup struct {
-	GroupID           string                  `json:"groupId"`
-	AvailableQuantity int64                   `json:"availableQuantity"`
-	RequiredQuantity  int64                   `json:"requiredQuantity"`
-	FIR               bool                    `json:"fir"`
-	AllocationUnknown bool                    `json:"allocationUnknown,omitempty"`
-	Sources           []ItemTrackingAnySource `json:"sources,omitempty"`
+	GroupID           string                       `json:"groupId"`
+	AvailableQuantity int64                        `json:"availableQuantity"`
+	RequiredQuantity  int64                        `json:"requiredQuantity"`
+	FIR               bool                         `json:"fir"`
+	AllocationUnknown bool                         `json:"allocationUnknown,omitempty"`
+	Sources           []ItemTrackingAnySource      `json:"sources,omitempty"`
+	OtherStock        []nextitem.StockContribution `json:"otherStock,omitempty"`
 }
 
 type ItemTrackingAnySource struct {
@@ -87,6 +88,7 @@ type ItemTrackingRequirement struct {
 	RequiredQuantity  int64  `json:"requiredQuantity"`
 	Type              string `json:"type,omitempty"`
 	AllocationUnknown bool   `json:"allocationUnknown,omitempty"`
+	FIRQuantity       int64  `json:"firQuantity,omitempty"`
 }
 
 type ItemTrackingCompletedSource struct {
@@ -433,9 +435,13 @@ func cloneTrackingState(tracking *ItemTrackingState) *ItemTrackingState {
 		forecast.PossibleCategories = append([]string(nil), tracking.NextItem.PossibleCategories...)
 		forecast.Changes = append([]nextitem.Change(nil), tracking.NextItem.Changes...)
 		forecast.Targets = append([]nextitem.Target(nil), tracking.NextItem.Targets...)
+		for i := range forecast.Targets {
+			forecast.Targets[i].OtherStock = append([]nextitem.StockContribution(nil), tracking.NextItem.Targets[i].OtherStock...)
+		}
 		copy.NextItem = &forecast
 	}
 	for i := range copy.AnyGroups {
+		copy.AnyGroups[i].OtherStock = append([]nextitem.StockContribution(nil), tracking.AnyGroups[i].OtherStock...)
 		copy.AnyGroups[i].Sources = append([]ItemTrackingAnySource(nil), tracking.AnyGroups[i].Sources...)
 		for j := range copy.AnyGroups[i].Sources {
 			copy.AnyGroups[i].Sources[j].Items = append([]ItemTrackingAnyItem(nil), tracking.AnyGroups[i].Sources[j].Items...)

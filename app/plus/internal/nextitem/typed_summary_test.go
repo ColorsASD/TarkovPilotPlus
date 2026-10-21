@@ -9,7 +9,7 @@ import (
 	"github.com/ggdiam/TarkovPilot/app/plus/internal/market"
 )
 
-func TestTypedStockSummaryKeepsQualityCategoriesAndGoalForecastSeparate(t *testing.T) {
+func TestTypedStockSummaryProtectsFIRWithoutChangingIndependentTargetsOrGates(t *testing.T) {
 	for fir := int64(0); fir <= 18; fir++ {
 		for regular := int64(0); regular <= 3; regular++ {
 			snapshot := forecastSnapshot()
@@ -28,10 +28,13 @@ func TestTypedStockSummaryKeepsQualityCategoriesAndGoalForecastSeparate(t *testi
 				t.Fatalf("the display projection is missing or was needlessly built for the action gate: %+v", view)
 			}
 			summary := view.StockSummary
-			wantFIR, wantRegular := min(fir, 15), min(regular+max(0, fir-15), 2)
+			wantFIR := min(fir, 15)
+			wantRegular := min(regular+max(0, fir-15), 2)
+			wantRegularFIR := max(0, wantRegular-regular)
 			group := summary.Groups["quest:scavenger:headsets"]
 			if summary.FixedStock.FIR != 0 || summary.FixedStock.Regular != wantRegular || group.AvailableQuantity != wantFIR ||
 				group.AllocatedQuantity != wantFIR || group.RequiredQuantity != 15 || group.Contributions["comtac-ii"] != wantFIR ||
+				summary.RegularFIRQuantity != wantRegularFIR ||
 				wantFIR+wantRegular > fir+regular {
 				t.Fatalf("Stock category projection lost quality, surplus or reused stock: fir=%d regular=%d summary=%+v group=%+v", fir, regular, summary, group)
 			}
@@ -134,17 +137,19 @@ func TestTypedStockSummaryVariantRowsKeepTheirOwnSourcesAndQualities(t *testing.
 	}
 }
 
-func TestTypedStockSummaryRegularCategoryUsesOnlyPermittedFIRSurplus(t *testing.T) {
+func TestTypedStockSummaryRegularCategoryUsesOnlyFIRSurplusAndRespectsQualityPolicy(t *testing.T) {
 	snapshot := forecastSnapshot()
 	snapshot.MarketQuests = []market.Quest{{QuestID: "regular", Status: "available"}, {QuestID: "fir", Status: "locked"}}
 	snapshot.Items = []localprogress.Item{typedItem("selected", 3, 1, 0, fixedSource("regular", 3, false), fixedSource("fir", 2, true))}
 	for _, allowFIR := range []bool{false, true} {
 		view := CalculateTypedForDisplay(snapshot, "selected", allowFIR)
 		wantRegular := int64(1)
+		wantRegularFIR := int64(0)
 		if allowFIR {
-			wantRegular = 2
+			wantRegular, wantRegularFIR = 2, 1
 		}
-		if !view.Known || view.StockSummary == nil || view.StockSummary.FixedStock.FIR != 2 || view.StockSummary.FixedStock.Regular != wantRegular {
+		if !view.Known || view.StockSummary == nil || view.StockSummary.FixedStock.FIR != 2 || view.StockSummary.FixedStock.Regular != wantRegular ||
+			view.StockSummary.RegularFIRQuantity != wantRegularFIR {
 			t.Fatalf("Regular Stock category did not respect FiR reservation or the explicit quality policy: allowFIR=%v summary=%+v", allowFIR, view.StockSummary)
 		}
 	}

@@ -7,6 +7,8 @@ not connect to the app. Closing either application window closes both.
 
 The original project documentation is available in the
 [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/README.md).
+Installation, settings, everyday use and troubleshooting are covered in the
+[TarkovPilot+ user guide](../README.md#installation).
 
 ## Build
 
@@ -47,7 +49,7 @@ or Wails tools are optional and are not required for the standard commands above
 ## Release
 
 The original application version remains in `version.go` (`2.1.1`), while the
-independent Plus version is in `plus/version.go` (`1.4.1`). The build script can
+independent Plus version is in `plus/version.go` (`1.4.2`). The build script can
 increment only the Plus version; it leaves the original version unchanged. It
 builds the EXE and local OCR components and writes both versions to
 `versions.json`. The upstream repository, commit and version are recorded in
@@ -57,7 +59,7 @@ in [plus/README.md](plus/README.md).
 Every build creates `build/bin/TarkovPilotPlus-<version>-windows-x64/`, containing
 `TarkovPilotPlus.exe`, `versions.json` and the complete `ocr` directory. The build
 also produces `build/bin/TarkovPilotPlus-<version>-windows-x64.zip` with the same
-distribution files and its `.sha256` file. The current package version is `1.4.1`.
+distribution files and its `.sha256` file. The current package version is `1.4.2`.
 
 The default compiler output filename is `TarkovPilotPlus.exe`. A custom
 `-OutputFilename` changes the compiler output name, but the executable is moved
@@ -95,7 +97,7 @@ notification. Keep the matching `ocr` directory beside the EXE when updating.
 - `plus/internal/nextitem` — local quality-aware allocation over the existing goal-priority engine, current quest/hideout ratios and explicit completion flags; pure typed +1 checks determine Add eligibility without submitting an extra item
 - `plus/internal/scanner` and `plus/ocr/name-scan.ps1` — Inspect window detection after a left click, followed by local English title OCR with the bundled Tesseract engine; OCR runs only for a detected Inspect window and can run again after another click
 - `plus/ocr/prepare.ps1` — pinned OCR dependency downloads and SHA256 verification at build time
-- `plus/frontend/dist/item.*` — compact English Item Scanner with a "How it works?" section, prices, four stock controls and current Next Item/Completed Item goal ratios without a header category; the standalone Items Tracker editor above Settings shows item images, name-copy buttons, a full-width Refresh inventory button and an Import/Export row
+- `plus/frontend/dist/item.*` — compact English Item Scanner with a "How it works?" section, prices, four stock controls, current Next Items/Completed Item goal ratios and Other Stock Details for allocated alternative items; the standalone Items Tracker editor above Settings shows item images, name-copy buttons, a full-width Refresh inventory button and an Import/Export row
 
 Automatic scanning checks for an Inspect window 200 milliseconds after a left
 click; it does not continuously OCR the full screen. Manual scanning allows three
@@ -104,20 +106,36 @@ uses the `window.go.plus.ItemWindowApp` binding and receives `item-state` events
 
 Items Tracker uses the selected character's Market total stock and goal progress,
 with a local FiR/Regular split. Existing and externally added pieces remain
-Uncategorized until classified, and do not cover goals. Each Next Item quest or
+Uncategorized until classified, and do not cover goals. Each Next Items quest or
 hideout goal separately evaluates the classified inventory: a Regular requirement
 uses Regular pieces first and eligible FiR pieces for its remainder, while a
 FiR-only requirement accepts only FiR. A goal cannot reuse a physical piece
 between its own fixed and Shared needs; different goals can each show that piece.
-The Stock summary separately reserves FiR pieces for FiR-only needs, then uses
-Regular pieces and eligible FiR surplus for Regular/Shared needs. Both views use
+The Stock summary reserves FiR pieces for Found in Raid and Shared (FiR)
+requirements in goal-priority order, then allocates the remaining inventory to
+Regular and Shared requirements with non-FiR pieces first. A small gray `FiR ×1`
+label beside Regular identifies FiR pieces used there. Both views use
 the local classification rather than treating the API's untyped group counter as
-item quality. With one FiR and one Regular ComTac, Stock stays `2/17` with Regular
-`1/2` and Shared (FiR) `1/15`, while Next Item shows Hot Delivery `2/2`
-`(FiR: 1, NonFiR: 1)` and Scavenger `1/15` `(FiR: 1, NonFiR: 0)`. Adding another
+item quality. With one FiR and one Regular ComTac, Stock stays `2/17`, while
+Next Items shows Hot Delivery `2/2` with `FiR ×1 · NonFiR ×1` and Scavenger
+`1/15` with `FiR ×1`. Adding another
 Regular piece replaces the FiR contribution to Hot Delivery with Regular stock.
 The existing global priority calculation still controls collection targets and
 typed Add eligibility; the independent goal display does not change either.
+The Stock category projection keeps that calculation separate too: fixed and
+Shared FiR needs retain their existing goal order within the FiR pass. Fixed
+does not automatically precede Shared. Shared denominators retain their full
+group requirement, while the Stock target can already credit other items.
+
+Shared rows and quest/hideout goals show `Other Stock Details` only for positive
+contributions from other item IDs. The selected item's own stock, unused
+alternatives and zero quantities are omitted. Details preserve each contributor's
+icon, name and actual FiR/Regular quantities, with a name-only copy button directly
+after each contributor name. Quest and hideout quality labels show positive
+components only and disappear when both are zero. The section labels are small
+gray, goal names and the main Stock ratio are white, and requirement/goal ratios
+are brown without parentheses, under `Next Items`,
+`Quests` and `Hideout`.
 
 Full tracker refresh reads the selected character's entire quest and hideout
 state with inventory. Only completion flags and minimal item identities persist,
@@ -154,8 +172,9 @@ Completed Item is a display state based on explicit source completion and empty
 stock, rather than merely a filled ratio; it does not change stored stock or
 shortcut eligibility. Distinct same-ID variants retain independent local quality
 and goal ratios while their ambiguous API stock writes remain disabled.
-Goal headings use Quest/Quests and Hideout Module/Hideout Modules according to
-the number of displayed entries. Allocation, completion, refresh and native
+Indistinguishable variants and unsupported separate FiR inventory keep local
+editing disabled. Goal headings use Quests and Hideout, with quest goals listed
+first. Allocation, completion, refresh and native
 clipboard behavior are documented in [plus/README.md](plus/README.md#market-progress).
 
 Keep the `ocr` directory beside the built application. The API key is protected

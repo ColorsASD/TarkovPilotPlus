@@ -72,7 +72,7 @@
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <div data-tracked="next-item" class="tracked-next-item hidden">
-                    <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Item</span></div>
+                    <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Items</span></div>
                     <div data-tracked="next-item-targets" class="tracked-next-item-targets"></div>
                 </div>
                 <div class="tracked-actions">
@@ -226,35 +226,28 @@
         <details class="help-panel">
             <summary>How it works?</summary>
             <div class="help-content">
-                <p><strong>Setup.</strong> Save your Tarkov Market API key in Settings and select a character.
-                    Prices follow that character's PVP, PVE or SEASON mode.</p>
-                <p><strong>Find an item.</strong> Use English item names and open Inspect in the game.
-                    Automatic scanning checks it after a left-click. Or click Scan now and return to the game within
-                    3 seconds, or enter an English name and click Search.</p>
-                <p><strong>Prices.</strong> Flea Market shows the best and 24-hour average prices.
-                    Trader shows the best trader price. Values in parentheses are prices per slot.</p>
-                <p><strong>Stock.</strong> Stock shows available quantity / collection target.
-                    Tarkov Market supplies the total quantity. Found in Raid and Regular stock are kept separately in a local save.
-                    Regular and Found in Raid show fixed requirements; Shared and Shared (FiR) include other eligible items.</p>
-                <p><strong>Stock controls.</strong> F1 adds one Found in Raid item, F2 adds one Regular item,
-                    F3 removes one Found in Raid item, and F4 removes one Regular item.
-                    Unavailable actions are disabled, including additions to covered requirements and removals from empty stock.
-                    Change or disable these shortcuts in Settings.</p>
-                <p><strong>Items Tracker.</strong> Open Items Tracker above Settings to classify existing stock.
-                    Search for an item, enter its Found in Raid and Regular quantities, then save the classification locally.
-                    Its API total stays unchanged; the remaining stock is Uncategorized and does not cover goals.</p>
-                <p><strong>Goals.</strong> Next Item lists the item's quests and hideout upgrades.
-                    Their ratios use your locally recorded Found in Raid and Regular stock.
-                    Brown checkmarks mark completed goals.</p>
-                <p><strong>Completed Item.</strong> When all listed goals are completed and no active item requirement remains,
-                    only the completed goal list is shown. Stock, requirement rows and stock buttons are hidden.</p>
-                <p><strong>Names and refresh.</strong> The brown copy icons copy only the item, quest or hideout name.
-                    Refresh progress reloads Market data. The last goal details stay visible during refreshes.</p>
-                <p><strong>Saving.</strong> Stock updates immediately and saves the total to Market in the background.
-                    The Found in Raid / Regular split is saved locally for the selected character and game mode.
-                    Wait for pending saves before exiting. Unsaved stock changes are not replayed after restart;
-                    confirmed item quality is saved locally. Closing either window closes both.
-                    Text recognition runs locally.</p>
+                <p><strong>Start.</strong> Save your Tarkov Market API key in Settings, then select your character and game mode.</p>
+                <p><strong>Find an item.</strong> Open its English Inspect title in the game. Automatic scanning checks it after a left-click.
+                    Or use Scan now and return to the game within 3 seconds. Name search also works with automatic scanning off.
+                    Flea and trader prices include a per-slot value in parentheses.</p>
+                <p><strong>Classify existing stock.</strong> Open Items Tracker above Settings and save its Found in Raid and Regular quantities.
+                    This keeps the API total unchanged. The remainder is Uncategorized and cannot cover goals.
+                    Import and Export back up this local classification for the selected character and mode.</p>
+                <p><strong>Read Stock.</strong> Stock shows available quantity / collection target. Its requirement rows reserve FiR pieces
+                    for FiR needs first, then use the remaining inventory for Regular needs. A gray FiR ×1 label beside Regular shows FiR pieces used there.
+                    Shared rows can include other eligible items.</p>
+                <p><strong>Read goals.</strong> Each Next Items quest or hideout goal checks your classified stock separately,
+                    so its ratio can differ from the Stock rows. Do not add different goals' counts together.
+                    Only positive FiR/NonFiR counts are shown.
+                    Other Stock Details lists only other items actually used for that requirement. Brown copy icons copy names only.</p>
+                <p><strong>Change stock.</strong> Add or remove one piece of the matching quality with the buttons.
+                    Defaults: F1/F2 add FiR/Regular; F3/F4 remove FiR/Regular. Change or disable these shortcuts in Settings.
+                    Disabled actions cannot use another piece or have no supported stock to remove.</p>
+                <p><strong>Refresh and completion.</strong> Refresh progress reloads Market data while keeping the last details visible.
+                    A newly completed goal makes related remaining stock Uncategorized; classify what you still have.
+                    Checkmarks mark completed goals. Completed Item keeps only that goal list when no requirements or stock remain.</p>
+                <p><strong>Before closing.</strong> Stock changes appear immediately and save to Market in the background; classification stays local.
+                    Wait for pending saves to finish. Unsent changes are not replayed after restart. Closing either window closes both.</p>
             </div>
         </details>
     </main>
