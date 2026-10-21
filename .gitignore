@@ -20,6 +20,7 @@
 !.env.template
 api-key.bin
 item-settings.json
+item-quality.json
 item-cache/
 settings.json
 logs/

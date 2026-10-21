@@ -17,19 +17,33 @@
     let keyRevealPending = false;
     let initialRender = true;
     let latestStateSequence = null;
+    let inventoryData = null;
+    let inventoryContext = '';
+    let inventoryRevision = 0;
+    let inventoryLoading = false;
+    let inventorySaving = false;
     const shortcutErrors = new Map();
     let shortcutCaptureInput = null;
     let shortcutCapturePending = false;
     let shortcutCaptureRevision = 0;
     let shortcutCaptureQueue = Promise.resolve();
-    const shortcutFields = [
-        { id: 'add-hotkey', property: 'addHotkey', fallback: 'F1', ready: 'addHotkeyReady', error: 'addHotkeyError' },
-        { id: 'remove-hotkey', property: 'removeHotkey', fallback: 'F2', ready: 'removeHotkeyReady', error: 'removeHotkeyError' },
+    const stockActions = [
+        { id: 'add-fir', property: 'addFIRHotkey', fallback: 'F1', ready: 'addFIRHotkeyReady', error: 'addFIRHotkeyError',
+            allowed: 'addFIRAllowed', quantity: 'firQuantity', method: 'AddFIRTrackedItem', label: 'Add 1 Found in Raid item' },
+        { id: 'add-regular', property: 'addRegularHotkey', fallback: 'F2', ready: 'addRegularHotkeyReady', error: 'addRegularHotkeyError',
+            allowed: 'addRegularAllowed', quantity: 'regularQuantity', method: 'AddRegularTrackedItem', label: 'Add 1 Regular item' },
+        { id: 'remove-fir', property: 'removeFIRHotkey', fallback: 'F3', ready: 'removeFIRHotkeyReady', error: 'removeFIRHotkeyError',
+            allowed: 'removeFIRAllowed', quantity: 'firQuantity', method: 'RemoveFIRTrackedItem', label: 'Remove 1 Found in Raid item', removing: true },
+        { id: 'remove-regular', property: 'removeRegularHotkey', fallback: 'F4', ready: 'removeRegularHotkeyReady', error: 'removeRegularHotkeyError',
+            allowed: 'removeRegularAllowed', quantity: 'regularQuantity', method: 'RemoveRegularTrackedItem', label: 'Remove 1 Regular item', removing: true },
     ];
+    const shortcutFields = stockActions.map((action) => ({ ...action, id: action.id + '-hotkey' }));
     let state = {
         enabled: true, automatic: true, language: 'en', mode: 'PVP', hasAPIKey: false,
-        addHotkey: 'F1', addHotkeyReady: false, addHotkeyError: '', hotkeyCapture: false,
-        removeHotkey: 'F2', removeHotkeyReady: false, removeHotkeyError: '',
+        addFIRHotkey: 'F1', addFIRHotkeyReady: false, addFIRHotkeyError: '', hotkeyCapture: false,
+        addRegularHotkey: 'F2', addRegularHotkeyReady: false, addRegularHotkeyError: '',
+        removeFIRHotkey: 'F3', removeFIRHotkeyReady: false, removeFIRHotkeyError: '',
+        removeRegularHotkey: 'F4', removeRegularHotkeyReady: false, removeRegularHotkeyError: '',
         busy: false, status: 'no_key', error: '', ocrLanguages: [], cachedAt: '', stale: false, item: null, scanDetails: null,
         characterUid: '', characters: [], charactersLoading: false, charactersError: '', tracking: null,
         local: null, pendingAdds: null,
@@ -125,19 +139,18 @@
     };
     const canChangeTracking = (tracking, action) => {
         const current = currentTracking();
+        const stockAction = stockActions.find((entry) => entry.id === action);
         if (state.hotkeyCapture || shortcutCapturePending || !state.local || state.local.loading || safeText(state.local.error)) return false;
         return (!!nativeApp() || preview) && !isBusy() && !safeText(state.error) && state.hasAPIKey && !!state.characterUid &&
             !!safeText(state.item && state.item.uid) &&
             !!safeText(state.item && state.item.bsgId) &&
             !!tracking && sameTrackingTarget(tracking) && tracking.itemId === state.item.bsgId && tracking.tracked === true &&
             tracking.firInventorySeparate !== true &&
-            (action === 'remove' ? Number.isSafeInteger(tracking.availableQuantity) && tracking.availableQuantity > 0 && tracking.removeAllowed === true :
-                Number.isSafeInteger(tracking.requiredQuantity) && tracking.requiredQuantity > 0 && tracking.addAllowed === true) &&
+            !!stockAction && tracking[stockAction.allowed] === true &&
+            (!stockAction.removing || Number.isSafeInteger(tracking[stockAction.quantity]) && tracking[stockAction.quantity] > 0) &&
             !tracking.loading && !tracking.adding && !safeText(tracking.error) && !sameTrackingTarget(trackingFailure) &&
             pendingOptions.size === 0 && !(current && Array.isArray(current.variants) && current.variants.length > 1);
     };
-    const canAddTracking = (tracking) => canChangeTracking(tracking, 'add');
-    const canRemoveTracking = (tracking) => canChangeTracking(tracking, 'remove');
     const quantityText = (value) => Number.isInteger(value) && value >= 0 ? numberText(value) : '—';
     const itemsText = (value) => quantityText(value) + (value === 1 ? ' item' : ' items');
     const availableCharacters = () => (Array.isArray(state.characters) ? state.characters : []).filter((character) =>
@@ -202,7 +215,6 @@
     };
     const trackingCards = new Map();
     const trackingDisplayBaselines = new WeakMap();
-    const nextItemCategories = new Set(['Regular', 'Found in Raid', 'Shared', 'Shared (FiR)']);
     let nextItemCacheKey = '';
     let nextItemCache = null;
     const nextItemContextKey = () => {
@@ -235,7 +247,6 @@
         if (transient && nextItemCache) return nextItemCache;
         const forecast = tracking.nextItem && typeof tracking.nextItem === 'object' && !Array.isArray(tracking.nextItem) ? tracking.nextItem : null;
         if (forecast && ['estimated', 'uncertain', 'unavailable'].includes(forecast.status)) {
-            const category = forecast.status === 'estimated' && nextItemCategories.has(forecast.category) ? forecast.category : '—';
             const targets = Array.isArray(forecast.targets) ? forecast.targets.filter((target) =>
                 target && typeof target === 'object' && !Array.isArray(target) &&
                 (target.kind === 'quest' || target.kind === 'module') && Number.isSafeInteger(target.requiredQuantity) && target.requiredQuantity >= 0 &&
@@ -245,13 +256,9 @@
                     completed: target.completed === true,
                 })).sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'quest' ? -1 : 1) : [];
             if (targets.length) {
-                const noRawGap = Number.isSafeInteger(tracking.availableQuantity) && Number.isSafeInteger(tracking.requiredQuantity) &&
-                    tracking.availableQuantity >= 0 && tracking.requiredQuantity >= 0 && tracking.availableQuantity >= tracking.requiredQuantity;
-                const fullyCovered = tracking.addAllowed === false && noRawGap && targets.every((target) =>
-                    !target.allocationUnknown && target.availableQuantity >= target.requiredQuantity);
-                const completedState = !transient && tracking.addAllowed === false && tracking.requiredQuantity === 0 && targets.every((target) => target.completed);
-                const displayCategory = completedState || fullyCovered && !transient ? '' : category;
-                nextItemCache = {category: displayCategory, targets, completedState};
+                const completedState = !transient && tracking.addFIRAllowed === false && tracking.addRegularAllowed === false &&
+                    tracking.requiredQuantity === 0 && tracking.availableQuantity === 0 && targets.every((target) => target.completed);
+                nextItemCache = {targets, completedState};
                 return nextItemCache;
             }
         }
@@ -261,19 +268,16 @@
     };
     const renderNextItem = (panel, forecast) => {
         const nextItem = panel.querySelector('[data-tracked="next-item"]');
-        const category = panel.querySelector('[data-tracked="next-item-category"]');
         const label = forecast && forecast.completedState ? 'Completed Item' : 'Next Item';
         panel.querySelector('[data-tracked="next-item-label"]').textContent = label;
         panel.querySelector('.tracked-stock-list').classList.toggle('hidden', !!(forecast && forecast.completedState));
-        panel.querySelector('[data-tracked="add"]').classList.toggle('hidden', !!(forecast && forecast.completedState));
-        panel.querySelector('[data-tracked="remove"]').classList.toggle('hidden', !!(forecast && forecast.completedState));
+        stockActions.forEach((action) => panel.querySelector('[data-tracked="' + action.id + '"]').classList.toggle('hidden', !!(forecast && forecast.completedState)));
         nextItem.classList.toggle('completed', !!(forecast && forecast.completedState));
         const baseline = trackingDisplayBaselines.get(panel);
         if (baseline) {
             panel.querySelector('[data-tracked="ratio"]').textContent = forecast && forecast.completedState ? '0/0' : baseline.stockRatio;
             panel.querySelector('[data-tracked="requirements"]').classList.toggle('hidden', !!(forecast && forecast.completedState) || !baseline.hasRequirements);
         }
-        category.textContent = forecast ? forecast.category : '';
         panel.querySelector('[data-tracked="next-item-targets"]').replaceChildren(...(forecast ? ['quest', 'module'].flatMap((kind) => {
             const targets = forecast.targets.filter((target) => target.kind === kind);
             if (!targets.length) return [];
@@ -309,7 +313,7 @@
             return [group];
         }) : []));
         nextItem.classList.toggle('hidden', !forecast);
-        if (forecast) nextItem.setAttribute('aria-label', label + (forecast.category ? ': ' + forecast.category : ''));
+        if (forecast) nextItem.setAttribute('aria-label', label);
         else nextItem.removeAttribute('aria-label');
     };
     const updateNextItem = (panel, tracking, multipleVariants) => renderNextItem(panel, currentNextItem(tracking, multipleVariants));
@@ -320,7 +324,7 @@
         const failure = sameTrackingTarget(trackingFailure) ? trackingFailure.message : '';
         const error = failure || safeText(tracking && tracking.error);
         const loading = !!tracking && (tracking.loading || !!state.local && state.local.loading);
-        const status = failure ? '' : changing ? changingTracking && changingTracking.action === 'remove' ? 'Removing…' : 'Updating stock…' : loading ?
+        const status = failure ? '' : changing ? changingTracking && changingTracking.action.startsWith('remove-') ? 'Removing…' : 'Updating stock…' : loading ?
             tracked ? 'Refreshing Tracked Items data…' : 'Loading Tracked Items data…' : safeText(tracking && tracking.status);
         const requirements = tracked && Array.isArray(tracking.requirements) ? tracking.requirements.filter((requirement) =>
             requirement && (requirement.kind === 'fir' || requirement.kind === 'regular') &&
@@ -334,13 +338,14 @@
                 const fir = group.fir === true;
                 let total = totals.find((entry) => entry.fir === fir);
                 if (!total) {
-                    total = { fir, availableQuantity: 0, requiredQuantity: 0, sources: [] };
+                    total = { fir, availableQuantity: 0, requiredQuantity: 0, allocationUnknown: false, sources: [] };
                     totals.push(total);
                 }
                 const available = total.availableQuantity + group.availableQuantity;
                 const required = total.requiredQuantity + group.requiredQuantity;
                 total.availableQuantity = Number.isSafeInteger(available) ? available : NaN;
                 total.requiredQuantity = Number.isSafeInteger(required) ? required : NaN;
+                total.allocationUnknown = total.allocationUnknown || group.allocationUnknown === true;
                 const sources = Array.isArray(group.sources) ? group.sources.filter((source) =>
                     source && typeof source === 'object' && !Array.isArray(source) &&
                     Number.isSafeInteger(source.requiredQuantity) && source.requiredQuantity > 0 &&
@@ -352,7 +357,6 @@
                 return totals;
             }, []).sort((a, b) =>
                 a.fir === true ? b.fir === true ? 0 : -1 : b.fir === true ? 1 : 0) : [];
-        const separateInventory = tracked && tracking.firInventorySeparate === true;
         const noActiveRequirement = noRequiredQuantity && !visibleRequirements.some((requirement) => requirement.requiredQuantity > 0) && !anyGroups.length;
         const hasStock = tracked && Number.isSafeInteger(tracking.availableQuantity) && tracking.availableQuantity > 0;
         const nextItem = currentNextItem(tracking, multipleVariants);
@@ -363,11 +367,16 @@
         element('variant-name').textContent = variantName;
         element('variant-name').classList.toggle('hidden', !variantName);
         panel.setAttribute('aria-label', variantName ? 'Items Tracker: ' + variantName : 'Items Tracker');
-        // Shared rows report confirmed API progress, which can lag pending stock.
+        // A backend a helyben mentett FiR/Regular készletből számolja a sorokat.
         const collectionCovered = noRequiredQuantity && (anyGroups.length > 0 || hasStock);
         const stockRequiredQuantity = collectionCovered ? tracking.availableQuantity : tracking && tracking.requiredQuantity;
         const stockRatio = tracked ? quantityText(tracking.availableQuantity) + '/' + quantityText(stockRequiredQuantity) : '—/—';
         element('ratio').textContent = stockRatio;
+        const uncategorized = Number.isSafeInteger(tracking && tracking.uncategorizedQuantity) && tracking.uncategorizedQuantity > 0;
+        element('inventory-note').textContent = uncategorized ? 'Inventory: FiR ' + quantityText(tracking.firQuantity) +
+            ' · Regular ' + quantityText(tracking.regularQuantity) + ' · Uncategorized ' + quantityText(tracking.uncategorizedQuantity) +
+            '. Classify stock in Settings → Items Tracker inventory.' : '';
+        element('inventory-note').classList.toggle('hidden', !uncategorized);
         trackingDisplayBaselines.set(panel, {stockRatio, hasRequirements: !!visibleRequirements.length || !!anyGroups.length});
         element('ratio').setAttribute('aria-label', 'Available / required quantity');
         element('requirements').replaceChildren(...visibleRequirements.map((requirement) => {
@@ -388,20 +397,18 @@
             const label = document.createElement('dt');
             label.textContent = group.fir === true ? 'Shared (FiR)' : 'Shared';
             const quantity = document.createElement('dd');
-            quantity.textContent = quantityText(group.availableQuantity) + '/' + quantityText(group.requiredQuantity);
+            quantity.textContent = (group.allocationUnknown ? '—' : quantityText(group.availableQuantity)) + '/' + quantityText(group.requiredQuantity);
             row.setAttribute('aria-label', label.textContent + ' ' + quantity.textContent);
             row.append(label, quantity);
             return row;
         }));
         element('requirements').classList.toggle('hidden', !visibleRequirements.length && !anyGroups.length);
-        const add = element('add');
-        add.disabled = !canAddTracking(tracking);
-        add.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
-            'Add 1 item to ' + (separateInventory ? '' : 'shared ') + 'Tracked Items stock for the selected character';
-        const remove = element('remove');
-        remove.disabled = !canRemoveTracking(tracking);
-        remove.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
-            'Remove 1 item from shared Tracked Items stock for the selected character';
+        stockActions.forEach((action) => {
+            const button = element(action.id);
+            button.disabled = !canChangeTracking(tracking, action.id);
+            button.title = multipleVariants ? 'Tarkov Market API cannot update same-ID variants separately.' :
+                action.label + (action.removing ? ' from' : ' to') + ' Tracked Items stock for the selected character';
+        });
         element('status').textContent = status;
         element('status').classList.toggle('hidden', !status);
         element('error').textContent = error;
@@ -421,8 +428,7 @@
             let panel = trackingCards.get(key);
             if (!panel) {
                 panel = $('tracked-panel-template').content.firstElementChild.cloneNode(true);
-                panel.querySelector('[data-tracked="add"]').addEventListener('click', () => changeTrackedItem('add'));
-                panel.querySelector('[data-tracked="remove"]').addEventListener('click', () => changeTrackedItem('remove'));
+                stockActions.forEach((action) => panel.querySelector('[data-tracked="' + action.id + '"]').addEventListener('click', () => changeTrackedItem(action.id)));
                 trackingCards.set(key, panel);
             }
             const name = names[index];
@@ -511,19 +517,163 @@
             !availableCharacters().length;
         const entries = trackingEntries();
         [...$('tracked-panels').children].forEach((panel, index) => {
-            panel.querySelector('[data-tracked="add"]').disabled = !canAddTracking(entries[index]);
-            panel.querySelector('[data-tracked="remove"]').disabled = !canRemoveTracking(entries[index]);
-            const badge = panel.querySelector('[data-tracked="add-hotkey"]');
-            badge.textContent = hotkeys[0].value;
-            badge.classList.toggle('hidden', !hotkeys[0].ready);
-            const removeBadge = panel.querySelector('[data-tracked="remove-hotkey"]');
-            removeBadge.textContent = hotkeys[1].value;
-            removeBadge.classList.toggle('hidden', !hotkeys[1].ready);
+            stockActions.forEach((action, actionIndex) => {
+                panel.querySelector('[data-tracked="' + action.id + '"]').disabled = !canChangeTracking(entries[index], action.id);
+                const badge = panel.querySelector('[data-tracked="' + action.id + '-hotkey"]');
+                badge.textContent = hotkeys[actionIndex].value;
+                badge.classList.toggle('hidden', !hotkeys[actionIndex].ready);
+            });
             updateNextItem(panel, entries[index], entries.length > 1);
         });
         $('btn-min').disabled = !window.runtime || !window.runtime.WindowMinimise;
         $('btn-close').disabled = !nativeApp();
         $('btn-scan').querySelector('span').textContent = busy ? 'Processing…' : 'Scan now';
+        $('inventory-search').disabled = !available || busy || inventoryLoading;
+        $('btn-refresh-inventory').disabled = !available || busy || inventoryLoading || !state.hasAPIKey || !state.characterUid;
+        [...$('inventory-rows').children].forEach((row) => {
+            const readOnly = row.dataset.readOnly === 'true';
+            row.querySelectorAll('input').forEach((input) => { input.disabled = busy || inventoryLoading || readOnly; });
+            const button = row.querySelector('button');
+            if (button) button.disabled = busy || inventoryLoading || readOnly || row.dataset.valid !== 'true' || row.dataset.changed !== 'true';
+        });
+    };
+
+    const currentInventoryContext = () => state.hasAPIKey && state.characterUid ?
+        JSON.stringify([state.characterUid, String(state.mode || '').toUpperCase()]) : '';
+    const resetInventory = () => {
+        ++inventoryRevision;
+        inventoryData = null;
+        inventoryLoading = false;
+        $('inventory-rows').replaceChildren();
+        $('inventory-status').textContent = state.hasAPIKey && state.characterUid ? 'Open the inventory to classify stock.' : 'Select a character to view stock.';
+        $('inventory-error').textContent = '';
+        $('inventory-error').classList.add('hidden');
+    };
+    const renderInventory = () => {
+        const query = $('inventory-search').value.trim().toLowerCase();
+        const allRows = inventoryData && Array.isArray(inventoryData.rows) ? inventoryData.rows.filter((row) => row &&
+            safeText(row.itemId) && Number.isSafeInteger(row.total) && row.total > 0 && Number.isSafeInteger(row.fir) && row.fir >= 0 &&
+            Number.isSafeInteger(row.regular) && row.regular >= 0 && row.fir + row.regular <= row.total) : [];
+        const rows = allRows.filter((row) => (safeText(row.name) || row.itemId).toLowerCase().includes(query));
+        $('inventory-rows').replaceChildren(...rows.map((item) => {
+            const row = document.createElement('div');
+            row.className = 'inventory-row';
+            row.dataset.itemId = item.itemId;
+            row.dataset.readOnly = String(item.readOnly === true);
+            const name = document.createElement('p');
+            name.className = 'inventory-name';
+            name.textContent = safeText(item.name) || item.itemId;
+            const quantities = document.createElement('div');
+            quantities.className = 'inventory-quantities';
+            const total = document.createElement('span');
+            total.textContent = 'API total: ' + quantityText(item.total);
+            const uncategorized = document.createElement('span');
+            quantities.append(total, uncategorized);
+            const fields = document.createElement('div');
+            fields.className = 'inventory-quality-fields';
+            const inputs = ['fir', 'regular'].map((kind) => {
+                const label = document.createElement('label');
+                label.className = 'inventory-quality-field';
+                label.textContent = kind === 'fir' ? 'Found in Raid' : 'Regular';
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.min = '0';
+                input.max = String(item.total);
+                input.step = '1';
+                input.value = String(item[kind]);
+                input.setAttribute('aria-label', name.textContent + ': ' + label.textContent);
+                label.append(input);
+                fields.append(label);
+                return input;
+            });
+            const save = document.createElement('button');
+            save.type = 'button';
+            save.className = 'inventory-save';
+            save.textContent = 'Save classification locally';
+            const error = document.createElement('p');
+            error.className = 'inventory-row-error hidden';
+            error.setAttribute('role', 'alert');
+            const updateRow = () => {
+                const values = inputs.map((input) => input.value.trim() === '' ? NaN : Number(input.value));
+                const valid = values.every((value) => Number.isSafeInteger(value) && value >= 0 && value <= item.total) && values[0] + values[1] <= item.total;
+                row.dataset.valid = String(valid);
+                row.dataset.changed = String(values[0] !== item.fir || values[1] !== item.regular);
+                uncategorized.textContent = 'Uncategorized: ' + (valid ? quantityText(item.total - values[0] - values[1]) : '—');
+                error.textContent = valid ? item.readOnly ? 'This stock is read-only.' : '' : 'FiR + Regular must be whole numbers between 0 and the API total.';
+                error.classList.toggle('hidden', !error.textContent);
+                updateControls();
+            };
+            inputs.forEach((input) => input.addEventListener('input', updateRow));
+            save.addEventListener('click', async () => {
+                if (inventorySaving || inventoryLoading || isBusy() || !inventoryData || row.dataset.valid !== 'true' || row.dataset.changed !== 'true') return;
+                const context = currentInventoryContext();
+                if (!context || context !== inventoryContext || item.readOnly) return;
+                inventorySaving = true;
+                localBusy = true;
+                $('inventory-status').textContent = 'Saving classification locally…';
+                updateControls();
+                try {
+                    const result = await call('SetTrackerItemQuality', inventoryData.profile, item.itemId, item.total, Number(inputs[0].value), Number(inputs[1].value));
+                    if (context === currentInventoryContext()) {
+                        await refresh(result);
+                        if (safeText(result && result.local && result.local.error) || safeText(result && result.error)) throw new Error('Classification rejected');
+                        await loadInventory();
+                        $('inventory-status').textContent = 'Classification saved locally. Tarkov Market total unchanged.';
+                    }
+                } catch (_) {
+                    if (context === currentInventoryContext()) {
+                        $('inventory-status').textContent = '';
+                        error.textContent = 'Classification could not be saved. Refresh inventory and try again.';
+                        error.classList.remove('hidden');
+                    }
+                } finally {
+                    inventorySaving = false;
+                    localBusy = false;
+                    updateControls();
+                }
+            });
+            row.append(name, quantities, fields, save, error);
+            // A kezdeti validáció a már beillesztett soron frissíti a vezérlőket.
+            const values = inputs.map((input) => Number(input.value));
+            row.dataset.valid = 'true';
+            row.dataset.changed = 'false';
+            uncategorized.textContent = 'Uncategorized: ' + quantityText(item.total - values[0] - values[1]);
+            if (item.readOnly) {
+                error.textContent = 'This stock is read-only.';
+                error.classList.remove('hidden');
+            }
+            return row;
+        }));
+        $('inventory-status').textContent = rows.length ? quantityText(rows.length) + ' of ' + quantityText(allRows.length) + ' stocked items.' :
+            query ? 'No stocked items match your search.' : 'No items with stock for this character.';
+        updateControls();
+    };
+    const loadInventory = async () => {
+        const context = currentInventoryContext();
+        if (!context || inventoryLoading) return;
+        const revision = ++inventoryRevision;
+        inventoryContext = context;
+        inventoryLoading = true;
+        $('inventory-status').textContent = 'Loading inventory…';
+        $('inventory-error').textContent = '';
+        $('inventory-error').classList.add('hidden');
+        updateControls();
+        try {
+            const result = await call('GetTrackerInventory');
+            if (revision !== inventoryRevision || context !== currentInventoryContext()) return;
+            if (!result || !result.profile || !Array.isArray(result.rows) || safeText(result.error)) throw new Error('Inventory unavailable');
+            inventoryData = result;
+            renderInventory();
+        } catch (_) {
+            if (revision === inventoryRevision && context === currentInventoryContext()) {
+                $('inventory-status').textContent = '';
+                $('inventory-error').textContent = 'Inventory could not be loaded. Refresh inventory and try again.';
+                $('inventory-error').classList.remove('hidden');
+            }
+        } finally {
+            if (revision === inventoryRevision) inventoryLoading = false;
+            updateControls();
+        }
     };
 
     const updateImage = (item) => {
@@ -554,6 +704,12 @@
             return;
         }
         state = { ...state, ...nextState, pendingAdds: nextState.pendingAdds && typeof nextState.pendingAdds === 'object' ? nextState.pendingAdds : null };
+        const nextInventoryContext = currentInventoryContext();
+        if (inventoryContext !== nextInventoryContext) {
+            inventoryContext = nextInventoryContext;
+            resetInventory();
+            if ($('tracker-inventory').open && inventoryContext) loadInventory();
+        }
         if (!state.hasAPIKey && (keyFromStorage || keyRevealPending)) resetKeyDisplay(true);
         const trackedState = currentTracking();
         if (trackingFailure && (!sameTrackingTarget(trackingFailure) || trackedState && (trackedState.loading || trackedState.adding))) {
@@ -653,7 +809,8 @@
         haveMarketData: true, bannedOnFlea: false,
     };
     let previewState = {
-        ...state, hasAPIKey: true, addHotkey: 'F1', addHotkeyReady: true, removeHotkey: 'F2', removeHotkeyReady: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
+        ...state, ...Object.fromEntries(shortcutFields.flatMap((field) => [[field.property, field.fallback], [field.ready, true]])),
+        hasAPIKey: true, status: 'Item recognized.', ocrLanguages: ['en'], cachedAt: '2026-10-10T22:30:23Z', item: sampleItem,
         characterUid: 'preview-character', characters: [{ charUid: 'preview-character', name: 'Sample character', gameMode: 'PVP' }],
         tracking: { itemUid: sampleItem.uid, itemId: 'preview-tracked-item', charUid: 'preview-character',
             tracked: true, loading: false, adding: false, availableQuantity: 0, requiredQuantity: 7,
@@ -664,7 +821,7 @@
         const regular = { ...previewState.tracking, variantName: 'MF-UNTAR body armor (0/50)', availableQuantity: 0,
             requiredQuantity: 1, remainingQuantity: 1, requirement: 'regular',
             requirements: [{ kind: 'regular', requiredQuantity: 1, availableQuantity: 0 }],
-            addAllowed: false, removeAllowed: false, error: variantError };
+            addFIRAllowed: false, addRegularAllowed: false, removeFIRAllowed: false, removeRegularAllowed: false, error: variantError };
         const fir = { ...previewState.tracking, variantName: 'MF-UNTAR body armor', availableQuantity: 2,
             requiredQuantity: 0, remainingQuantity: 0, requirement: 'unknown', requirements: [],
             anyGroups: [{ groupId: 'quest:scavenger:body-armor', fir: true, requiredQuantity: 15, availableQuantity: 6,
@@ -672,7 +829,7 @@
                     items: [{ itemId: 'preview-mf-untar', name: 'MF-UNTAR body armor', availableQuantity: 2 },
                         { itemId: 'preview-6b13', name: '6B13 assault armor (EMR)', availableQuantity: 3 },
                         { itemId: 'preview-interceptor', name: 'Interceptor OTV body armor (UCP)', availableQuantity: 1 }] }] }],
-            addAllowed: false, removeAllowed: false, error: variantError };
+            addFIRAllowed: false, addRegularAllowed: false, removeFIRAllowed: false, removeRegularAllowed: false, error: variantError };
         previewState.tracking = { ...fir, variants: [regular, fir] };
     }
     if (preview && !previewVariants) {
@@ -680,10 +837,40 @@
             price: 0, avg24hPrice: 0, traderPrice: 0, traderName: '', haveMarketData: false };
         previewState.tracking = { ...previewState.tracking, requirement: 'mixed',
             availableQuantity: previewCompletion ? 0 : 2, requiredQuantity: previewCompletion ? 7 : 8, remainingQuantity: previewCompletion ? 7 : 6,
-            addAllowed: true, removeAllowed: !previewCompletion, marketAvailableQuantity: previewCompletion ? 0 : 2,
+            firQuantity: previewCompletion ? 0 : 2, regularQuantity: 0, uncategorizedQuantity: 0,
+            addFIRAllowed: true, addRegularAllowed: true, removeFIRAllowed: !previewCompletion, removeRegularAllowed: false,
+            marketAvailableQuantity: previewCompletion ? 0 : 2,
             requirements: [{ kind: 'fir', requiredQuantity: previewCompletion ? 2 : 5, availableQuantity: previewCompletion ? 0 : 2 },
-                { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: previewCompletion ? 0 : 2 }] };
+                { kind: 'regular', requiredQuantity: previewCompletion ? 5 : 3, availableQuantity: 0 }] };
     }
+    const updatePreviewTracking = () => {
+        if (previewVariants || !previewState.tracking) return;
+        const tracking = previewState.tracking;
+        let fir = tracking.firQuantity || 0;
+        let regular = tracking.regularQuantity || 0;
+        const requirements = tracking.requirements.map((requirement) => {
+            const availableQuantity = Math.min(requirement.requiredQuantity, requirement.kind === 'fir' ? fir : regular + fir);
+            if (requirement.kind === 'fir') fir -= availableQuantity;
+            else {
+                const usedRegular = Math.min(regular, availableQuantity);
+                regular -= usedRegular;
+                fir -= availableQuantity - usedRegular;
+            }
+            return { ...requirement, availableQuantity };
+        });
+        const firGap = requirements.some((row) => row.kind === 'fir' && row.availableQuantity < row.requiredQuantity);
+        const regularGap = requirements.some((row) => row.kind === 'regular' && row.availableQuantity < row.requiredQuantity);
+        const availableQuantity = tracking.firQuantity + tracking.regularQuantity + tracking.uncategorizedQuantity;
+        const room = availableQuantity < tracking.requiredQuantity;
+        previewState.tracking = { ...tracking, requirements, availableQuantity,
+            remainingQuantity: Math.max(0, tracking.requiredQuantity - availableQuantity),
+            addFIRAllowed: room && (firGap || regularGap), addRegularAllowed: room && regularGap,
+            removeFIRAllowed: tracking.firQuantity > 0, removeRegularAllowed: tracking.regularQuantity > 0,
+            nextItem: { status: 'estimated', targets: requirements.map((row) => ({ kind: 'quest',
+                goalName: row.kind === 'fir' ? 'Shortage' : 'A Bitter Victory',
+                availableQuantity: row.availableQuantity, requiredQuantity: row.requiredQuantity, completed: false })) } };
+    };
+    if (preview && !previewVariants) updatePreviewTracking();
     if (preview) {
         previewState.pendingAdds = { count: 0, running: false, status: '', error: '' };
         previewState.local = { loading: false, error: '', warning: '', updatedAt: '2026-10-11T21:30:00Z' };
@@ -694,28 +881,40 @@
         if (app && typeof app[method] === 'function') return app[method](...args);
         if (!preview) throw new Error('The app connection is unavailable.');
         if (method === 'RevealAPIKey') return previewState.hasAPIKey ? previewAPIKey : '';
+        if (method === 'GetTrackerInventory') {
+            const tracking = previewState.tracking;
+            return { profile: 'preview-profile', revision: 1, error: '', rows: tracking ? [{ itemId: tracking.itemId,
+                name: previewState.item.name, total: tracking.availableQuantity, fir: tracking.firQuantity || 0,
+                regular: tracking.regularQuantity || 0, uncategorized: tracking.uncategorizedQuantity || 0,
+                readOnly: !!tracking.variants || tracking.firInventorySeparate === true }] : [] };
+        }
+        if (method === 'SetTrackerItemQuality') {
+            const [profile, itemId, total, fir, regular] = args;
+            const tracking = previewState.tracking;
+            if (profile !== 'preview-profile' || !tracking || tracking.itemId !== itemId || tracking.availableQuantity !== total ||
+                ![fir, regular].every((value) => Number.isSafeInteger(value) && value >= 0) || fir + regular > total) throw new Error('Invalid classification');
+            previewState.tracking = { ...tracking, firQuantity: fir, regularQuantity: regular, uncategorizedQuantity: total - fir - regular };
+            updatePreviewTracking();
+        }
         if (method === 'SetOptions') {
-            const addHotkey = normalizedHotkey(args[0].addHotkey, 'F1');
-            const removeHotkey = normalizedHotkey(args[0].removeHotkey, 'F2');
-            if (addHotkey !== 'off' && addHotkey === removeHotkey) throw new Error('Duplicate shortcut.');
-            previewState = { ...previewState, ...args[0], addHotkey, removeHotkey,
-                addHotkeyReady: addHotkey !== 'off' && !previewState.hotkeyCapture, addHotkeyError: '',
-                removeHotkeyReady: removeHotkey !== 'off' && !previewState.hotkeyCapture, removeHotkeyError: '' };
+            const values = shortcutFields.map((field) => normalizedHotkey(args[0][field.property], field.fallback));
+            if (new Set(values.filter((value) => value !== 'off')).size !== values.filter((value) => value !== 'off').length) throw new Error('Duplicate shortcut.');
+            previewState = { ...previewState, ...args[0], ...Object.fromEntries(shortcutFields.flatMap((field, index) =>
+                [[field.property, values[index]], [field.ready, values[index] !== 'off' && !previewState.hotkeyCapture], [field.error, '']])) };
         }
         if (method === 'SetHotkeyCapture') previewState = { ...previewState, hotkeyCapture: !!args[0],
-            addHotkeyReady: !args[0] && previewState.addHotkey !== 'off', removeHotkeyReady: !args[0] && previewState.removeHotkey !== 'off' };
+            ...Object.fromEntries(shortcutFields.map((field) => [field.ready, !args[0] && previewState[field.property] !== 'off'])) };
         if (method === 'RefreshLocalProgress' && previewState.local) {
             if (!previewVariants) {
                 const requiredQuantity = previewCompletion ? 4 : 5;
                 const firRequired = previewCompletion ? 1 : 2;
-                const stock = previewState.tracking.marketAvailableQuantity;
-                const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: Math.min(stock, firRequired) },
-                    { kind: 'regular', requiredQuantity: 3, availableQuantity: Math.min(3, stock) }];
-                const addAllowed = previewState.tracking.availableQuantity < requiredQuantity;
+                const requirements = [{ kind: 'fir', requiredQuantity: firRequired, availableQuantity: 0 },
+                    { kind: 'regular', requiredQuantity: 3, availableQuantity: 0 }];
                 previewState.tracking = { ...previewState.tracking, requiredQuantity,
                     remainingQuantity: Math.max(0, requiredQuantity - previewState.tracking.availableQuantity),
-                    requirements, addAllowed,
+                    requirements,
                     completedSources: [{ type: 'quest', quantity: 3, optional: false }] };
+                updatePreviewTracking();
             }
             previewState.local = { ...previewState.local, updatedAt: new Date().toISOString() };
         }
@@ -731,17 +930,13 @@
             const item = previewState.item || sampleItem;
             previewState = { ...previewState, item, status: 'Item recognized.' };
         }
-        if ((method === 'AddTrackedItem' || method === 'RemoveTrackedItem') && previewState.tracking &&
-            (method === 'RemoveTrackedItem' ? previewState.tracking.removeAllowed : previewState.tracking.addAllowed) && !previewState.tracking.error &&
+        const stockAction = stockActions.find((action) => action.method === method);
+        if (stockAction && previewState.tracking && previewState.tracking[stockAction.allowed] && !previewState.tracking.error &&
             !previewState.tracking.variants && args[0] === previewState.tracking.itemUid) {
             const tracking = previewState.tracking;
-            const removing = method === 'RemoveTrackedItem';
-            const availableQuantity = Math.max(0, tracking.availableQuantity + (removing ? -1 : 1));
-            const addAllowed = availableQuantity < tracking.requiredQuantity;
-            previewState = { ...previewState, tracking: { ...tracking, availableQuantity,
-                addAllowed, removeAllowed: availableQuantity > 0,
-                remainingQuantity: Math.max(0, tracking.requiredQuantity - availableQuantity),
-                status: (removing ? 'Removed' : 'Added') + ' 1 item. Saving to Tarkov Market…' } };
+            previewState.tracking = { ...tracking, [stockAction.quantity]: tracking[stockAction.quantity] + (stockAction.removing ? -1 : 1),
+                status: (stockAction.removing ? 'Removed' : 'Added') + ' 1 item. Saving to Tarkov Market…' };
+            updatePreviewTracking();
             const count = (previewState.pendingAdds && previewState.pendingAdds.count || 0) + 1;
             previewState.pendingAdds = { count, running: true, status: 'Saving to Tarkov Market…', error: '' };
             setTimeout(() => {
@@ -750,7 +945,6 @@
                 if (!count && previewState.tracking) {
                     const stock = previewState.tracking.availableQuantity;
                     previewState.tracking = { ...previewState.tracking, marketAvailableQuantity: stock,
-                        requirements: previewState.tracking.requirements.map((row) => ({ ...row, availableQuantity: Math.min(stock, row.requiredQuantity) })),
                         status: 'Saved on Tarkov Market.' };
                 }
                 render(previewState);
@@ -791,8 +985,7 @@
 
     const readOptions = () => ({
         enabled: true, automatic: $('scan-automatic').checked,
-        addHotkey: normalizedHotkey($('add-hotkey').value, 'F1'),
-        removeHotkey: normalizedHotkey($('remove-hotkey').value, 'F2'),
+        ...Object.fromEntries(shortcutFields.map((field) => [field.property, normalizedHotkey($(field.id).value, field.fallback)])),
         language: 'en', mode: $('game-mode').value, characterUid: $('tracked-character').value,
     });
     const saveOptions = (event) => {
@@ -868,8 +1061,7 @@
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat || shortcutCapturePending || shortcutCaptureInput !== input) return;
-        const other = shortcutFields.find((entry) => entry !== field);
-        if (value === normalizedHotkey($(other.id).value, other.fallback)) {
+        if (shortcutFields.some((entry) => entry !== field && value === normalizedHotkey($(entry.id).value, entry.fallback))) {
             shortcutErrors.set(field.id, 'Choose a different shortcut for each action.');
             updateControls();
             return;
@@ -881,7 +1073,8 @@
 
     const changeTrackedItem = async (action) => {
         const tracking = currentTracking();
-        if (!(action === 'remove' ? canRemoveTracking(tracking) : canAddTracking(tracking))) return;
+        if (!canChangeTracking(tracking, action)) return;
+        const stockAction = stockActions.find((entry) => entry.id === action);
         const target = { itemUid: state.item.uid, charUid: state.characterUid };
         const context = progressContext();
         changingTracking = { ...target, action };
@@ -890,7 +1083,7 @@
         renderTracking();
         updateControls();
         try {
-            const result = await call(action === 'remove' ? 'RemoveTrackedItem' : 'AddTrackedItem', target.itemUid);
+            const result = await call(stockAction.method, target.itemUid);
             if (sameTrackingTarget(target) && context === progressContext()) await refresh(result);
         } catch (_) {
             if (sameTrackingTarget(target) && context === progressContext()) trackingFailure = { ...target, stateSequence: latestStateSequence, message: 'Stock could not be updated. Refresh progress before trying again.' };
@@ -1008,6 +1201,11 @@
         });
         window.addEventListener('pagehide', () => { if (shortcutCaptureInput || state.hotkeyCapture) call('SetHotkeyCapture', false).catch(() => {}); });
         $('btn-refresh-local').addEventListener('click', () => action('RefreshLocalProgress'));
+        $('tracker-inventory').addEventListener('toggle', () => {
+            if ($('tracker-inventory').open && !inventoryData) loadInventory();
+        });
+        $('btn-refresh-inventory').addEventListener('click', loadInventory);
+        $('inventory-search').addEventListener('input', renderInventory);
         $('preview-label').classList.toggle('hidden', !preview);
         try {
             if (!preview && window.runtime && typeof window.runtime.EventsOn === 'function') window.runtime.EventsOn('item-state', render);

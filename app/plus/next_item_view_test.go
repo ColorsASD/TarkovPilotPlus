@@ -75,14 +75,15 @@ func TestNextItemRefreshHandlesNewHideoutWithoutStockWrites(t *testing.T) {
 }
 
 func TestNextItemStateCopyOwnsForecastData(t *testing.T) {
-	source := &ItemTrackingState{NextItem: &nextitem.Forecast{Category: "Regular", PossibleCategories: []string{"Regular"}, Changes: []nextitem.Change{{GoalName: "Original", Delta: 1}}, Targets: []nextitem.Target{{GoalName: "Original target", Kind: "quest", AvailableQuantity: 1, RequiredQuantity: 4}}}}
+	source := &ItemTrackingState{NextItem: &nextitem.Forecast{Category: "Regular", FixedStock: &localprogress.RequirementStock{Regular: 1, Known: true}, PossibleCategories: []string{"Regular"}, Changes: []nextitem.Change{{GoalName: "Original", Delta: 1}}, Targets: []nextitem.Target{{GoalName: "Original target", Kind: "quest", AvailableQuantity: 1, RequiredQuantity: 4}}}}
 	copy := cloneTrackingState(source)
+	copy.NextItem.FixedStock.Regular = 3
 	copy.NextItem.PossibleCategories[0] = "Changed"
 	copy.NextItem.Changes[0].GoalName = "Changed"
 	copy.NextItem.Targets[0].GoalName = "Changed"
 	copy.NextItem.Targets[0].AvailableQuantity = 3
 	if source.NextItem.PossibleCategories[0] != "Regular" || source.NextItem.Changes[0].GoalName != "Original" ||
-		source.NextItem.Targets[0].GoalName != "Original target" || source.NextItem.Targets[0].AvailableQuantity != 1 {
+		source.NextItem.Targets[0].GoalName != "Original target" || source.NextItem.Targets[0].AvailableQuantity != 1 || source.NextItem.FixedStock.Regular != 1 {
 		t.Fatal("view copy aliases forecast")
 	}
 }

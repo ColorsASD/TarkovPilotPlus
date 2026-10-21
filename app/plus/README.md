@@ -9,15 +9,17 @@ in the [upstream README](https://github.com/ggdiam/TarkovPilot/blob/master/READM
 
 - `item_window.go` — Item Scanner Wails window, encrypted API key, settings, English title OCR and manual search
 - `item_tracking.go` — character selection, Items Tracker and inventory updates
+- `item_quality.go` — persistent local Found in Raid/Regular classification, the inventory editor and stock-write quality recovery
+- `typed_tracking_view.go` — fixed and Shared summaries from the same local typed allocation as the goal ratios
 - `local_progress.go` — coherent Market quest/hideout progress loading and the existing Items Tracker view
 - `local_tracking_view.go`, `variant_tracking_view.go` and `shared_tracking_items.go` — display projections for fixed requirements, separately identified variants and Shared group details
-- `item_hotkey.go` — Add availability, immutable item/character targets and a worker shared with the Add button's stock operation
-- `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable Add item shortcut, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
+- `item_hotkey.go` and `item_quality_hotkey.go` — typed stock availability, immutable item/character targets and the worker shared with the four stock buttons
+- `tracked_hotkey.go` and `tracked_hotkey_windows.go` — configurable stock shortcuts, global Windows key consumption, physical press/release tracking and dedicated keyboard hook lifecycle
 - `inspect_clicks_windows.go` — automatic scan trigger after a click
 - `paired_windows.go` — companion window startup, display and shutdown; a callback requests shutdown of the main application
 - `internal/market` — catalog, prices, characters, requirements and the documented inventory update operation
 - `internal/localprogress` — pure Market requirement allocation and alternative-group calculations
-- `internal/nextitem` — pure virtual +1 allocation estimates, current goal ratios and source-based completion flags
+- `internal/nextitem` — local typed allocation, current goal ratios, typed +1 eligibility and source-based completion flags
 - `internal/scanner` and `ocr` — local Tesseract engine, Inspect detection and OCR
 - `frontend/dist` — Item Scanner frontend only; its Wails binding is `window.go.plus.ItemWindowApp`
 - `update.go` — Plus release page and the update policy that prevents upstream EXE replacement
@@ -89,8 +91,17 @@ not replace checking the upstream changes and the integration points.
 ## Stock shortcuts
 
 The Item Scanner installs Windows keyboard hooks on dedicated message
-threads. Add item defaults to F1 and Remove item to F2. Settings can change or disable
-each shortcut separately; the two actions require different shortcuts. They support Ctrl, Alt and Shift with F1-F12, A-Z, 0-9,
+threads. The four stock buttons use the following default shortcuts:
+
+- F1 — Add Found in Raid item
+- F2 — Add Regular item
+- F3 — Remove Found in Raid item
+- F4 — Remove Regular item
+
+The buttons form a two-column grid, with additions above removals. An unavailable
+action is gray and disabled: adding needs an eligible unfilled requirement, and
+removing needs stock of that exact quality. Settings can change or disable
+each shortcut separately; all enabled actions require different shortcuts. They support Ctrl, Alt and Shift with F1-F12, A-Z, 0-9,
 Space, Insert, Delete, Home, End, PageUp and
 PageDown. Unmodified supported keys can also be selected. Modifier order is
 canonicalized to Ctrl+Alt+Shift.
@@ -112,8 +123,8 @@ worker checks fresh stock and its revision, sends the update and verifies the
 result. Pending additions and removals count toward stock and Add eligibility without blocking
 further eligible changes while the network request runs.
 Disabling a shortcut or failing to start its hook does not disable the
-corresponding eligible button. The confirmed Completed Item display hides both
-stock buttons; their visibility is separate from the stock worker and shortcut
+corresponding eligible button. The confirmed Completed Item display hides all four
+stock buttons when no stock remains; their visibility is separate from the stock worker and shortcut
 eligibility.
 
 Windows hook consumption does not guarantee priority over every input path.
@@ -124,8 +135,9 @@ keyboard behavior in the game requires a live trial.
 
 ## Market progress
 
-Items Tracker uses only the selected character's Tarkov Market requirements,
-completion and inventory. The tracked-items, quests and hideout reads must have
+Items Tracker uses the selected character's Tarkov Market requirements,
+completion and total inventory, together with locally recorded item quality.
+The tracked-items, quests and hideout reads must have
 matching character, game mode and revision before the combined snapshot is used.
 The snapshot remains in memory. Inspect changes can reuse this confirmed graph;
 Refresh progress reloads the selected character's current Market state.
@@ -135,18 +147,52 @@ the matching snapshot loads in the background. Stock actions pause during the
 refresh. A failed refresh retains the last known values with an error; switching
 items or profiles cannot reuse another target's displayed inventory.
 
-Add accepts only an eligible active Market requirement. Remove accepts a unique,
-supported shared-stock item with stock above zero, including items without active
-requirements. Each button and shortcut shares one short reservation: the displayed
+Tarkov Market remains authoritative for each item's total stock. The local save
+distinguishes Found in Raid, Regular and Uncategorized quantities within that
+total, separately for each API-key, character and game-mode profile. Existing
+stock and external increases start as Uncategorized; those pieces do not cover
+any goal until the user classifies them. The card explains unclassified stock
+and points to Settings → Items Tracker inventory.
+
+The searchable inventory editor lists items with positive stock. The API total
+is read-only. Found in Raid and Regular accept nonnegative whole numbers whose
+sum cannot exceed that total; the remainder is Uncategorized. Save classification
+locally changes only the local quality split and does not make a Market stock
+request. Profile and expected-total checks reject stale edits, and pending saves
+make that item's editor row read-only. Refresh inventory reloads the available
+rows without changing Market stock.
+
+When a fresh Market response reports less stock after an external change, the
+app preserves only the minimum quantity of each quality that is still certain.
+If total stock falls by `decrease`, confirmed FiR becomes
+`max(0, oldFiR - decrease)` and confirmed Regular becomes
+`max(0, oldRegular - decrease)`; the rest of the new total is Uncategorized. For
+example, one FiR and one Regular piece becoming one total piece leaves zero
+confirmed FiR, zero confirmed Regular and one Uncategorized piece, because the
+API does not identify which piece disappeared. The inventory editor can classify
+the remaining stock. The app's own four stock actions preserve the selected
+quality exactly. Confirmed classifications survive restart. The local `item-quality.json` file contains
+quantities, hashed profile identifiers and quality recovery records, without the
+API key. It is runtime data and is not part of the release package.
+
+Each Add action accepts only an eligible active Market requirement that an
+additional item of its quality can cover. Each Remove action accepts a unique,
+supported item with stock of that quality above zero, including items without
+active requirements. Each button and shortcut shares one short reservation: the displayed
 quantity changes immediately and pending changes participate in allocation,
 preventing overcollection and removal below zero. The
 Market worker saves these changes in order in the background using fresh stock and
 revision checks. Successful updates settle the reservation; definite rejections remove the
 rejected reservation and expose the error. Network outages retain pending pieces
 in memory. Uncertain writes are verified through GET before any retry, including
-when Refresh progress resumes the pending work. Pending work is
-held only in memory, without operation journals or a disk queue. No operation
-is replayed after restart.
+when Refresh progress resumes the pending work. Queued stock deltas remain in
+memory and are not replayed after restart. Before sending a typed stock write,
+the app persists its quality recovery record. On restart, a fresh GET establishes
+the current total without sending another PATCH. A changed total or revision
+cannot prove that an interrupted write caused the change, so an unresolved
+quality record leaves the affected stock Uncategorized for the user to classify.
+Confirmed classifications remain saved. This journal protects quality bookkeeping and is not a
+disk queue for replaying stock updates.
 
 A successful write acknowledgement proves the app's change independently of
 later stock changes from another client. A follow-up read with a later revision
@@ -159,46 +205,42 @@ profile. A blocked profile remains pending without preventing other profiles
 from saving, and each blocked head is attempted at most once per worker run.
 
 While the Market worker is saving, the scanner status and main Events log heading
-append the pending item count in parentheses, for example `(3 items waiting for API save)`. Ordinary
-Add actions remain available while prior saves are pending if another eligible
-requirement still needs a piece. Closing either window with unsaved work shows
+append the pending item count in parentheses, for example `(3 items waiting for API save)`.
+Typed Add actions remain available while prior saves are pending if another eligible
+requirement still needs a piece of that quality. Closing either window with unsaved work shows
 a native warning; confirming exit discards updates that have not reached Market.
 
 For active or mixed goals, the Items Tracker card and its Found in Raid, Regular,
 Shared (FiR) and Shared rows remain visible when stock covers their requirements,
-for example 10/10. The Add item button and shortcut stop when no eligible
-requirement needs another item.
+for example 10/10. Each Add button and shortcut stops when no eligible
+requirement can use another item of its quality.
 Completing or canceling the associated goal removes its active requirement.
 Once the collection target is covered and no other requirement remains,
 Stock displays the item's available quantity as a complete ratio, such as 2/2
 or 0/0, while Shared can remain 8/8. This display convention changes neither Market
 stock nor Add eligibility.
 
-The compact Next Item section shows the backend's estimated category on the right,
-followed by every requirement for the current item, including completed goals,
-under separate quest and hideout headings, in that order. One quest uses Quest;
-multiple quests use Quests. One hideout entry uses Hideout Module; multiple entries
-use Hideout Modules. Each name is on the left and its current
-available/required ratio is in parentheses at the right edge. These are current
-item-specific ratios, not virtual +1 values or the whole goal's item total. Shared
-ratios can include other eligible items. Completed goals retain their complete
-`x/x` ratios here instead of an aggregate completed-items row under Stock. An
-unknown allocation displays `—/required`.
-A gray divider separates this section from the summary rows. Requirement rows and
-the Next Item category have no descriptive hover help; Add/Remove and copy-button
-tooltips and help elsewhere remain.
-If the calculation does not identify one of the four stock categories, the header
-shows `—` while retaining the current requirement details.
-When every target has a known complete ratio, no raw requirement gap remains and
-Add is no longer eligible, the category is blank while the headings and goal list
-remain. A refresh retains the previous category until that final state is confirmed.
-When every target belongs only to completed sources, Add is ineligible and the raw
-requirement is zero, the confirmed display becomes Completed Item. The Stock
-summary, divider, Add/Remove buttons and Regular, Found in Raid and Shared summary rows are hidden, and the
-quest/hideout list retains its complete `x/x` ratios. This changes only the display;
-raw stock and Remove eligibility remain unchanged. Filled active or mixed goals
-still use Next Item with their current Stock. A refresh retains the complete last
-display state until the new data is confirmed.
+The compact Next Item section lists every requirement for the current item,
+including completed goals, under separate quest and hideout headings, in that
+order. Its header has no category on the right. One quest uses Quest; multiple
+quests use Quests. One hideout entry uses Hideout Module; multiple entries use
+Hideout Modules. Each name is on the left and its current available/required
+ratio is in parentheses at the right edge. These are current item-specific
+ratios, not virtual +1 values or the whole goal's item total. Shared ratios can
+include other eligible items. Completed goals retain their complete `x/x` ratios
+instead of an aggregate completed-items row under Stock. An unknown allocation
+displays `—/required`.
+
+A gray divider separates this section from the summary rows. When every target
+belongs only to completed sources, both Add actions are ineligible, the raw
+requirement is zero and no stock remains, the confirmed display becomes
+Completed Item. Stock, the divider, the four stock buttons and the requirement
+summary rows are hidden, while the quest/hideout list retains its complete
+`x/x` ratios. Filled active or mixed goals still use Next Item with their current
+Stock. Remaining classified stock can still be removed when no active goal
+requires it. A refresh retains the complete last display state until the new
+data is confirmed.
+
 The backend's `Target.Completed` flag is true only when the displayed target's
 requirements come from completed sources, a completed quest, a completed or
 prebuilt module, or an explicitly completed Shared group. Completed fixed sources
@@ -208,89 +250,74 @@ goal stays active even at `10/10`, and a positive source amount with zero remain
 quantity does not by itself prove completion. Optional and canceled sources do
 not contribute to these details. These flags affect rendering only; they do not
 complete quests, consume inventory or clear Market stock.
-Completed goal names have a small brown checkmark without hover help.
-Small brown copy buttons follow the item, quest and hideout names; completed goal
-rows place the copy button before the checkmark. Each button copies only its
-displayed name through the native clipboard, including during progress refreshes.
-The desktop frontend calls `window.runtime.ClipboardSetText(name)` directly and
-awaits its `Promise<boolean>`; a failed call shows feedback. It uses no extra Go
-binding and never reads the clipboard. Browser-only previews can use
+
+Completed goal names have a small brown checkmark without hover help. Small brown
+copy buttons follow the item, quest and hideout names; completed goal rows place
+the copy button before the checkmark. Each button copies only its displayed name
+through the native clipboard, including during progress refreshes. The desktop
+frontend calls `window.runtime.ClipboardSetText(name)` directly and awaits its
+`Promise<boolean>`; a failed call shows feedback. It uses no extra Go binding and
+never reads the clipboard. Browser-only previews can use
 `navigator.clipboard.writeText`; the desktop path uses the Wails runtime.
+
 The latest result stays visible during refreshes and stock updates for the same
 item, item ID, character and game mode. Switching that context, an error, separate
-FiR inventory or an ambiguous variant clears it. A finished calculation with no
-target details also clears it. Completed targets remain visible while Add is
-unavailable.
-New quest, hideout and inventory responses automatically update the section. The
-category comes from a local virtual +1 calculation using API availability; missing
-Market horizon and priority metadata mean it remains an estimate. The calculation
-never submits its virtual +1 and changes neither stock, action eligibility nor the
-Add and Remove shortcuts. Requirement categories do not identify the item's
-in-game Found in Raid status.
+API FiR inventory or an ambiguous variant clears it. A finished calculation with
+no target details also clears it. Completed targets remain visible while adding
+is unavailable. New quest, hideout and inventory responses automatically update
+the section.
 
-`internal/nextitem.Calculate` uses the complete confirmed inventory and its
-current quest and hideout sources, including canonical quest IDs, their aliases
-and module upgrade keys. Newly returned goals need no item-specific rules. The
-engine compares allocations before and after a virtual one-item addition and
-filters candidate priority models against the current explicit API Shared
-counters. The first matching model supplies the estimate. Alternatives test
-near/future assignments and stable order within the component connected by the
-selected item and positive stock; up to six unknown goals receive all binary
-assignments in both tested orders, while larger components use bounded probes.
-The API's complete horizon, stage and tie order remain unavailable, so a matching
-baseline is not a guarantee of Market's next allocation.
+`internal/nextitem.CalculateTyped` uses the complete confirmed requirement graph
+and the locally classified stock, including canonical quest IDs, their aliases
+and module upgrade keys. Newly returned goals need no item-specific rules.
+Found in Raid requirements can use only FiR pieces. FiR-only needs reserve those
+pieces before Regular requirements; Regular needs use Regular pieces first and
+can also use surplus FiR pieces. Uncategorized pieces cannot satisfy either
+quality. Fixed requirements, Shared requirements and the goal list use this same
+allocation, so one physical piece is credited only once across overlapping needs.
 
-The forecast DTO carries `status`, `category`, `possibleCategories`, `goalName`,
-net goal/category `changes`, explanatory `reason` and the current `targets`.
-Target ratios include only needs accepting the selected physical item, aggregated
-once per goal; other item needs still influence the allocation engine. Fixed
-current ratios come from the selected model's before allocation; Shared ratios
-use the confirmed API group counters. If no model reproduces those counters,
-fixed target allocations are marked unknown while explicit Shared and completed
-ratios remain available. Existing stock can move between needs after +1, so the
-backend can report `Reallocated`; an unused addition is `Stock only`. The compact
-frontend renders only Regular, Found in Raid, Shared and Shared (FiR) as category
-labels, using `—` for other unresolved outcomes while retaining available target
-details. Missing or inconsistent metadata, pending stock changes, separate FiR
-inventory and duplicate target item IDs prevent a new supported estimate.
-
-The concise How it works? section describes the visible controls. The allocation
-models, DTO fields and refresh-cache rules above are implementation details; they
-are not additional in-game item statuses or stock operations.
-
-Shared collection targets use the explicit API group progress and other eligible
-items. Other items' confirmed contribution is capped by reported group availability;
-their pending additions and removals also affect the target. The selected item's
-own stock is not subtracted from its target a second time. A deterministic
-maximum-flow calculation prevents another item's stock from being credited twice
-across overlapping groups. Legacy inferred groups retain their local allocation
-fallback. Groups are summarized in one Shared (FiR) row and one Shared row while
-preserving their individual identities and eligible items. Covered groups stay
-visible until their goals are completed. Shared rows report confirmed API group
-progress. For fixed requirement rows, confirmed Shared group progress reserves
-stock first. The remaining confirmed stock goes to Found in Raid and then Regular;
-each piece is counted only once across these rows and Shared groups. Where the API
-data cannot establish an unambiguous allocation, the fixed row shows `—/required`.
-This display rule does not claim
-to reproduce Market's unspecified priorities for complex overlapping goals. Stock
-includes pending changes immediately; requirement rows update after confirmation.
-The display allocation changes neither raw Market stock, collection limits nor Add
-eligibility. Stock actions change only the shared Market stock; the app does not
-assign or keep item-quality annotations.
+For example, with one Regular vodka, Booze shows `0/10` and A Bitter Victory
+shows `1/4`; the summary shows Found in Raid `0/10` and Regular `1/4`. Classifying
+the same single piece as FiR gives Booze `1/10` and Regular `0/4` without changing
+the API total. Leaving it Uncategorized gives both goals zero allocated pieces.
+The API still supplies required quantities and completion; the app supplies
+quality-aware allocation from the local split.
 
 Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
-`groups` and `questGroup` sources, including separately identified variants.
-A variant's confirmed stock reduces other candidates' collection
-targets when its own source identifies the same group, even while its stock updates
-remain disabled. The same stock is credited only once across overlapping groups.
+`groups` and `questGroup` sources to identify requirements and eligible items.
+The displayed Shared and Shared (FiR) numerators come from locally classified
+inventory across those eligible items, rather than the API group's untyped stock
+counter. Other eligible items and their pending typed changes participate in the
+same allocation. Groups are summarized in one Shared (FiR) row and one Shared row
+while preserving their individual identities and eligible items. Covered groups
+stay visible until their goals are completed. Missing or inconsistent allocation
+metadata displays an unknown numerator instead of reusing an API counter as
+local quality progress.
 
-The encrypted API key, scanner settings and item-price catalog cache are the
-remaining local files. Inventory, quest/hideout progress and pending stock are
-not persisted locally. Previous local stock files and operation journals are
-not loaded or uploaded. Separate FiR inventory and multiple variants sharing
-one item ID keep unsupported Market updates disabled. Each variant still displays
-its own stock and Found in Raid, Regular, Shared (FiR) or Shared requirements,
-including confirmed group progress when its own collection target is already covered.
-Their ambiguous item IDs also prevent Next Item and Completed Item details from
-being displayed; the variant stock and requirement rows remain the supported view.
-The app does not invent undocumented update fields.
+The pure typed +1 calculation checks whether one more FiR or Regular piece would
+cover an unmet eligible requirement. That result controls the matching Add
+button and shortcut; it never submits its virtual piece. Remove availability
+uses the selected quality's current stock. Pending changes immediately update
+the total, local quality projection, requirement rows and goal ratios, while the
+Market worker confirms the total in the background. Display allocation does not
+complete goals, consume additional inventory or change stock by itself.
+
+The concise How it works? section describes the visible controls and local
+classification. The allocation engine and DTO fields are implementation details,
+not additional in-game item statuses or stock operations. The former estimated
+category is no longer displayed next to Next Item or Completed Item.
+
+The encrypted API key, scanner settings, item-price catalog cache and local item
+quality are stored separately. Quest/hideout snapshots remain in memory; total
+stock is refreshed from Market. Quality records are never uploaded as inventory
+fields. Confirmed quality and the small write-recovery journal survive restart,
+but unsent stock deltas do not. Older unrelated local stock formats are not
+loaded or uploaded.
+
+Multiple variants sharing one item ID and the API's separate FiR inventory keep
+unsupported stock updates and local quality editing disabled. Each variant still
+displays its own API stock and supported Found in Raid, Regular, Shared (FiR) or
+Shared requirements, including confirmed group progress when its own collection
+target is already covered. Ambiguous item IDs also prevent Next Item and
+Completed Item details from being displayed; variant stock and requirement rows
+remain the supported view. The app does not invent undocumented update fields.

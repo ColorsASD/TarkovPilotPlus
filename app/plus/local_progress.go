@@ -40,6 +40,8 @@ func localProgressErrorText(err error) string {
 		return "Market progress changed during refresh. Refresh progress again."
 	case "merge":
 		return "Tarkov Market requirements could not be loaded consistently. Refresh progress again."
+	case "quality":
+		return "Local item quality could not be loaded or saved. " + failure.cause.Error()
 
 	}
 	return "Market progress is unavailable. Refresh progress again."
@@ -132,6 +134,9 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 			}
 			variant := view.Variants[index]
 			populateVariantTrackingView(variant, row, snapshot, confirmedRequirements[rowIndex])
+			if row.QualityKnown {
+				markTypedAllocationUnknown(variant)
+			}
 			if view.Tracked && view.VariantName == variant.VariantName {
 				variants, message := view.Variants, view.Error
 				*view = *cloneTrackingState(variant)
@@ -185,8 +190,42 @@ func localTrackedView(item market.Item, snapshot localprogress.Snapshot) *ItemTr
 		break
 	}
 	if view.Tracked && view.Error == "" && !view.InventorySeparate {
+		if row, unique := stockItem(snapshot, item.BSGID); unique && row.QualityKnown {
+			applyTypedTrackingView(view, row, snapshot)
+			return view
+		}
 		forecast := nextitem.Calculate(snapshot, item.BSGID)
 		view.NextItem = &forecast
+		stock := forecast.FixedStock
+		if stock == nil {
+			// A pending darab csak a Stock számlálót módosítja. A fix sorok
+			// ugyanabból a megerősített kiosztásból maradnak láthatók, amíg
+			// a Market vissza nem igazolja az új készletet.
+			confirmed := snapshot
+			for _, row := range snapshot.Items {
+				if row.AvailableQuantity != row.MarketAvailableQuantity {
+					confirmed.Items = append([]localprogress.Item(nil), snapshot.Items...)
+					for i := range confirmed.Items {
+						confirmed.Items[i].AvailableQuantity = confirmed.Items[i].MarketAvailableQuantity
+					}
+					stock = nextitem.Calculate(confirmed, item.BSGID).FixedStock
+					break
+				}
+			}
+		}
+		if stock != nil && stock.Known {
+			// A fejléc és a célsorok ugyanannak az aktuális modellnek a
+			// kiosztását mutatják; a virtuális +1 nem része a készletnek.
+			for i := range view.Requirements {
+				requirement := &view.Requirements[i]
+				available := stock.Regular
+				if requirement.Kind == "fir" {
+					available = stock.FIR
+				}
+				requirement.AvailableQuantity = min(requirement.RequiredQuantity, available)
+				requirement.AllocationUnknown = false
+			}
+		}
 	}
 	return view
 }
@@ -268,6 +307,14 @@ func (a *ItemWindowApp) refreshLocalProgress(ctx context.Context, key string, op
 	}
 	valid := snapshot.CharUID == opts.CharacterUID && strings.EqualFold(snapshot.GameMode, opts.Mode) && snapshot.Revision != ""
 	if valid {
+		if a.qualityTracking {
+			var qualityErr error
+			snapshot, qualityErr = a.qualityReconcileSnapshotLocked(key, opts, snapshot)
+			if qualityErr != nil {
+				err = localProgressFailure("quality", qualityErr)
+				snapshot = unknownQualitySnapshot(snapshot)
+			}
+		}
 		snapshot, _ = localprogress.Allocate(snapshot)
 		a.confirmedProgress, a.localRevision = snapshot, opts.revision
 		a.rebuildPendingViewLocked()
@@ -320,13 +367,26 @@ func (a *ItemWindowApp) applyLocalMarketStockLocked(item market.Item, remote mar
 
 func (a *ItemWindowApp) applyMergedMarketSnapshotLocked(item market.Item, remote market.TrackedSnapshot, merged localprogress.Snapshot, status string) {
 	a.reconcilePendingSnapshotLocked(remote)
+	var qualityErr error
+	if a.qualityTracking {
+		merged, qualityErr = a.qualityReconcileSnapshotLocked(a.apiKey, a.state.ItemOptions, merged)
+		if qualityErr != nil {
+			merged = unknownQualitySnapshot(merged)
+		}
+	}
 	snapshot, _ := localprogress.Allocate(merged)
 	a.confirmedProgress, a.localRevision, a.localAt = snapshot, a.state.ItemOptions.revision, time.Now()
 	a.rebuildPendingViewLocked()
 	a.state.Local = &LocalProgressState{UpdatedAt: a.localAt}
+	if qualityErr != nil {
+		a.state.Local.Error = "Local item quality could not be saved. " + qualityErr.Error()
+	}
 	if a.localItemCurrentLocked(item) {
 		a.state.Tracking = a.pendingTrackedViewLocked(item)
 		a.state.Tracking.Status = status
+		if qualityErr != nil {
+			a.state.Tracking.Error = a.state.Local.Error
+		}
 	}
 }
 
@@ -338,6 +398,18 @@ func (a *ItemWindowApp) rebuildPendingViewLocked() {
 		row := &snapshot.Items[i]
 		pending := a.pendingAddAmountLocked(a.state.ItemOptions, row.ItemID)
 		row.AvailableQuantity = min(localprogress.MaxQuantity, max(0, row.MarketAvailableQuantity+pending))
+		if row.QualityKnown {
+			for _, entry := range a.pendingAddQueue {
+				if !entry.Typed || entry.Key != a.apiKey || entry.Opts.CharacterUID != snapshot.CharUID || !strings.EqualFold(entry.Opts.Mode, snapshot.GameMode) || entry.Item.BSGID != row.ItemID {
+					continue
+				}
+				if entry.FIR {
+					row.FIRQuantity += pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
+				} else {
+					row.RegularQuantity += pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
+				}
+			}
+		}
 		row.RemainingQuantity = max(0, row.RequiredQuantity-row.AvailableQuantity)
 	}
 	if allocated, err := localprogress.Allocate(snapshot); err == nil {

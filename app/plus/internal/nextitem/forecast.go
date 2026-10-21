@@ -19,6 +19,9 @@ type Forecast struct {
 	Changes            []Change `json:"changes,omitempty"`
 	Targets            []Target `json:"targets,omitempty"`
 	Reason             string   `json:"reason,omitempty"`
+	// FixedStock ugyanannak az aktuális kiosztásnak a fix kategóriaszámlálója,
+	// amelyből a Targets készül. A megjelenítés belső adata, nem része a DTO-nak.
+	FixedStock *localprogress.RequirementStock `json:"-"`
 }
 
 type Change struct {
@@ -113,13 +116,14 @@ func Calculate(snapshot localprogress.Snapshot, itemID string) Forecast {
 		}
 		if capped {
 			return Forecast{Status: "unavailable", Targets: displayTargets(snapshot, graph, before, target, true),
-				Reason: "The inventory quantity limit has been reached."}
+				Reason: "The inventory quantity limit has been reached.", FixedStock: currentFixedStock(before, target)}
 		}
 		after := allocateGoals(input, afterStock)
 		result := changesForecast(before, after, target)
 		if primary == nil {
 			copy := result
 			copy.Targets = displayTargets(snapshot, graph, before, target, true)
+			copy.FixedStock = currentFixedStock(before, target)
 			primary = &copy
 		}
 		if !seenCategories[result.Category] {
@@ -151,6 +155,23 @@ func Calculate(snapshot localprogress.Snapshot, itemID string) Forecast {
 		primary.Reason += " This item has a large competing component; alternative-priority coverage is limited."
 	}
 	return *primary
+}
+
+func currentFixedStock(goals []goal, target int) *localprogress.RequirementStock {
+	stock := &localprogress.RequirementStock{Known: true}
+	for _, goal := range goals {
+		for _, need := range goal.needs {
+			if need.shared {
+				continue
+			}
+			if need.fir {
+				stock.FIR += need.allocations[target]
+			} else {
+				stock.Regular += need.allocations[target]
+			}
+		}
+	}
+	return stock
 }
 
 func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before []goal, target int, allocationKnown bool) []Target {

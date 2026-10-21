@@ -43,6 +43,13 @@ type ItemTrackingState struct {
 	MarketRequiredQuantity  int64                         `json:"marketRequiredQuantity"`
 	AddAllowed              bool                          `json:"addAllowed"`
 	RemoveAllowed           bool                          `json:"removeAllowed"`
+	AddFIRAllowed           bool                          `json:"addFIRAllowed"`
+	AddRegularAllowed       bool                          `json:"addRegularAllowed"`
+	RemoveFIRAllowed        bool                          `json:"removeFIRAllowed"`
+	RemoveRegularAllowed    bool                          `json:"removeRegularAllowed"`
+	FIRQuantity             int64                         `json:"firQuantity"`
+	RegularQuantity         int64                         `json:"regularQuantity"`
+	UncategorizedQuantity   int64                         `json:"uncategorizedQuantity"`
 	MarketTracked           bool                          `json:"marketTracked"`
 	AlternativeNotes        []string                      `json:"alternativeNotes,omitempty"`
 	AnyGroups               []ItemTrackingAnyGroup        `json:"anyGroups,omitempty"`
@@ -54,6 +61,7 @@ type ItemTrackingAnyGroup struct {
 	AvailableQuantity int64                   `json:"availableQuantity"`
 	RequiredQuantity  int64                   `json:"requiredQuantity"`
 	FIR               bool                    `json:"fir"`
+	AllocationUnknown bool                    `json:"allocationUnknown,omitempty"`
 	Sources           []ItemTrackingAnySource `json:"sources,omitempty"`
 }
 
@@ -417,6 +425,10 @@ func cloneTrackingState(tracking *ItemTrackingState) *ItemTrackingState {
 	copy.AnyGroups = append([]ItemTrackingAnyGroup(nil), tracking.AnyGroups...)
 	if tracking.NextItem != nil {
 		forecast := *tracking.NextItem
+		if tracking.NextItem.FixedStock != nil {
+			stock := *tracking.NextItem.FixedStock
+			forecast.FixedStock = &stock
+		}
 		forecast.PossibleCategories = append([]string(nil), tracking.NextItem.PossibleCategories...)
 		forecast.Changes = append([]nextitem.Change(nil), tracking.NextItem.Changes...)
 		forecast.Targets = append([]nextitem.Target(nil), tracking.NextItem.Targets...)
@@ -504,18 +516,26 @@ func (a *ItemWindowApp) trackingFailure(key string, opts ItemOptions, uid string
 
 // One explicit button click or shortcut press adds one to freshly read stock. A rejected revision
 // may be reconciled once. An uncertain write is only read back, never replayed.
-func (a *ItemWindowApp) AddTrackedItem(uid string) ItemState {
-	return a.addTrackedItem(uid, nil)
-}
-
 func (a *ItemWindowApp) addTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget) ItemState {
 	return a.reservePendingMarketAdd(uid, hotkeyTarget)
 }
 
-func (a *ItemWindowApp) RemoveTrackedItem(uid string) ItemState {
-	return a.removeTrackedItem(uid, nil)
-}
-
 func (a *ItemWindowApp) removeTrackedItem(uid string, hotkeyTarget *trackedAddHotkeyTarget) ItemState {
 	return a.reservePendingMarketChange(uid, hotkeyTarget, -1)
+}
+
+func (a *ItemWindowApp) AddFIRTrackedItem(uid string) ItemState {
+	return a.reservePendingTypedMarketChange(uid, nil, 1, true)
+}
+
+func (a *ItemWindowApp) AddRegularTrackedItem(uid string) ItemState {
+	return a.reservePendingTypedMarketChange(uid, nil, 1, false)
+}
+
+func (a *ItemWindowApp) RemoveFIRTrackedItem(uid string) ItemState {
+	return a.reservePendingTypedMarketChange(uid, nil, -1, true)
+}
+
+func (a *ItemWindowApp) RemoveRegularTrackedItem(uid string) ItemState {
+	return a.reservePendingTypedMarketChange(uid, nil, -1, false)
 }

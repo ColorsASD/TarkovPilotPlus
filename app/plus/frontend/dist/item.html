@@ -70,15 +70,22 @@
                 <div class="tracked-heading"><h2>Items Tracker</h2></div>
                 <p data-tracked="variant-name" class="tracked-variant-name hidden"></p>
                 <dl class="tracked-stock-list"><div class="tracked-stock-row"><dt>Stock</dt><dd data-tracked="ratio" class="tracked-ratio" aria-label="Available / required quantity">—/—</dd></div></dl>
+                <p data-tracked="inventory-note" class="tracked-inventory-note hidden"></p>
                 <dl data-tracked="requirements" class="tracked-requirements hidden" aria-label="Required items"></dl>
                 <div data-tracked="next-item" class="tracked-next-item hidden">
-                    <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Item</span><span data-tracked="next-item-category" class="tracked-next-item-category"></span></div>
+                    <div class="tracked-next-item-row"><span data-tracked="next-item-label">Next Item</span></div>
                     <div data-tracked="next-item-targets" class="tracked-next-item-targets"></div>
                 </div>
-                <button data-tracked="add" class="tracked-add-button" type="button" disabled
-                    title="Add 1 item to shared Tracked Items stock for the selected character"><span>Add item</span><kbd data-tracked="add-hotkey" class="add-hotkey-badge hidden"></kbd></button>
-                <button data-tracked="remove" class="tracked-add-button" type="button" disabled
-                    title="Remove 1 item from shared Tracked Items stock for the selected character"><span>Remove item</span><kbd data-tracked="remove-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                <div class="tracked-actions">
+                <button data-tracked="add-fir" class="tracked-add-button" type="button" disabled
+                    title="Add 1 Found in Raid item to Tracked Items stock for the selected character"><span>Add Found in Raid item</span><kbd data-tracked="add-fir-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                <button data-tracked="add-regular" class="tracked-add-button" type="button" disabled
+                    title="Add 1 Regular item to Tracked Items stock for the selected character"><span>Add Regular item</span><kbd data-tracked="add-regular-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                <button data-tracked="remove-fir" class="tracked-add-button" type="button" disabled
+                    title="Remove 1 Found in Raid item from Tracked Items stock for the selected character"><span>Remove Found in Raid item</span><kbd data-tracked="remove-fir-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                <button data-tracked="remove-regular" class="tracked-add-button" type="button" disabled
+                    title="Remove 1 Regular item from Tracked Items stock for the selected character"><span>Remove Regular item</span><kbd data-tracked="remove-regular-hotkey" class="add-hotkey-badge hidden"></kbd></button>
+                </div>
             </div>
             <p data-tracked="status" class="tracked-status hidden" role="status" aria-live="polite"></p>
             <p data-tracked="error" class="tracked-error hidden" role="alert"></p>
@@ -128,24 +135,42 @@
                 <label class="check-row" title="Check the open Inspect window after a left-click"><input id="scan-automatic" type="checkbox" />
                     <span>Automatic scanning</span></label>
                 <div class="select-row">
-                    <label for="add-hotkey">Add item shortcut</label>
+                    <label for="add-fir-hotkey">Add Found in Raid item shortcut</label>
                     <div class="shortcut-field">
-                        <input id="add-hotkey" type="text" value="F1" readonly autocomplete="off" spellcheck="false"
-                            title="Focus, then press a shortcut" aria-describedby="add-hotkey-status add-hotkey-hint" />
-                        <button id="btn-disable-add-hotkey" type="button">Disable</button>
+                        <input id="add-fir-hotkey" type="text" value="F1" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="add-fir-hotkey-status stock-hotkey-hint" />
+                        <button id="btn-disable-add-fir-hotkey" type="button">Disable</button>
                     </div>
                 </div>
-                <p id="add-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <p id="add-fir-hotkey-status" class="hint" role="status" aria-live="polite"></p>
                 <div class="select-row">
-                    <label for="remove-hotkey">Remove item shortcut</label>
+                    <label for="add-regular-hotkey">Add Regular item shortcut</label>
                     <div class="shortcut-field">
-                        <input id="remove-hotkey" type="text" value="F2" readonly autocomplete="off" spellcheck="false"
-                            title="Focus, then press a shortcut" aria-describedby="remove-hotkey-status add-hotkey-hint" />
-                        <button id="btn-disable-remove-hotkey" type="button">Disable</button>
+                        <input id="add-regular-hotkey" type="text" value="F2" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="add-regular-hotkey-status stock-hotkey-hint" />
+                        <button id="btn-disable-add-regular-hotkey" type="button">Disable</button>
                     </div>
                 </div>
-                <p id="remove-hotkey-status" class="hint" role="status" aria-live="polite"></p>
-                <p id="add-hotkey-hint" class="hint">Focus a shortcut field and press a key or a combination with Ctrl, Alt or Shift. Use Disable to release that shortcut. Enabled shortcuts are reserved globally for normal Windows keyboard input while the app runs, even when their stock action is unavailable. Each action needs a different shortcut.</p>
+                <p id="add-regular-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <div class="select-row">
+                    <label for="remove-fir-hotkey">Remove Found in Raid item shortcut</label>
+                    <div class="shortcut-field">
+                        <input id="remove-fir-hotkey" type="text" value="F3" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="remove-fir-hotkey-status stock-hotkey-hint" />
+                        <button id="btn-disable-remove-fir-hotkey" type="button">Disable</button>
+                    </div>
+                </div>
+                <p id="remove-fir-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <div class="select-row">
+                    <label for="remove-regular-hotkey">Remove Regular item shortcut</label>
+                    <div class="shortcut-field">
+                        <input id="remove-regular-hotkey" type="text" value="F4" readonly autocomplete="off" spellcheck="false"
+                            title="Focus, then press a shortcut" aria-describedby="remove-regular-hotkey-status stock-hotkey-hint" />
+                        <button id="btn-disable-remove-regular-hotkey" type="button">Disable</button>
+                    </div>
+                </div>
+                <p id="remove-regular-hotkey-status" class="hint" role="status" aria-live="polite"></p>
+                <p id="stock-hotkey-hint" class="hint">Focus a shortcut field and press a key or a combination with Ctrl, Alt or Shift. Use Disable to release that shortcut. Enabled shortcuts are reserved globally for normal Windows keyboard input while the app runs, even when their stock action is unavailable. Each action needs a different shortcut.</p>
                 <div class="select-row mode-row">
                     <label for="game-mode">Game mode</label>
                     <select id="game-mode">
@@ -163,6 +188,18 @@
                 <p id="characters-note" class="hint hidden"></p>
                 <button id="btn-refresh-local" type="button">Refresh progress</button>
                 <p id="local-progress-status" class="hint hidden" role="status" aria-live="polite"></p>
+                <details id="tracker-inventory" class="tracker-inventory">
+                    <summary>Items Tracker inventory</summary>
+                    <div class="tracker-inventory-content">
+                        <p class="hint">Classify existing stock locally. Saving quality does not change the total on Tarkov Market.</p>
+                        <label for="inventory-search" class="sr-only">Search inventory</label>
+                        <input id="inventory-search" type="search" placeholder="Search inventory…" autocomplete="off" spellcheck="false" />
+                        <button id="btn-refresh-inventory" type="button">Refresh inventory</button>
+                        <p id="inventory-status" class="hint" role="status" aria-live="polite"></p>
+                        <p id="inventory-error" class="tracked-error hidden" role="alert"></p>
+                        <div id="inventory-rows" class="inventory-rows"></div>
+                    </div>
+                </details>
                 <div class="api-key-section">
                     <label for="api-key">Tarkov Market API key</label>
                     <div class="api-key-field">
@@ -193,19 +230,24 @@
                 <p><strong>Prices.</strong> Flea Market shows the best and 24-hour average prices.
                     Trader shows the best trader price. Values in parentheses are prices per slot.</p>
                 <p><strong>Stock.</strong> Stock shows available quantity / collection target.
-                    Regular and Found in Raid show fixed requirements.
-                    Shared and Shared (FiR) include other eligible items. Add item adds one piece;
-                    Remove item removes one. F1/F2 are the defaults and reserve those keys while enabled;
-                    change or disable them in Settings.</p>
-                <p><strong>Goals.</strong> Next Item estimates the next piece's category from current Market progress.
-                    The quest and hideout lists show the item's goals and current ratios. Brown checkmarks mark completed goals.</p>
+                    Tarkov Market supplies the total quantity. Found in Raid and Regular stock are kept separately in a local save.
+                    Regular and Found in Raid show fixed requirements; Shared and Shared (FiR) include other eligible items.</p>
+                <p><strong>Stock controls.</strong> F1 adds one Found in Raid item, F2 adds one Regular item,
+                    F3 removes one Found in Raid item, and F4 removes one Regular item.
+                    Unavailable actions are disabled, including additions to covered requirements and removals from empty stock.
+                    Change or disable these shortcuts in Settings.</p>
+                <p><strong>Goals.</strong> Next Item lists the item's quests and hideout upgrades.
+                    Their ratios use your locally recorded Found in Raid and Regular stock.
+                    Brown checkmarks mark completed goals.</p>
                 <p><strong>Completed Item.</strong> When all listed goals are completed and no active item requirement remains,
-                    only the completed goal list is shown. Stock, requirement rows and Add/Remove buttons are hidden.</p>
+                    only the completed goal list is shown. Stock, requirement rows and stock buttons are hidden.</p>
                 <p><strong>Names and refresh.</strong> The brown copy icons copy only the item, quest or hideout name.
                     Refresh progress reloads Market data. The last goal details stay visible during refreshes.</p>
-                <p><strong>Saving.</strong> Stock updates immediately and saves to Market in the background.
-                    Wait for pending saves before exiting. Closing either window closes both; unsaved changes cannot
-                    be restored after restart. Text recognition runs locally.</p>
+                <p><strong>Saving.</strong> Stock updates immediately and saves the total to Market in the background.
+                    The Found in Raid / Regular split is saved locally for the selected character and game mode.
+                    Wait for pending saves before exiting. Unsaved stock changes are not replayed after restart;
+                    confirmed item quality is saved locally. Closing either window closes both.
+                    Text recognition runs locally.</p>
             </div>
         </details>
     </main>

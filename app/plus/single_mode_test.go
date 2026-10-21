@@ -12,14 +12,14 @@ import (
 )
 
 func TestSingleAddShortcutDefaultsAndPersistsCustomChoice(t *testing.T) {
-	if options := normalizeItemOptions(ItemOptions{}); options.AddHotkey != "F1" {
+	if options := normalizeItemOptions(ItemOptions{}); options.AddFIRHotkey != "F1" {
 		t.Fatalf("the only Add shortcut did not default to F1: %+v", options)
 	}
 	a, _ := newTrackingTestApp(t)
 	opts := a.state.ItemOptions
-	opts.AddHotkey = "shift + ctrl + alt + q"
+	opts.AddFIRHotkey = "shift + ctrl + alt + q"
 	state := a.SetOptions(opts)
-	if state.Error != "" || state.AddHotkey != "Ctrl+Alt+Shift+Q" {
+	if state.Error != "" || state.AddFIRHotkey != "Ctrl+Alt+Shift+Q" {
 		t.Fatalf("custom Add shortcut was not canonicalized: %+v", state)
 	}
 	data, err := os.ReadFile(filepath.Join(a.dir, "item-settings.json"))
@@ -27,7 +27,7 @@ func TestSingleAddShortcutDefaultsAndPersistsCustomChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	var saved map[string]json.RawMessage
-	if json.Unmarshal(data, &saved) != nil || string(saved["addHotkey"]) != `"Ctrl+Alt+Shift+Q"` {
+	if json.Unmarshal(data, &saved) != nil || string(saved["addFIRHotkey"]) != `"Ctrl+Alt+Shift+Q"` {
 		t.Fatalf("single Add shortcut was not persisted: %s", data)
 	}
 	if _, exists := saved["firHotkey"]; exists {
@@ -47,7 +47,7 @@ func TestSingleAddInvalidShortcutCannotChangeSavedSettings(t *testing.T) {
 			}
 			previous := a.state.ItemOptions
 			opts := previous
-			opts.AddHotkey = invalid
+			opts.AddFIRHotkey = invalid
 			state := a.SetOptions(opts)
 			after, err := os.ReadFile(path)
 			if err != nil || state.Error == "" || a.state.ItemOptions != previous || string(before) != string(after) {
@@ -69,8 +69,8 @@ func TestSingleAddSavedShortcutMigrationUsesLegacyFIRChoiceAndRewritesFile(t *te
 		{"legacy-empty", `"addHotkey":"F2","firHotkey":""`, "F1", true},
 		{"legacy-null", `"addHotkey":"F2","firHotkey":null`, "F1", true},
 		{"legacy-invalid", `"addHotkey":"F2","firHotkey":"F13"`, "F1", true},
-		{"single-custom", `"addHotkey":"Ctrl+F2"`, "Ctrl+F2", false},
-		{"single-disabled", `"addHotkey":"off"`, "off", false},
+		{"single-custom", `"addHotkey":"Ctrl+F2"`, "Ctrl+F2", true},
+		{"single-disabled", `"addHotkey":"off"`, "off", true},
 		{"missing-shortcuts", `"unrelatedLegacyField":false`, "F1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSingleAddSavedShortcutMigrationUsesLegacyFIRChoiceAndRewritesFile(t *te
 				t.Fatal(err)
 			}
 			options, err := migrateSavedItemOptions(path, data)
-			if err != nil || options.AddHotkey != tc.want || !options.Enabled || options.Automatic || options.Mode != "pve" || options.CharacterUID != "character-a" || options.Language != "en" {
+			if err != nil || options.AddFIRHotkey != tc.want || !options.Enabled || options.Automatic || options.Mode != "pve" || options.CharacterUID != "character-a" || options.Language != "en" {
 				t.Fatalf("migration lost the chosen shortcut or other preferences: %+v err=%v", options, err)
 			}
 			after, err := os.ReadFile(path)
@@ -92,7 +92,7 @@ func TestSingleAddSavedShortcutMigrationUsesLegacyFIRChoiceAndRewritesFile(t *te
 			}
 			if tc.legacy {
 				var fields map[string]json.RawMessage
-				if json.Unmarshal(after, &fields) != nil || string(fields["addHotkey"]) != `"`+tc.want+`"` {
+				if json.Unmarshal(after, &fields) != nil || string(fields["addFIRHotkey"]) != `"`+tc.want+`"` {
 					t.Fatalf("startup did not migrate the actual file: %s", after)
 				}
 				if _, exists := fields["firHotkey"]; exists {
@@ -111,7 +111,7 @@ func TestSingleAddMigrationWriteFailureRetainsLoadedPreferences(t *testing.T) {
 	data := []byte(`{"enabled":true,"automatic":true,"mode":"season","characterUid":"character-a","addHotkey":"F2","firHotkey":"Alt+Q"}`)
 	// Egy könyvtár nem írható felül beállításfájlként; valódi appadat nem érintett.
 	options, err := migrateSavedItemOptions(t.TempDir(), data)
-	if err == nil || options.AddHotkey != "Alt+Q" || options.Mode != "season" || options.CharacterUID != "character-a" || !options.Automatic {
+	if err == nil || options.AddFIRHotkey != "Alt+Q" || options.Mode != "season" || options.CharacterUID != "character-a" || !options.Automatic {
 		t.Fatalf("migration write failure discarded readable preferences: %+v err=%v", options, err)
 	}
 }

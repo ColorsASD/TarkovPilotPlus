@@ -19,6 +19,8 @@ type pendingMarketAdd struct {
 	Opts           ItemOptions
 	Item           market.Item
 	Delta          int64
+	Typed          bool
+	FIR            bool
 	Stage          string
 	BeforeRevision string
 	Before         int64
@@ -34,6 +36,16 @@ func pendingMarketDelta(entry pendingMarketAdd) int64 {
 		return 1
 	}
 	return entry.Delta
+}
+
+// A helyi minőség mentési hibája miatt a művelet a sorban maradhat akkor is,
+// amikor az API már igazolta a készletváltozást. Ezt a darabot az új API-alap
+// fölé sem a teljes, sem a minőség szerinti készletben nem szabad újra hozzáadni.
+func pendingMarketDeltaForSnapshot(entry pendingMarketAdd, snapshot localprogress.Snapshot) int64 {
+	if entry.Typed && pendingMarketChangeConfirmed(entry, localMarketSnapshot(snapshot)) {
+		return 0
+	}
+	return pendingMarketDelta(entry)
 }
 
 type PendingAddState struct {
@@ -62,7 +74,7 @@ func (a *ItemWindowApp) GetPendingAddCount() int {
 func (a *ItemWindowApp) pendingAddAmountLocked(opts ItemOptions, itemID string) (count int64) {
 	for _, entry := range a.pendingAddQueue {
 		if entry.Key == a.apiKey && entry.Opts.CharacterUID == opts.CharacterUID && strings.EqualFold(entry.Opts.Mode, opts.Mode) && entry.Item.BSGID == itemID {
-			count += pendingMarketDelta(entry)
+			count += pendingMarketDeltaForSnapshot(entry, a.confirmedProgress)
 		}
 	}
 	return count
@@ -104,15 +116,30 @@ func (a *ItemWindowApp) reservePendingMarketAdd(uid string, target *trackedAddHo
 }
 
 func (a *ItemWindowApp) reservePendingMarketChange(uid string, target *trackedAddHotkeyTarget, delta int64) ItemState {
+	return a.reservePendingMarketQualityChange(uid, target, delta, false, false)
+}
+
+func (a *ItemWindowApp) reservePendingTypedMarketChange(uid string, target *trackedAddHotkeyTarget, delta int64, fir bool) ItemState {
+	return a.reservePendingMarketQualityChange(uid, target, delta, true, fir)
+}
+
+func (a *ItemWindowApp) reservePendingMarketQualityChange(uid string, target *trackedAddHotkeyTarget, delta int64, typed, fir bool) ItemState {
 	a.mu.Lock()
+	if typed {
+		a.qualityTracking = true
+	}
 	opts := a.state.ItemOptions
 	eligible := delta == 1 && a.canAddTrackedItemLocked() || delta == -1 && a.canRemoveTrackedItemLocked()
 	shortcutReady := a.state.AddHotkeyReady && trackedAddHotkeyEnabled(opts)
 	if delta == -1 {
 		shortcutReady = a.state.RemoveHotkeyReady && trackedRemoveHotkeyEnabled(opts)
 	}
+	if typed {
+		i := qualityActionIndex(delta < 0, fir)
+		shortcutReady = a.qualityHotkeyReadyLocked(i) && qualityShortcutKeys(opts)[i] != "off"
+	}
 	if !eligible || a.state.Item.UID != uid || target != nil &&
-		(!a.trackedAddHotkeyTargetCurrent(target) || !shortcutReady || target.Remove != (delta == -1) ||
+		(!a.trackedAddHotkeyTargetCurrent(target) || !shortcutReady || target.Remove != (delta == -1) || target.Typed != typed || typed && target.FIR != fir ||
 			target.UID != uid || target.ItemID != a.state.Item.BSGID || target.CharUID != opts.CharacterUID || target.Revision != opts.revision) {
 		a.mu.Unlock()
 		return a.GetState()
@@ -124,13 +151,21 @@ func (a *ItemWindowApp) reservePendingMarketChange(uid string, target *trackedAd
 		a.emit()
 		return a.GetState()
 	}
-	if delta > 0 && !a.allowTrackedItemLocked(a.state.Item.BSGID) || delta < 0 && !a.allowTrackedItemRemovalLocked(a.state.Item.BSGID) {
+	entry := pendingMarketAdd{Key: a.apiKey, Opts: opts, Item: *a.state.Item, Delta: delta, Typed: typed, FIR: fir, Stage: "queued"}
+	allowed := false
+	if typed {
+		allowed = a.qualityChangeAllowedLocked(a.localSnapshot, entry)
+	} else {
+		allowed = delta > 0 && a.allowTrackedItemLocked(a.state.Item.BSGID) || delta < 0 && a.allowTrackedItemRemovalLocked(a.state.Item.BSGID)
+	}
+	if !allowed {
 		a.mu.Unlock()
 		a.emit()
 		return a.GetState()
 	}
 	a.pendingAddNextID++
-	a.pendingAddQueue = append(a.pendingAddQueue, pendingMarketAdd{ID: a.pendingAddNextID, Key: a.apiKey, Opts: opts, Item: *a.state.Item, Delta: delta, Stage: "queued"})
+	entry.ID = a.pendingAddNextID
+	a.pendingAddQueue = append(a.pendingAddQueue, entry)
 	a.pendingAddError = ""
 	a.rebuildPendingViewLocked()
 	a.state.Tracking.Status = "Added 1 item. Waiting for Tarkov Market confirmation."
@@ -218,6 +253,12 @@ func (a *ItemWindowApp) reconcilePendingSnapshotLocked(remote market.TrackedSnap
 			i++
 			continue
 		}
+		if err := a.qualityCommitPendingLocked(entry); err != nil {
+			a.pendingAddQueue[i].Error = "Market stock was confirmed, but its local FiR/Regular classification could not be saved. Refresh progress to retry."
+			a.pendingAddError = a.pendingAddQueue[i].Error
+			i++
+			continue
+		}
 		a.removePendingAddLocked(entry.ID)
 		if entry.Error != "" && a.pendingAddError == entry.Error {
 			a.pendingAddError = ""
@@ -241,6 +282,28 @@ func (a *ItemWindowApp) publishPendingRemoteLocked(entry pendingMarketAdd, remot
 
 func (a *ItemWindowApp) finishPendingAdd(entry pendingMarketAdd, remote market.TrackedSnapshot, message string, failure error) {
 	a.mu.Lock()
+	if a.pendingAddIndexLocked(entry.ID) >= 0 {
+		var err error
+		if failure == nil {
+			err = a.qualityCommitPendingLocked(entry)
+		} else {
+			err = a.qualityCancelPendingLocked(entry)
+		}
+		if err != nil {
+			if failure != nil {
+				if i := a.pendingAddIndexLocked(entry.ID); i >= 0 {
+					a.pendingAddQueue[i].Stage = "canceled"
+					a.pendingAddQueue[i].WriteError = failure
+				}
+			}
+			// A minőségi napló hibája nem írhatja felül a már visszaolvasott
+			// Market-készletet. A sor az egyszeri helyi elszámolásig megmarad.
+			a.publishPendingRemoteLocked(entry, remote, message)
+			a.mu.Unlock()
+			a.blockPendingAdd(entry, "The Market stock result is awaiting its local FiR/Regular save. Refresh progress to retry verification.")
+			return
+		}
+	}
 	if a.removePendingAddLocked(entry.ID) {
 		if failure != nil {
 			a.pendingAddError = message
@@ -306,6 +369,10 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 	}
 	entry = a.pendingAddQueue[i]
 	a.mu.Unlock()
+	if entry.Stage == "canceled" {
+		a.finishPendingAdd(entry, market.TrackedSnapshot{}, "The canceled stock change was removed after its local FiR/Regular cleanup.", entry.WriteError)
+		return true
+	}
 	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
 	defer cancel()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -339,6 +406,14 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 			allowed = allowed && row.MarketAvailableQuantity < localprogress.MaxQuantity
 			message = "The current Market requirements cannot use this item. Its pending addition was canceled."
 		}
+		if entry.Typed {
+			a.mu.Lock()
+			allowed, gateErr = a.qualityChangeAllowedLocked(snapshot, entry), nil
+			a.mu.Unlock()
+			if delta > 0 {
+				allowed = allowed && row.MarketAvailableQuantity < localprogress.MaxQuantity
+			}
+		}
 		if gateErr != nil || !unique || snapshot.FIRInventorySeparate || !allowed {
 			a.finishPendingAdd(entry, remote, message, market.ErrProgressConflict)
 			return true
@@ -351,6 +426,11 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 			a.mu.Unlock()
 			return true
 		}
+		if err := a.qualityMarkSentLocked(entry); err != nil {
+			a.mu.Unlock()
+			a.finishPendingAdd(entry, remote, "The local FiR/Regular save could not be prepared. The stock change was canceled before sending it to Tarkov Market.", err)
+			return true
+		}
 		a.pendingAddQueue[i] = entry
 		a.updatePendingAddStateLocked()
 		a.mu.Unlock()
@@ -358,6 +438,15 @@ func (a *ItemWindowApp) processPendingMarketAdd(parent context.Context, entry pe
 		if errors.Is(writeErr, market.ErrProgressConflict) && !errors.Is(writeErr, market.ErrProgressWriteUncertain) && attempt == 0 {
 			entry.Stage = "queued"
 			a.mu.Lock()
+			if err := a.qualityCancelPendingLocked(entry); err != nil {
+				if i := a.pendingAddIndexLocked(entry.ID); i >= 0 {
+					a.pendingAddQueue[i].Stage = "canceled"
+					a.pendingAddQueue[i].WriteError = writeErr
+				}
+				a.mu.Unlock()
+				a.blockPendingAdd(entry, "The rejected stock change is awaiting local FiR/Regular cleanup. Refresh progress to retry.")
+				return false
+			}
 			if i := a.pendingAddIndexLocked(entry.ID); i >= 0 {
 				a.pendingAddQueue[i] = entry
 			}

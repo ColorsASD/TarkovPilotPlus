@@ -59,6 +59,10 @@ type Item struct {
 	CollectionFIRAvailableQuantity     int64    `json:"collectionFIRAvailableQuantity"`
 	CollectionRegularAvailableQuantity int64    `json:"collectionRegularAvailableQuantity"`
 	Sources                            []Source `json:"sources"`
+	// A teljes készlet a Market adata; a minőségi bontás a helyi mentésből jön.
+	QualityKnown    bool  `json:"qualityKnown"`
+	FIRQuantity     int64 `json:"firQuantity"`
+	RegularQuantity int64 `json:"regularQuantity"`
 }
 
 type Snapshot struct {

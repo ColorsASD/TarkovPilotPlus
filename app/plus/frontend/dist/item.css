@@ -133,7 +133,6 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .tracked-next-item.completed { margin-top: 7px; padding-top: 0; border-top: 0; }
 .tracked-next-item-row { display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
 .tracked-next-item-row > span { min-width: 0; overflow-wrap: anywhere; }
-.tracked-next-item-category { color: var(--accent-light); text-align: right; }
 .tracked-next-item-targets { display: flex; flex-direction: column; gap: 7px; margin-top: 5px; color: var(--muted); }
 .tracked-next-item-target-heading { margin: 0 0 3px; font-size: 11px; font-weight: 600; }
 .tracked-next-item-target { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 9px; }
@@ -142,7 +141,10 @@ h1 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wr
 .tracked-next-item-target-completed { display: inline-flex; align-items: center; vertical-align: baseline; position: relative; top: 2px; color: var(--accent-light); line-height: 1; white-space: nowrap; }
 .tracked-next-item-target-completed svg { width: 11px; height: 11px; }
 .tracked-next-item-target-ratio { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.tracked-add-button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 8px; padding: 5px 9px; font-size: 12px; }
+.tracked-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; margin-top: 8px; }
+.tracked-add-button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; justify-content: center; gap: 5px; min-width: 0; width: 100%; min-height: 44px; padding: 5px 7px; font-size: 12px; }
+.tracked-add-button > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.tracked-add-button:disabled { color: var(--muted); border-color: #555; }
 .add-hotkey-badge { max-width: 100%; border: 1px solid #665d4b; border-radius: 3px; padding: 0 4px; color: var(--muted); font: 10px/1.5 "Segoe UI", Tahoma, sans-serif; white-space: normal; overflow-wrap: anywhere; }
 .tracked-status, .tracked-error { margin: 6px 0 0; font-size: 11px; overflow-wrap: anywhere; user-select: text; }
 .tracked-status { color: var(--muted); }
@@ -209,6 +211,19 @@ select option:disabled { color: #737373; }
 .subtle-button { border-color: #4d4d4d; color: var(--muted); }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.4; margin: 0; }
 .hint.error { color: var(--error); }
+.tracked-inventory-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.tracker-inventory { border-top: 1px solid var(--border); padding-top: 4px; }
+.tracker-inventory > summary { padding: 6px 0; font-size: 11px; }
+.tracker-inventory-content { display: flex; flex-direction: column; gap: 8px; padding-top: 3px; }
+.inventory-rows { display: flex; flex-direction: column; gap: 9px; max-height: 410px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4a4337 var(--bg); }
+.inventory-row { padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.inventory-name { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; user-select: text; }
+.inventory-quantities { display: flex; justify-content: space-between; gap: 6px; margin: 5px 0 7px; color: var(--muted); font-size: 11px; flex-wrap: wrap; }
+.inventory-quality-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
+.inventory-quality-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--muted); font-size: 11px; }
+.inventory-quality-field input { min-width: 0; width: 100%; color: var(--text); padding: 5px 6px; border: 1px solid var(--border); border-radius: var(--radius); background: #202020; }
+.inventory-save { width: 100%; margin-top: 7px; white-space: normal; font-size: 11px; padding: 5px 7px; }
+.inventory-row-error { color: var(--error); font-size: 11px; margin: 5px 0 0; overflow-wrap: anywhere; }
 .help-panel { background: transparent; border-color: #282828; }
 .help-panel summary { color: var(--muted); font-size: 11px; font-weight: 400; padding: 7px 9px; }
 .help-content { color: var(--muted); font-size: 12px; padding: 0 10px 10px; line-height: 1.5; }

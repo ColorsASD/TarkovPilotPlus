@@ -6,6 +6,8 @@ type trackedAddHotkeyTarget struct {
 	UID, ItemID, CharUID string
 	Revision             uint64
 	Remove               bool
+	FIR                  bool
+	Typed                bool
 }
 
 // An unrelated state publication keeps the accepted keydown valid. Once a
@@ -29,6 +31,10 @@ func trackedRemoveHotkeyEnabled(opts ItemOptions) bool {
 func (a *ItemWindowApp) trackedAddHotkeyTargetCurrent(target *trackedAddHotkeyTarget) bool {
 	if target == nil {
 		return false
+	}
+	if target.Typed {
+		i := qualityActionIndex(target.Remove, target.FIR)
+		return qualityShortcutKeys(a.state.ItemOptions)[i] != "off" && a.qualityHotkeyTargets[i].Load() == target
 	}
 	if target.Remove {
 		return trackedRemoveHotkeyEnabled(a.state.ItemOptions) && a.removeHotkeyTarget.Load() == target
@@ -67,6 +73,7 @@ func (a *ItemWindowApp) canAddTrackedItemLocked() bool {
 func (a *ItemWindowApp) publishTrackedAddHotkey() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.publishQualityHotkeysLocked()
 	if a.state.AddHotkeyReady && trackedAddHotkeyEnabled(a.state.ItemOptions) && a.canAddTrackedItemLocked() && a.state.Tracking.AddAllowed {
 		a.addHotkeyTarget.Store(retainTrackedHotkeyTarget(a.addHotkeyTarget.Load(), trackedAddHotkeyTarget{
 			UID: a.state.Item.UID, ItemID: a.state.Item.BSGID,
@@ -110,13 +117,22 @@ func (a *ItemWindowApp) runTrackedAddHotkeys() {
 	for {
 		select {
 		case <-a.ctx.Done():
+			for i := range a.qualityHotkeyTargets {
+				a.qualityHotkeyTargets[i].Store(nil)
+			}
 			a.addHotkeyTarget.Store(nil)
 			a.removeHotkeyTarget.Store(nil)
 			a.addHotkeyPending.Store(false)
 			return
 		case target := <-a.addHotkeyRequests:
 			if a.ctx.Err() == nil && target != nil {
-				if target.Remove {
+				if target.Typed {
+					delta := int64(1)
+					if target.Remove {
+						delta = -1
+					}
+					a.reservePendingTypedMarketChange(target.UID, target, delta, target.FIR)
+				} else if target.Remove {
 					a.removeTrackedItem(target.UID, target)
 				} else {
 					a.addTrackedItem(target.UID, target)
@@ -131,16 +147,17 @@ func (a *ItemWindowApp) startTrackedAddHotkey() {
 	a.addHotkeyRequests = make(chan *trackedAddHotkeyTarget, 1)
 	go a.runTrackedAddHotkeys()
 	a.hotkeyConfigMu.Lock()
-	hotkey := newTrackedAddHotkey(a.ctx, a.requestTrackedAddHotkey, a.setTrackedAddHotkeyStatus)
-	remove := newTrackedAddHotkey(a.ctx, a.requestTrackedRemoveHotkey, a.setTrackedRemoveHotkeyStatus)
 	a.mu.Lock()
-	a.addHotkey = hotkey
-	a.removeHotkey = remove
 	opts := a.state.ItemOptions
 	capture := a.state.HotkeyCapture
 	a.mu.Unlock()
-	configureTrackedHotkeyKeys(hotkey, opts, capture)
-	configureTrackedRemoveHotkeyKeys(remove, opts, capture)
+	for i := range a.qualityHotkeys {
+		i := i
+		a.qualityHotkeys[i] = newTrackedAddHotkey(a.ctx,
+			func() { a.queueTrackedAddHotkey(a.qualityHotkeyTargets[i].Load()) },
+			func(ready bool, message string) { a.setQualityHotkeyStatus(i, ready, message) })
+	}
+	a.configureQualityHotkeyKeys(opts, capture)
 	a.hotkeyConfigMu.Unlock()
 }
 
@@ -152,6 +169,7 @@ func (a *ItemWindowApp) configureTrackedAddHotkey() {
 	remove := a.removeHotkey
 	capture := a.state.HotkeyCapture
 	a.mu.Unlock()
+	a.configureQualityHotkeyKeys(opts, capture)
 	if hotkey != nil {
 		configureTrackedHotkeyKeys(hotkey, opts, capture)
 	}
@@ -183,6 +201,9 @@ func (a *ItemWindowApp) SetHotkeyCapture(enabled bool) ItemState {
 		return a.GetState()
 	}
 	a.state.HotkeyCapture = enabled
+	for i := range a.qualityHotkeyTargets {
+		a.qualityHotkeyTargets[i].Store(nil)
+	}
 	a.addHotkeyTarget.Store(nil)
 	a.removeHotkeyTarget.Store(nil)
 	a.mu.Unlock()
@@ -219,7 +240,18 @@ func (a *ItemWindowApp) stopTrackedAddHotkey() {
 	a.state.RemoveHotkeyReady = false
 	a.addHotkeyTarget.Store(nil)
 	a.removeHotkeyTarget.Store(nil)
+	for i := range a.qualityHotkeyTargets {
+		a.qualityHotkeyTargets[i].Store(nil)
+	}
+	a.state.AddFIRHotkeyReady, a.state.AddRegularHotkeyReady = false, false
+	a.state.RemoveFIRHotkeyReady, a.state.RemoveRegularHotkeyReady = false, false
 	a.mu.Unlock()
+	for i, hotkey := range a.qualityHotkeys {
+		if hotkey != nil {
+			hotkey.Close()
+			a.qualityHotkeys[i] = nil
+		}
+	}
 	if hotkey != nil {
 		hotkey.Close()
 	}

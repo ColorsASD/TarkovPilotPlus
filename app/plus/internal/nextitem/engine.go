@@ -9,6 +9,9 @@ type need struct {
 	rows        []int
 	amount      int64
 	fir, shared bool
+	// A helyi minőségi nézet egy fizikai tárgy több készletcsomópontját is
+	// elfogadhatja anélkül, hogy a fix követelmény Shared csoporttá válna.
+	typed       bool
 	allocations map[int]int64
 	have        int64
 }
@@ -143,7 +146,7 @@ func engineAllocationTotal(allocation map[int]int64) int64 {
 // fizikai sort címez; a shared need az egyelemű anyOf esetén is közös marad.
 func engineNeedRows(n need) []int {
 	rows := n.rows
-	if !n.shared && len(rows) > 1 {
+	if !n.shared && !n.typed && len(rows) > 1 {
 		rows = rows[:1]
 	}
 	result := make([]int, 0, len(rows))
@@ -170,7 +173,7 @@ func engineAllocateNeeds(needs []need, stock []int64) []map[int]int64 {
 	result := make([]map[int]int64, len(needs))
 	sharedRows := make(map[int]bool)
 	for _, n := range needs {
-		if n.shared {
+		if n.shared || (n.typed && len(engineNeedRows(n)) > 1) {
 			for _, row := range engineNeedRows(n) {
 				sharedRows[row] = true
 			}
@@ -232,6 +235,13 @@ func engineAllocateNeeds(needs []need, stock []int64) []map[int]int64 {
 		components[position] = append(components[position], index)
 	}
 	for _, component := range components {
+		// A helyi minőségi nézetben csak a FiR igények után maradó FiR
+		// darabok egészíthetik ki a Regular készletet. A típuson belüli
+		// célprioritás és a régi közös készletű számítás változatlan.
+		sort.SliceStable(component, func(i, j int) bool {
+			a, b := needs[component[i]], needs[component[j]]
+			return a.typed && b.typed && a.fir && !b.fir
+		})
 		ordered := make([]need, 0, len(component))
 		for _, index := range component {
 			ordered = append(ordered, needs[index])
@@ -266,13 +276,25 @@ func engineLexicographicFlow(needs []need, stock []int64) []map[int]int64 {
 		return forward
 	}
 	itemNodes := make(map[int]int)
+	itemRows := []int{}
+	seenRows := make(map[int]bool)
+	typed := false
 	for _, n := range needs {
+		typed = typed || n.typed
 		for _, row := range engineNeedRows(n) {
-			if _, exists := itemNodes[row]; !exists && engineStock(stock, row) > 0 {
-				itemNodes[row] = addNode()
-				addEdge(0, itemNodes[row], engineStock(stock, row))
+			if !seenRows[row] && engineStock(stock, row) > 0 {
+				itemRows, seenRows[row] = append(itemRows, row), true
 			}
 		}
+	}
+	if typed {
+		// A FiR sinkkapuk előbb nyílnak; a későbbi Regular kapuk a
+		// rendelkezésre álló nonFiR forrásokat használják először.
+		sort.SliceStable(itemRows, func(i, j int) bool { return itemRows[i]%2 < itemRows[j]%2 })
+	}
+	for _, row := range itemRows {
+		itemNodes[row] = addNode()
+		addEdge(0, itemNodes[row], engineStock(stock, row))
 	}
 	type itemEdge struct {
 		row  int
