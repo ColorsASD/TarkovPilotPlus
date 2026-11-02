@@ -165,7 +165,10 @@ func (c *Client) LoadTracked(ctx context.Context, apiKey, charUID, lang string) 
 	groups := make(map[string]bool)
 	for _, group := range snapshot.Groups {
 		key := group.QuestID + "\x00" + group.RequirementID
-		if !validProgressID(group.QuestID) || !validProgressID(group.RequirementID) || groups[key] ||
+		// Az eseménykövetelményhez a Market null questId-t is adhat. A stabil
+		// requirementId ilyenkor is külön azonosítja a csoportot; küldetést
+		// sem névből, sem másik csoportból nem következtetünk hozzá.
+		if (group.QuestID != "" && !validProgressID(group.QuestID)) || !validProgressID(group.RequirementID) || groups[key] ||
 			group.Amount <= 0 || group.Amount > 1_000_000_000 || group.RequiredQuantity < 0 || group.RequiredQuantity > group.Amount ||
 			group.AvailableQuantity < 0 || group.AvailableQuantity > 1_000_000_000 || group.RemainingQuantity < 0 || group.RemainingQuantity > group.Amount || len(group.ItemIDs) == 0 {
 			return TrackedSnapshot{}, ErrInvalidProgress

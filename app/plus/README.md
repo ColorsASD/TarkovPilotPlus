@@ -44,7 +44,7 @@ control reference; the sections below describe the implementation and its limits
 ## Versions
 
 The original TarkovPilot version remains in `app/version.go` (`2.1.1`). The Plus
-version is maintained independently in `app/plus/version.go` (`1.4.2`). A Plus
+version is maintained independently in `app/plus/version.go` (`1.4.3`). A Plus
 build can increment only its own version; releasing the extension does not change
 the original version. The Pilot heartbeat sends the original version to the
 website. The UI labels both versions separately, while the release package's
@@ -55,7 +55,7 @@ Every build creates `app/build/bin/TarkovPilotPlus-<version>-windows-x64/` and t
 matching ZIP archive. Both contain `TarkovPilotPlus.exe`, `versions.json` and the
 complete `ocr` directory. The executable name stays `TarkovPilotPlus.exe` even
 when the build is given a custom compiler output filename. The current package
-version is `1.4.2`.
+version is `1.4.3`.
 
 The base is pinned in `app/plus/upstream.json` to
 `ggdiam/TarkovPilot` commit `d04567384dd38dd32ad4b6a4283e2f21ee25c423`, version
@@ -427,6 +427,11 @@ not the selected item's entire FiR inventory; zero and unknown values are omitte
 
 Shared progress uses the [Tarkov Market API](https://tarkov-market.com/dev/api)
 `groups` and `questGroup` sources to identify requirements and eligible items.
+Event groups with a null or missing `questId` retain their stable `requirementId`
+through inventory loading, Shared allocation and Next Items. Separate requirements
+remain distinct even when their displayed names match. Missing quest metadata
+does not invent a quest identity, priority or completion state; invalid nonempty
+identifiers and duplicate groups are still rejected.
 The displayed Shared and Shared (FiR) numerators come from locally classified
 inventory across those eligible items, rather than the API group's untyped stock
 counter. Other eligible items and their pending typed changes participate in the

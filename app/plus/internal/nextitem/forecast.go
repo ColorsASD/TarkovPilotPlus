@@ -195,7 +195,7 @@ func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before
 		completed, canceled bool
 		level               int
 	}
-	quests, modules := make(map[string]*metadata), make(map[string]*metadata)
+	quests, modules, groupsWithoutQuest := make(map[string]*metadata), make(map[string]*metadata), make(map[string]*metadata)
 	var order []*metadata
 	for _, quest := range snapshot.MarketQuests {
 		status := strings.ToLower(strings.TrimSpace(quest.Status))
@@ -206,6 +206,16 @@ func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before
 		for _, id := range append([]string{quest.QuestID}, quest.QuestIDAliases...) {
 			quests[id] = info
 		}
+	}
+	// A Market egyes eseménycsoportokhoz nem közöl küldetésazonosítót.
+	// Az eltérő követelményeket névegyezés alapján sem vonjuk össze.
+	for _, group := range snapshot.MarketGroups {
+		if group.QuestID != "" || group.RequirementID == "" {
+			continue
+		}
+		info := &metadata{target: Target{GoalKey: "quest::" + group.RequirementID, GoalName: group.QuestName, Kind: "quest"},
+			completed: group.Completed, canceled: group.Canceled || group.Optional}
+		groupsWithoutQuest[group.RequirementID], order = info, append(order, info)
 	}
 	for _, module := range snapshot.MarketHideout {
 		name := module.Name
@@ -234,6 +244,8 @@ func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before
 		info := quests[source.QuestID]
 		if source.UpgradeKey != "" {
 			info = modules[source.UpgradeKey]
+		} else if source.QuestID == "" {
+			info = groupsWithoutQuest[source.RequirementID]
 		}
 		if info == nil || info.canceled {
 			continue
@@ -252,6 +264,9 @@ func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before
 				excludedGroup = true
 			}
 			break
+		}
+		if source.QuestID == "" && source.UpgradeKey == "" && !explicit {
+			continue
 		}
 		if !completed && !excludedGroup && (source.Amount > 0 || source.RemainingRequiredQuantity > 0) {
 			activeEvidence[info.target.GoalKey] = true
@@ -296,7 +311,7 @@ func displayTargets(snapshot localprogress.Snapshot, graph forecastGraph, before
 }
 
 func matchesForecastGroup(row localprogress.Item, source localprogress.Source, group market.TrackedGroup, canonical func(string) string) bool {
-	if source.UpgradeKey != "" || source.QuestID == "" || canonical(source.QuestID) != canonical(group.QuestID) ||
+	if source.UpgradeKey != "" || source.RequirementID == "" || canonical(source.QuestID) != canonical(group.QuestID) ||
 		source.RequirementID != group.RequirementID || source.FIR != group.FIR {
 		return false
 	}
@@ -423,6 +438,10 @@ func buildForecastGraph(snapshot localprogress.Snapshot) (forecastGraph, bool) {
 				name += " " + strconv.Itoa(module.Level)
 			}
 			future = !module.CanComplete
+		} else if id == "" && strings.EqualFold(source.Type, "questGroup") && source.RequirementID != "" {
+			// Ez belső követelménykulcs, nem kitalált küldetésazonosító.
+			// A hiányzó küldetésmetaadat miatt a prioritás bizonytalan marad.
+			id = ":" + source.RequirementID
 		} else {
 			quest, found := quests[id]
 			if !found {
@@ -503,11 +522,11 @@ func buildForecastGraph(snapshot localprogress.Snapshot) (forecastGraph, bool) {
 		if group.Completed || group.Canceled || group.Optional || group.RequiredQuantity == 0 {
 			continue
 		}
-		if group.QuestID == "" || group.RequirementID == "" || group.RequiredQuantity < 0 || group.RequiredQuantity > localprogress.MaxQuantity ||
+		if group.RequirementID == "" || group.RequiredQuantity < 0 || group.RequiredQuantity > localprogress.MaxQuantity ||
 			group.AvailableQuantity < 0 || group.AvailableQuantity > localprogress.MaxQuantity || len(group.ItemIDs) == 0 {
 			return graph, false
 		}
-		record, valid := getGoal(market.TrackedSource{QuestID: group.QuestID, Name: group.QuestName})
+		record, valid := getGoal(market.TrackedSource{Type: "questGroup", QuestID: group.QuestID, RequirementID: group.RequirementID, Name: group.QuestName})
 		if !valid {
 			return graph, false
 		}
@@ -551,6 +570,11 @@ func buildForecastGraph(snapshot localprogress.Snapshot) (forecastGraph, bool) {
 	}
 	for i, quest := range snapshot.MarketQuests {
 		metadataOrder["quest:"+quest.QuestID] = len(snapshot.MarketHideout) + i
+	}
+	for i, group := range snapshot.MarketGroups {
+		if group.QuestID == "" {
+			metadataOrder["quest::"+group.RequirementID] = len(snapshot.MarketHideout) + len(snapshot.MarketQuests) + i
+		}
 	}
 	sort.SliceStable(order, func(i, j int) bool { return metadataOrder[order[i]] < metadataOrder[order[j]] })
 	for _, key := range order {

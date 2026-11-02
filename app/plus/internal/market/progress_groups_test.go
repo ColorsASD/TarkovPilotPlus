@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -29,12 +31,52 @@ func TestTrackedMarketGroupsAndRequirementIdentityArePreserved(t *testing.T) {
 	}
 }
 
+func TestTrackedMarketGroupsAllowMissingQuestIDWithDistinctRequirements(t *testing.T) {
+	for _, questField := range []string{`"questId":null,`, `"questId":"",`, ``} {
+		t.Run(questField, func(t *testing.T) {
+			want := groupSnapshotFixture()
+			for _, requirement := range []struct {
+				id     string
+				amount int64
+			}{{"event-medkits-5", 5}, {"event-medkits-7", 7}} {
+				group := want.Groups[0]
+				group.QuestID, group.QuestName = "", "Halloween: Tightening the Quarantine"
+				group.RequirementID, group.Amount = requirement.id, requirement.amount
+				group.RequiredQuantity, group.RemainingQuantity = requirement.amount, requirement.amount-1
+				want.Groups = append(want.Groups, group)
+				source := want.Items[0].Sources[0]
+				source.QuestID, source.Name = "", group.QuestName
+				source.RequirementID, source.Amount = group.RequirementID, group.Amount
+				want.Items[0].Sources = append(want.Items[0].Sources, source)
+			}
+			body, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := strings.ReplaceAll(string(body), `"questId":"",`, questField)
+			client := progressTestClient(t, func(*http.Request) (*http.Response, error) {
+				return response(200, payload), nil
+			})
+			got, err := client.LoadTracked(context.Background(), "fixture-key", "char-1", "en")
+			if err != nil {
+				t.Fatalf("event group without a quest ID blocked inventory: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("group identity, sources or stock changed: got %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
 func TestInvalidMarketGroupsAreRejectedBeforeProjection(t *testing.T) {
-	for _, name := range []string{"duplicate-group", "duplicate-member", "empty-members", "negative", "required-over-amount", "invalid-id"} {
+	for _, name := range []string{"duplicate-group", "duplicate-event-group", "duplicate-member", "empty-members", "negative", "required-over-amount", "invalid-id", "invalid-quest-id", "event-without-requirement-id"} {
 		t.Run(name, func(t *testing.T) {
 			snapshot := groupSnapshotFixture()
 			switch name {
 			case "duplicate-group":
+				snapshot.Groups = append(snapshot.Groups, snapshot.Groups[0])
+			case "duplicate-event-group":
+				snapshot.Groups[0].QuestID = ""
 				snapshot.Groups = append(snapshot.Groups, snapshot.Groups[0])
 			case "duplicate-member":
 				snapshot.Groups[0].ItemIDs = []string{"salewa", "salewa"}
@@ -46,6 +88,10 @@ func TestInvalidMarketGroupsAreRejectedBeforeProjection(t *testing.T) {
 				snapshot.Groups[0].RequiredQuantity = 4
 			case "invalid-id":
 				snapshot.Groups[0].RequirementID = "invalid/requirement"
+			case "invalid-quest-id":
+				snapshot.Groups[0].QuestID = "invalid/quest"
+			case "event-without-requirement-id":
+				snapshot.Groups[0].QuestID, snapshot.Groups[0].RequirementID = "", ""
 			}
 			body, err := json.Marshal(snapshot)
 			if err != nil {

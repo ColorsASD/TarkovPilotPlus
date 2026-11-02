@@ -321,6 +321,11 @@ func typedGroupStocks(goals []goal, items []localprogress.Item, target int) map[
 						}
 					}
 					key := g.key + ":" + strings.TrimPrefix(n.key, g.key+":group:")
+					if strings.HasPrefix(g.key, "quest::") {
+						// Küldetésazonosító nélkül maga a cél a külön követelmény;
+						// ugyanazt a kulcsot használjuk, mint a Market-projekció.
+						key = g.key
+					}
 					groups[key] = TypedGroupStock{FIR: n.fir, AvailableQuantity: n.have,
 						RequiredQuantity: n.amount, AllocatedQuantity: rowContributions[target], Contributions: contributions, RowContributions: rowContributions,
 						OtherStock: typedOtherStock(n.allocations, items, target)}

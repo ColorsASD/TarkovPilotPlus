@@ -66,8 +66,10 @@ func Merge(tracked market.TrackedSnapshot, quests market.QuestSnapshot, hideout 
 	}
 	seenGroups := make(map[string]bool)
 	for _, group := range tracked.Groups {
+		// Az eseménykövetelmények questId nélkül is érkezhetnek. A kötelező
+		// requirementId őrzi a csoport azonosságát; név alapján nem társítunk küldetést.
 		key := "quest:" + group.QuestID + ":" + group.RequirementID
-		if !validID(group.QuestID) || !validID(group.RequirementID) || seenGroups[key] || !validQuantity(group.Amount) || group.Amount == 0 || !validQuantity(group.RequiredQuantity) || group.RequiredQuantity > group.Amount || !validQuantity(group.AvailableQuantity) || len(group.ItemIDs) == 0 {
+		if group.QuestID != "" && !validID(group.QuestID) || !validID(group.RequirementID) || seenGroups[key] || !validQuantity(group.Amount) || group.Amount == 0 || !validQuantity(group.RequiredQuantity) || group.RequiredQuantity > group.Amount || !validQuantity(group.AvailableQuantity) || len(group.ItemIDs) == 0 {
 			return Snapshot{}, ErrInvalidSnapshot
 		}
 		seenGroups[key] = true
